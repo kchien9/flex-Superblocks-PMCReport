@@ -1772,7 +1772,21 @@ export default api({
     // in the retention-cohort query and skews the true-repeat-rate / loyalty-bucket numbers.
     // `rows` (fetched above, ORDER BY BP_MONTH ascending) is already resolved by this point, so
     // derive the real value directly from it instead of approximating.
-    const inNetworkBpMonths = rows.filter((r) => r.IS_IN_NETWORK).map((r) => r.BP_MONTH);
+    //
+    // Requires CHARGED_USERS > 0, matching Flask's _latest_completed_month (generator/data.py:
+    // 370-399), which explicitly requires real billing data, not just an IS_IN_NETWORK flag —
+    // a month can be flagged in-network before its billing data has actually landed. Using only
+    // IS_IN_NETWORK let a billing-lagged month count as "reporting month," which pushed this
+    // anchor date later than Flask's, diluting the retention-cohort's eligible pool with
+    // brand-new signups who hadn't had a chance to repeat yet (this is what was pulling
+    // true_repeat_rate below Flask's real number). `latestCompletedMonth` (computed further
+    // down from monthlyTotals) is the same concept but isn't available yet at this point in
+    // the pipeline — this mirrors its exact filter using the already-fetched `rows` instead.
+    const currentMonthStrForReporting = new Date(today.getFullYear(), today.getMonth(), 1).toISOString().slice(0, 10);
+    const inNetworkBpMonths = rows
+      .filter((r) => r.IS_IN_NETWORK && r.CHARGED_USERS > 0
+        && !(dayOfMonth <= 5 && r.BP_MONTH === currentMonthStrForReporting))
+      .map((r) => r.BP_MONTH);
     const reportingMonthStr = inNetworkBpMonths.length > 0
       ? inNetworkBpMonths[inNetworkBpMonths.length - 1]
       : new Date(cutoff.getFullYear(), cutoff.getMonth() - 1, 1).toISOString().slice(0, 10);
@@ -1858,7 +1872,7 @@ export default api({
             FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS
             WHERE PMC_NAME = ?
               AND IS_IN_NETWORK = TRUE
-              AND BP_MONTH >= DATEADD('month', -13, ?::DATE)
+              AND BP_MONTH >= DATEADD('month', -?, ?::DATE)
               AND BP_MONTH < ?
          ),
          customer_months AS (
@@ -1873,8 +1887,10 @@ export default api({
             WHERE n.HAS_BILL_PAID = TRUE
             GROUP BY n.CUSTOMER_PUBLIC_ID
          ),
+         -- Flask (generator/slides.py:3891-3894): only customers with 3+ months of history can
+         -- be assessed for a real loyalty pattern — 1-2 month customers can't yet. Was >= 2.
          multi_month AS (
-            SELECT * FROM customer_months WHERE months_available >= 2
+            SELECT * FROM customer_months WHERE months_available >= 3
          ),
          total_cust AS (
             SELECT COUNT(*) AS cnt FROM multi_month
@@ -1909,7 +1925,9 @@ export default api({
          CROSS JOIN eligible_count e
          GROUP BY b.LOYALTY_BUCKET, t.cnt, r.cnt, e.cnt`,
         RetentionCohortSchema,
-        [pmc_name, cutoffStr, cutoffStr, reportingMonthStr, reportingMonthStr],
+        // Flask: max(3, lookback_months) (app.py:730) — floor so a very short override can't
+        // starve the cohort window entirely.
+        [pmc_name, Math.max(3, lookback_months), cutoffStr, cutoffStr, reportingMonthStr, reportingMonthStr],
         { label: "Compute loyalty buckets & true repeat rate from customer cohort" }
       ).catch(() => [] as { LOYALTY_BUCKET: string; BUCKET_COUNT: number; TOTAL_CUSTOMERS: number; TRUE_REPEAT_RATE: number | null }[]),
       ctx.integrations.snowflake_sso.query(
@@ -1921,11 +1939,13 @@ export default api({
             ON n.PROPERTY_PUBLIC_ID = p.PROPERTY_PUBLIC_ID AND n.BP_MONTH = p.BP_MONTH
          WHERE p.PMC_NAME = ?
            AND p.IS_IN_NETWORK = TRUE
-           AND p.BP_MONTH >= DATEADD('month', -13, ?::DATE)
+           AND p.BP_MONTH >= DATEADD('month', -?, ?::DATE)
            AND p.BP_MONTH < ?
            AND n.HAS_BILL_PAID = TRUE`,
         CustomerMonthSchema,
-        [pmc_name, cutoffStr, cutoffStr],
+        // Same window as the retention-cohort query above (Flask: pull_retention_cohort's
+        // lookback_months) — this feeds the same cohort_df the MoM chart is built from.
+        [pmc_name, Math.max(3, lookback_months), cutoffStr, cutoffStr],
         { label: "Fetch raw (customer, month) pairs for MoM retention set-intersection" }
       ).catch(() => [] as { CUSTOMER_PUBLIC_ID: string; BP_MONTH: string }[]),
     ]);
