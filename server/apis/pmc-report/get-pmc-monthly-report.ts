@@ -1871,7 +1871,7 @@ export default api({
              FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS
              WHERE PMC_NAME = ?
                AND IS_IN_NETWORK = TRUE
-               AND BP_MONTH <= ?
+               AND BP_MONTH < ?
                AND BP_MONTH >= DATEADD('month', -25, ?)
              ORDER BY PROPERTY_NAME, BP_MONTH`,
             PropertyTrendSchema,
@@ -2053,9 +2053,14 @@ export default api({
                 FROM PRODUCTION.ANALYTICS.DIM_PROPERTIES_PMCS
              ),
              latest AS (
+                -- cutoffStr is an EXCLUSIVE upper bound (1st of the next allowed month) — using
+                -- <= here let it match that exact stub month, which Snowflake pre-creates with
+                -- zeroed/null billing columns before it has real data. Every peer's "latest"
+                -- resolved to that empty month, zeroing out NAR/avg-rent for the entire network
+                -- pool and breaking every rent-matched peer tier. Must be strict <.
                 SELECT MAX(BP_MONTH) AS bp_month
                 FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS
-                WHERE BP_MONTH <= ? AND IS_INTEGRATED_TOTAL = TRUE
+                WHERE BP_MONTH < ? AND IS_INTEGRATED_TOTAL = TRUE
              ),
              agg AS (
                 SELECT
@@ -2120,6 +2125,12 @@ export default api({
            GROUP BY t.PROPERTY_STATE, COALESCE(dma.DMA_NAME, 'Unknown')
            ORDER BY t.PROPERTY_STATE, BILLS_PAID DESC`,
           RegionDetailSchema,
+          // KNOWN ISSUE, not fixed here: cutoffStr is an exclusive boundary (1st of the next
+          // allowed month), not a real month — exact-matching it can land on Snowflake's
+          // pre-created, not-yet-real stub row for that month (same bug class fixed elsewhere
+          // in this file). latestCompletedMonth (the correct value to use) isn't computed yet
+          // at this point in the request pipeline, so it's not a same-line swap; needs its own
+          // pass to compute a real "latest" inline the way reportingMonthStr does above.
           [pmc_name, cutoffStr],
           { label: "Pull DMA region detail for geo slide dropdowns" }
         ).catch(() => [] as { PROPERTY_STATE: string; PROPERTY_REGION: string; PROPERTIES: number; TOTAL_UNITS: number; BILLS_PAID: number }[]);
@@ -2895,7 +2906,11 @@ export default api({
             FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS
             WHERE PMC_NAME IN (${lockedPeers.map(() => "?").join(", ")})
               AND IS_INTEGRATED_TOTAL = TRUE
-              AND BP_MONTH BETWEEN DATEADD('month', -${lookback_months + 3}, ?::DATE) AND ?
+              -- cutoffStr is an EXCLUSIVE upper bound (1st of the next allowed month) —
+              -- BETWEEN is inclusive on both ends, which let this match Snowflake's pre-created
+              -- stub row for that month (zeroed billing columns), injecting a bogus NAR=0 point.
+              AND BP_MONTH >= DATEADD('month', -${lookback_months + 3}, ?::DATE)
+              AND BP_MONTH < ?
             GROUP BY BP_MONTH, PMC_NAME
          ),
          smoothed AS (
@@ -2908,7 +2923,8 @@ export default api({
            TO_VARCHAR(BP_MONTH, 'YYYY-MM-DD') AS BP_MONTH,
            PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY smoothed_nar) AS SMOOTHED_NAR
          FROM smoothed
-         WHERE BP_MONTH BETWEEN DATEADD('month', -?, ?::DATE) AND ?
+         WHERE BP_MONTH >= DATEADD('month', -?, ?::DATE)
+           AND BP_MONTH < ?
            AND smoothed_nar IS NOT NULL
          GROUP BY BP_MONTH
          HAVING COUNT(*) >= 3
@@ -3002,7 +3018,10 @@ export default api({
               FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS
               WHERE PMC_NAME != ?
                 AND IS_INTEGRATED_TOTAL = TRUE
-                AND BP_MONTH BETWEEN DATEADD('month', -${lookback_months + 3}, ?::DATE) AND ?
+                -- cutoffStr is exclusive (see peer_latest above) — BETWEEN's inclusive upper
+                -- bound let this same query pick up the pre-created, not-yet-real stub month.
+                AND BP_MONTH >= DATEADD('month', -${lookback_months + 3}, ?::DATE)
+                AND BP_MONTH < ?
               GROUP BY BP_MONTH, PMC_NAME
               HAVING SUM(PROPERTY_UNIT_COUNT) >= 10
            ),
@@ -3016,7 +3035,8 @@ export default api({
              TO_VARCHAR(BP_MONTH, 'YYYY-MM-DD') AS BP_MONTH,
              PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY smoothed_nar) AS SMOOTHED_NAR
            FROM smoothed
-           WHERE BP_MONTH BETWEEN DATEADD('month', -?, ?::DATE) AND ?
+           WHERE BP_MONTH >= DATEADD('month', -?, ?::DATE)
+             AND BP_MONTH < ?
              AND smoothed_nar IS NOT NULL
            GROUP BY BP_MONTH
            HAVING COUNT(*) >= 10
