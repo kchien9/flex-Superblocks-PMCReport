@@ -6,7 +6,7 @@
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
 const PURPLE = "#6A3DB8";
-const NAVY = "#1e1145";
+const NAVY = "#2C194D"; // deck's one standard navy (was #1e1145 — a darker, off-brand shade)
 const GRAY = "#6b7280";
 
 function _e(s: string): string {
@@ -157,7 +157,7 @@ export function renderMetrosightEvidence(input: MetrosightInput): SlideResult {
   const html = `
   <div class="slide" id="slide-${slideId}" style="background:#fff;flex-direction:row;padding:0;overflow:hidden;">
     <!-- LEFT: study context + raw findings -->
-    <div style="width:44%;background:${NAVY};display:flex;flex-direction:column;justify-content:space-between;padding:40px 34px;flex-shrink:0;">
+    <div style="width:42%;background:${NAVY};display:flex;flex-direction:column;justify-content:space-between;padding:40px 34px;flex-shrink:0;">
       <div>
         <div style="font-size:10px;font-weight:600;letter-spacing:0.14em;color:rgba(255,255,255,0.40);text-transform:uppercase;margin-bottom:16px;">Flex-commissioned Research</div>
         <div style="font-size:30px;font-weight:700;color:#fff;line-height:1.15;letter-spacing:-0.02em;margin-bottom:6px;">Rethinking Rent</div>
@@ -519,22 +519,25 @@ export function renderPeerBenchmarks(input: {
     const dotPct = pct(m.pmcValue);
 
     // --- Quartile color & dot style (5-tier with ±0.5pp "at median" band) ---
+    // "At median" checked FIRST, before the quartile branches — a near-exact tie (p50 and p75
+    // within 0.5pp of each other) must never fall into "Above median"/"Top quartile" by a
+    // rounding hair, matching Flask's exact branch order.
     const AT_MEDIAN_TOL = 0.005; // ±0.5pp
     let perfLbl: string;
     let lblColor: string;
     let dotColor: string;
-    let useStar = false;
-    if (m.pmcValue >= m.p75) {
-      perfLbl = "Top quartile"; lblColor = "#d4a017"; dotColor = "#d4a017"; useStar = true;
-    } else if (Math.abs(m.pmcValue - m.p50) <= AT_MEDIAN_TOL) {
+    if (Math.abs(m.pmcValue - m.p50) <= AT_MEDIAN_TOL) {
       perfLbl = "At median"; lblColor = "#1a9e6a"; dotColor = "#1a9e6a";
+    } else if (m.pmcValue >= m.p75) {
+      perfLbl = "★ Top quartile"; lblColor = "#d4af37"; dotColor = "#d4af37";
     } else if (m.pmcValue >= m.p50) {
-      perfLbl = "Above median"; lblColor = "#d4a017"; dotColor = "#d4a017";
+      perfLbl = "★ Above median"; lblColor = "#d4af37"; dotColor = "#d4af37";
     } else if (m.pmcValue >= m.p25) {
       perfLbl = "Below median"; lblColor = "#d97706"; dotColor = "#d97706";
     } else {
       perfLbl = "Bottom quartile"; lblColor = "#dc5050"; dotColor = "#dc5050";
     }
+    const useStar = dotColor === "#d4af37";
 
     const displayVal = m.pmcLabel ?? meta.format(m.pmcValue);
     const zoomNote = zoomed
@@ -579,9 +582,15 @@ export function renderPeerBenchmarks(input: {
             <div style="position:absolute;top:15px;left:${p75Pct}%;width:1.5px;height:10px;background:#c4b8e8;border-radius:1px;transform:translateX(-50%);"></div>
             <!-- P50 tick -->
             <div style="position:absolute;top:13px;left:${p50Pct}%;width:2px;height:14px;background:#6A3DB8;border-radius:1px;transform:translateX(-50%);"></div>
-            <!-- PMC dot -->
+            <!-- PMC marker: gold star badge for Above median/Top quartile, plain dot otherwise -->
             ${useStar
-              ? `<div style="position:absolute;top:8px;left:${dotPct}%;font-size:18px;line-height:1;color:${dotColor};filter:drop-shadow(0 1px 3px rgba(0,0,0,0.3));transform:translateX(-50%);">★</div>`
+              ? `<div style="position:absolute;top:11px;left:${dotPct}%;width:16px;height:16px;border-radius:50%;
+                        background:#fff;border:2.5px solid #fff;box-shadow:0 1px 5px rgba(0,0,0,0.3);
+                        transform:translateX(-50%);display:flex;align-items:center;justify-content:center;">
+                   <svg viewBox="0 0 24 24" width="13" height="13" style="display:block;">
+                     <path fill="${dotColor}" d="M12 1.5l3.09 6.26 6.91 1-5 4.87 1.18 6.88L12 17.27l-6.18 3.24L7 13.63l-5-4.87 6.91-1z"/>
+                   </svg>
+                 </div>`
               : `<div style="position:absolute;top:11px;left:${dotPct}%;width:16px;height:16px;border-radius:50%;background:${dotColor};border:2.5px solid #fff;box-shadow:0 1px 5px rgba(0,0,0,0.3);transform:translateX(-50%);"></div>`
             }
             <!-- Values BELOW the track -->
@@ -1854,7 +1863,7 @@ window['initSlide${slideId}'] = (function() {
       datasets.push({
         label: 'Established Properties',
         data: estData,
-        borderColor: 'rgba(26,158,106,0.6)',
+        borderColor: 'rgba(26,158,106,0.65)',
         backgroundColor: 'transparent',
         fill: false,
         tension: 0.35,
@@ -2843,7 +2852,7 @@ export function renderQbrClose(input: QbrCloseInput): SlideResult {
   const bPct = fmtPct(bNar);
   let win1Head: string, win1Body: string;
   if (nearP75) {
-    win1Head = `\u2605 Top-quartile adoption at ${narPct}`;
+    win1Head = `Top-quartile adoption at ${narPct}`;
     win1Body = `Your adoption rate puts you in the top 25% across the Flex network. Residents are finding value and coming back - that's the signal.`;
   } else if (aboveMedian) {
     win1Head = `Above-average adoption at ${narPct}`;

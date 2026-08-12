@@ -341,7 +341,7 @@ function renderExecSummary(d: ExecSummaryInput): { html: string; js: string } {
   const anyDelta = !!(pillProps || pillResidents || pillNar || heroPill);
 
   const deltaToggle = anyDelta
-    ? `<button class="presenter-control" onclick="var s=document.getElementById('slide-${slideId}');s.classList.toggle('hide-deltas');this.textContent=s.classList.contains('hide-deltas')?'Show change ${_vs}':'Hide change ${_vs}';" style="padding:4px 10px;border-radius:5px;border:1px solid #e5e7eb;background:#fff;color:#6b7280;font-size:10px;font-weight:600;cursor:pointer;letter-spacing:0.04em;">Hide change ${_vs}</button>`
+    ? `<button class="presenter-control" onclick="var s=document.getElementById('slide-${slideId}');s.classList.toggle('hide-deltas');this.textContent=s.classList.contains('hide-deltas')?'Show change ${_vs}':'Hide change ${_vs}';" style="padding:4px 10px;border-radius:5px;border:1px solid #e5e7eb;background:#fff;color:#6b7280;font-size:10px;font-weight:600;cursor:pointer;letter-spacing:0.04em;font-family:'Lexend',sans-serif;">Hide change ${_vs}</button>`
     : "";
 
   // ── Sparkline toggle controls ──────────────────────────────────────────────
@@ -1196,7 +1196,7 @@ function buildDeckHtml(params: {
   .slide-label { font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--purple); margin-bottom: 8px; font-weight: 600; font-family: 'ABCDiatype', sans-serif; }
   .slide-title { font-size: 34px; font-weight: 700; color: var(--navy); line-height: 1.15; letter-spacing: -0.02em; font-family: 'ABCDiatype', sans-serif; }
   .slide-header { margin-bottom: 20px; }
-  .chart-wrap { position: relative; flex: 1; min-height: 0; width: 100%; background: var(--bg); border-radius: 16px; border: 1px solid var(--border); padding: 22px; }
+  .chart-wrap { position: relative; flex: 1; min-height: 280px; width: 100%; background: var(--bg); border-radius: 16px; border: 1px solid var(--border); padding: 22px; }
   .deck-actions { display: flex; gap: 6px; align-items: center; }
   .action-btn { display: flex; align-items: center; gap: 5px; padding: 5px 10px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.15); background: rgba(255,255,255,0.06); color: #9896a4; font-family: 'ABCDiatype', sans-serif; font-size: 11px; cursor: pointer; transition: all 0.15s; letter-spacing: 0.02em; }
   .action-btn:hover { background: rgba(255,255,255,0.14); color: #fff; border-color: rgba(255,255,255,0.28); }
