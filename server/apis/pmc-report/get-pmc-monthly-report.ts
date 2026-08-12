@@ -2403,9 +2403,15 @@ export default api({
     const excludedPmcNames = second_pmc ? [pmc_name, second_pmc] : [pmc_name];
 
     // Apply per-property peer matching
+    // Gate mirrors buildEstablishedPool's (slide-renderers.ts) — 7+mo live, and either
+    // >=10 units OR a genuine 0%-adoption laggard. Previously required units>=10
+    // unconditionally, so small 0%-adoption properties could land in the "needs attention"
+    // table (via buildEstablishedPool's looser gate) but never get a peer-median value —
+    // exactly the laggard a PMC most needs a peer comparison for.
     if (networkPoolProps.length > 0) {
       for (const p of propertySnapshot) {
-        if (!p.propertyState || p.monthsLive < 7 || p.units < 10) continue;
+        if (!p.propertyState || p.monthsLive < 7) continue;
+        if (!(p.adoptionRate === 0 || p.units >= 10)) continue;
         const subjectIncome = subjectIncomeByProperty.get(p.propertyName);
         const narResult = resolvePropertyPeerNar(p.propertyState, p.units, p.avgRent, p.monthsLive, excludedPmcNames, networkPoolProps, subjectIncome);
         if (narResult) {
