@@ -252,11 +252,34 @@ function renderExecSummary(d: ExecSummaryInput): { html: string; js: string } {
   const signupsSparkHtml = signupsSparkRaw ? `<div id="ss_${slideId}">${signupsSparkRaw}</div>` : "";
 
   // ── Monthly rent for hero sparkline ────────────────────────────────────────
-  // Was cumulative (running total), which is monotonically increasing by construction and
-  // draws as a near-straight ramp instead of a real trend line. Use the same month-over-month
-  // series as the "monthly rent" sparkline below so the hero line actually shows movement.
   const monthlyRentVals = tail12.map((m) => m.rentPaid);
-  const heroSparkSvg = sparkSvg(monthlyRentVals, 200, 40).replace(/#1a9e6a|#dc5050|#9ca3af/g, "rgba(255,255,255,0.5)");
+
+  // Hero sparkline: Flask's real version (render_expansion_bottom_line, generator/slides.py:
+  // ~7750-7767, ~7967-7993) is a CUMULATIVE running sum of monthly rent — deliberately always
+  // rising, drawn as a filled area, purely visual ("visualises growth story," not meant to show
+  // month-to-month movement). A prior pass here swapped this for the raw monthly series
+  // assuming the ramp shape was a bug; it isn't — confirmed against Kevin's reference screenshot.
+  function heroSparkSvg(values: number[], width = 200, height = 40): string {
+    if (values.filter((v) => v > 0).length < 3) return "";
+    let running = 0;
+    const cumulative = values.map((v) => (running += v));
+    const mn = Math.min(...cumulative);
+    const mx = Math.max(...cumulative);
+    const rng = mx - mn || 1;
+    const pad = 2;
+    const pts = cumulative.map((v, i) => {
+      const x = (i / (cumulative.length - 1)) * (width - pad * 2) + pad;
+      const y = (height - pad * 2) - ((v - mn) / rng) * (height - pad * 2) + pad;
+      return { x, y };
+    });
+    const lineD = "M " + pts.map((p) => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(" L ");
+    const areaD = `${lineD} L ${pts[pts.length - 1].x.toFixed(1)},${height} L ${pts[0].x.toFixed(1)},${height} Z`;
+    return `<svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" fill="none" style="display:block;">`
+      + `<path d="${areaD}" fill="rgba(255,255,255,0.06)" stroke="none"/>`
+      + `<path d="${lineD}" stroke="rgba(255,255,255,0.55)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>`
+      + `</svg>`;
+  }
+  const heroSparkSvgHtml = heroSparkSvg(monthlyRentVals);
 
   // ── Monthly rent sparkline (small white line in hero bottom) ──────────────
   const moRentSparkRaw = showSparks ? sparkSvg(monthlyRentVals, 100, 36).replace(/#1a9e6a|#dc5050|#9ca3af/g, "rgba(255,255,255,0.6)") : "";
@@ -379,7 +402,7 @@ function renderExecSummary(d: ExecSummaryInput): { html: string; js: string } {
       </div>
         <div style="font-size:46px;font-weight:700;color:#fff;letter-spacing:-0.03em;line-height:1;">${fmtCurrency(d.lifetimeRent)}</div>
         <div style="font-size:12px;color:rgba(255,255,255,0.55);font-weight:500;margin-top:5px;">${rwl.toLowerCase()}</div>
-        <div style="flex:1;min-height:40px;display:flex;align-items:flex-end;margin:12px 0 4px;">${heroSparkSvg}</div>
+        <div style="flex:1;min-height:40px;display:flex;align-items:flex-end;margin:12px 0 4px;">${heroSparkSvgHtml}</div>
         <div style="border-top:1px solid rgba(255,255,255,0.10);padding-top:14px;">
           <div style="font-size:13px;color:rgba(255,255,255,0.75);font-weight:700;margin-bottom:5px;">Rent guaranteed this month</div>
           <div style="display:flex;align-items:flex-end;justify-content:space-between;gap:8px;">
