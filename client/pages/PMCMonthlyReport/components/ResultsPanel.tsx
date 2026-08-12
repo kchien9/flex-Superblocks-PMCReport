@@ -3,7 +3,7 @@ import { useState, useCallback, useEffect, useRef } from "react";
 
 interface ResultsPanelProps {
   generating: boolean;
-  reportData: { html?: string; empty?: boolean; flags?: string[]; emailDraft?: string } | null;
+  reportData: { html?: string; empty?: boolean; flags?: string[]; emailDraft?: string; notes_html?: string } | null;
   delivery: string;
   deckLabel: string;
   error?: unknown;
@@ -124,14 +124,25 @@ export function ResultsPanel({ generating, reportData, delivery, deckLabel, erro
             Data Workbook
           </button>
           {delivery === "presenting" && (
-            <button
-              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-gray-600 border border-gray-200 rounded-[4px] hover:bg-gray-50 transition-colors"
-              title="Speaker Notes — coming soon"
-              disabled
-            >
-              <FileText className="h-3.5 w-3.5" />
-              Speaker Notes
-            </button>
+            reportData.notes_html ? (
+              <a
+                href={`data:text/html;charset=utf-8,${encodeURIComponent(reportData.notes_html)}`}
+                download="speaker-notes.html"
+                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-[#6A3DB8] border border-[#6A3DB8]/30 rounded-[4px] hover:bg-[#EEE2FC] transition-colors"
+              >
+                <FileText className="h-3.5 w-3.5" />
+                Speaker Notes
+              </a>
+            ) : (
+              <button
+                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-gray-600 border border-gray-200 rounded-[4px] hover:bg-gray-50 transition-colors"
+                title="Speaker Notes — not available for this deck type yet"
+                disabled
+              >
+                <FileText className="h-3.5 w-3.5" />
+                Speaker Notes
+              </button>
+            )
           )}
         </div>
 

@@ -51,6 +51,12 @@ export default api({
 
   input: z.object({
     pmc_name: z.string().min(1),
+    // Optional second PMC for a combined/ownership-group report — without this, only the
+    // first-named PMC's residents' testimonials are ever fetched, silently, on a combined
+    // report (matches the gap Flask has today, documented in
+    // docs/clark-session-qbr-multi-pmc-scoping.md as deliberately deferred there — fixing it
+    // here since this is a fresh implementation, not bound to carry the gap forward).
+    pmc_name_2: z.string().optional(),
     top_n: z.coerce.number().optional(),
   }),
 
@@ -58,12 +64,13 @@ export default api({
     testimonials: z.array(TestimonialOutputSchema),
   }),
 
-  async run(ctx, { pmc_name, top_n }) {
+  async run(ctx, { pmc_name, pmc_name_2, top_n }) {
+    const pmcNames = pmc_name_2 ? [pmc_name, pmc_name_2] : [pmc_name];
     const rows = await ctx.integrations.snowflake_sso.query(
       `WITH latest_prop AS (
           SELECT CUSTOMER_PUBLIC_ID, PROPERTY_NAME
           FROM FLEX.REPORT.RPT_RENT_CUSTOMER_STATS_MONTHLY
-          WHERE UPPER(PMC_NAME) = UPPER(?)
+          WHERE UPPER(PMC_NAME) IN (${pmcNames.map(() => "UPPER(?)").join(", ")})
           QUALIFY ROW_NUMBER() OVER (PARTITION BY CUSTOMER_PUBLIC_ID ORDER BY BP_MONTH DESC) = 1
       )
       SELECT
@@ -82,8 +89,8 @@ export default api({
       ORDER BY sr.CREATED_AT DESC
       LIMIT 30`,
       TestimonialRowSchema,
-      [pmc_name],
-      { label: "Fetch Zendesk testimonials for PMC" }
+      pmcNames,
+      { label: "Fetch Zendesk testimonials for PMC(s)" }
     );
 
     // Deduplicate by comment text, score, sort by sentiment

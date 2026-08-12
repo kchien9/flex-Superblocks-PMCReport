@@ -16,6 +16,8 @@ import {
   computePropertyTrendFlags,
 } from "./slide-renderers.js";
 import type { BenchmarkMetric, ResidentTrend, Testimonial, TrendFlag, YearlyData } from "./slide-renderers.js";
+import { buildSpeakerNotesHtml } from "./speaker-notes.js";
+import type { SpeakerNotesKpis, SpeakerNotesBenchmark, SpeakerNotesMonthlyRow } from "./speaker-notes.js";
 import {
   renderExpansionMetrosight,
   renderExpansionGap,
@@ -32,7 +34,7 @@ import {
 const SNOWFLAKE_SSO = "d38ee94a-4e93-46f5-ab44-c65a99b3aea5";
 
 // ─── Module-level cache: network pool (same for all PMCs in a given cutoff month) ───
-type NetworkPoolRow = { PMC_NAME: string; PROPERTY_NAME: string; PROPERTY_STATE: string | null; PROPERTY_UNIT_COUNT: number; RENT_PAID_AMOUNT: number | null; BILLS_PAID_COUNT: number; ROLLOUT_MONTH: string | null; T12_CONNECTIONS: number };
+type NetworkPoolRow = { PMC_NAME: string; PROPERTY_NAME: string; PROPERTY_STATE: string | null; PROPERTY_UNIT_COUNT: number; RENT_PAID_AMOUNT: number | null; BILLS_PAID_COUNT: number; ROLLOUT_MONTH: string | null; T12_CONNECTIONS: number; MEDIAN_RENTER_INCOME: number | null };
 let _networkPoolCache: { cutoff: string; data: NetworkPoolRow[]; fetchedAt: number } | null = null;
 const NETWORK_POOL_TTL_MS = 10 * 60 * 1000; // 10 minutes
 
@@ -246,13 +248,14 @@ function renderExecSummary(d: ExecSummaryInput): { html: string; js: string } {
   const residentsSparkHtml = residentsSparkRaw ? `<div id="sp_res_${slideId}">${residentsSparkRaw}</div>` : "";
   const signupsSparkHtml = signupsSparkRaw ? `<div id="ss_${slideId}">${signupsSparkRaw}</div>` : "";
 
-  // ── Cumulative rent for hero sparkline ────────────────────────────────────
-  let cumRent = 0;
-  const cumRentVals = tail12.map((m) => { cumRent += m.rentPaid; return cumRent; });
-  const heroSparkSvg = sparkSvg(cumRentVals, 200, 40).replace(/#1a9e6a|#dc5050|#9ca3af/g, "rgba(255,255,255,0.5)");
+  // ── Monthly rent for hero sparkline ────────────────────────────────────────
+  // Was cumulative (running total), which is monotonically increasing by construction and
+  // draws as a near-straight ramp instead of a real trend line. Use the same month-over-month
+  // series as the "monthly rent" sparkline below so the hero line actually shows movement.
+  const monthlyRentVals = tail12.map((m) => m.rentPaid);
+  const heroSparkSvg = sparkSvg(monthlyRentVals, 200, 40).replace(/#1a9e6a|#dc5050|#9ca3af/g, "rgba(255,255,255,0.5)");
 
   // ── Monthly rent sparkline (small white line in hero bottom) ──────────────
-  const monthlyRentVals = tail12.map((m) => m.rentPaid);
   const moRentSparkRaw = showSparks ? sparkSvg(monthlyRentVals, 100, 36).replace(/#1a9e6a|#dc5050|#9ca3af/g, "rgba(255,255,255,0.6)") : "";
   const moRentSparkSvg = moRentSparkRaw ? `<div id="sp_mo_${slideId}">${moRentSparkRaw}</div>` : "";
 
@@ -1543,6 +1546,7 @@ export default api({
   output: z.object({
     html: z.string(),
     empty: z.boolean(),
+    notes_html: z.string().optional(),
   }),
 
   async run(ctx, { pmc_name, second_pmc, report_name, lookback_months, deck_mode, adoption_target, testimonials, total_portfolio_units, expansion_slides, presenting_mode, comparison_months }) {
@@ -1690,6 +1694,7 @@ export default api({
       BILLS_PAID_COUNT: z.number(),
       ROLLOUT_MONTH: z.string().nullable(),
       T12_CONNECTIONS: z.number(),
+      MEDIAN_RENTER_INCOME: z.number().nullable(),
     });
 
     const RegionDetailSchema = z.object({
@@ -1703,11 +1708,17 @@ export default api({
     // Compute cutoff month number for YTD calculation
     const cutoffMonthNum = cutoff.getMonth() === 0 ? 12 : cutoff.getMonth();
 
-    // Reporting month = most recent fully-completed month (used for retention cohort calculation).
-    // Flask uses `reporting_month_date` which is derived from data, but we need it BEFORE queries run.
-    // Approximation: cutoff is always the first of a month; reporting month = cutoff minus 1 month.
-    const reportingMonth = new Date(cutoff.getFullYear(), cutoff.getMonth() - 1, 1);
-    const reportingMonthStr = reportingMonth.toISOString().slice(0, 10);
+    // Reporting month = most recent fully-completed month with real, in-network data for this
+    // PMC (used for the retention-cohort eligibility cutoff below). Previously guessed as
+    // "cutoff minus one calendar month" before any query had run — that guess can genuinely
+    // disagree with the PMC's real latest reported month, which shifts who counts as "eligible"
+    // in the retention-cohort query and skews the true-repeat-rate / loyalty-bucket numbers.
+    // `rows` (fetched above, ORDER BY BP_MONTH ascending) is already resolved by this point, so
+    // derive the real value directly from it instead of approximating.
+    const inNetworkBpMonths = rows.filter((r) => r.IS_IN_NETWORK).map((r) => r.BP_MONTH);
+    const reportingMonthStr = inNetworkBpMonths.length > 0
+      ? inNetworkBpMonths[inNetworkBpMonths.length - 1]
+      : new Date(cutoff.getFullYear(), cutoff.getMonth() - 1, 1).toISOString().slice(0, 10);
 
     // For expansion/new_logo modes, skip expensive queries that are only used by QBR:
     // - yearlyRentBillsRows: Since Inception slide (QBR only)
@@ -1890,10 +1901,11 @@ export default api({
         UNION ALL
         SELECT MIN(o.CLOSED_AT_UTC) AS closed_at
         FROM FLEX.SALES.FCT_CRM_OPPORTUNITY o
-        JOIN PRODUCTION.SALES.DIM_SALES_ACCOUNTS a ON o.SALES_ACCOUNT_KEY = a.SALES_ACCOUNT_KEY
+        JOIN FLEX.SALES.DIM_CRM_ACCOUNT_HISTORY a ON o.CRM_ACCOUNT_SK = a.CRM_ACCOUNT_SK
         JOIN (SELECT DISTINCT PMC_ID FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS WHERE PMC_NAME = ?) p
              ON a.PMC_ID = p.PMC_ID
-        WHERE o.OPPORTUNITY_TYPE = 'New Logo' AND o.IS_CLOSED_WON = TRUE
+        WHERE a.IS_CURRENT = TRUE
+          AND o.OPPORTUNITY_TYPE = 'New Logo' AND o.IS_CLOSED_WON = TRUE
        )
        SELECT TO_VARCHAR(MIN(closed_at), 'YYYY-MM-DD') AS LAUNCH_MONTH FROM opp_dates`,
       LaunchSchema,
@@ -1908,6 +1920,12 @@ export default api({
     // Only needed for QBR mode (15,000 row query for peer matching)
     let networkPool: NetworkPoolRow[] = [];
     let regionDetail: { PROPERTY_STATE: string; PROPERTY_REGION: string; PROPERTIES: number; TOTAL_UNITS: number; BILLS_PAID: number }[] = [];
+    // Subject PMC's own properties' median renter income, keyed by property name — feeds the
+    // RTI (rent-to-income) peer-matching tier in peer-matching.ts's resolvePropertyPeerMetric.
+    const subjectIncomeByProperty = new Map<string, number>();
+    // Tenure percentile vs. all active PMCs (1 = oldest) — gates the anniversary-milestone
+    // callout below to only the top 50% most-tenured partners, matching Flask.
+    let tenurePercentileFromTop: number | null = null;
 
     if (needsQBRQueries) {
       // Check cache first
@@ -1918,7 +1936,12 @@ export default api({
       const networkPoolPromise = cacheValid
         ? Promise.resolve(_networkPoolCache!.data)
         : ctx.integrations.snowflake_sso.query(
-            `WITH latest AS (
+            `WITH prop_zip AS (
+                SELECT PROPERTY_PUBLIC_ID, PROPERTY_ZIP,
+                       ROW_NUMBER() OVER (PARTITION BY PROPERTY_PUBLIC_ID ORDER BY CREATED_AT_UTC DESC) AS rn
+                FROM PRODUCTION.ANALYTICS.DIM_PROPERTIES_PMCS
+             ),
+             latest AS (
                 SELECT MAX(BP_MONTH) AS bp_month
                 FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS
                 WHERE BP_MONTH <= ? AND IS_INTEGRATED_TOTAL = TRUE
@@ -1933,21 +1956,28 @@ export default api({
                   MAX(ROLLOUT_MONTH) AS ROLLOUT_MONTH,
                   SUM(CASE WHEN BP_MONTH >= DATEADD('month', -12, (SELECT bp_month FROM latest))
                             AND BP_MONTH <= (SELECT bp_month FROM latest)
-                       THEN NEW_BILL_CONNECTIONS_PROPERTY ELSE 0 END) AS T12_CONNECTIONS
+                       THEN NEW_BILL_CONNECTIONS_PROPERTY ELSE 0 END) AS T12_CONNECTIONS,
+                  ANY_VALUE(PROPERTY_PUBLIC_ID) AS PROPERTY_PUBLIC_ID
                 FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS
                 WHERE IS_INTEGRATED_TOTAL = TRUE
                   AND ROLLOUT_MONTH IS NOT NULL
                 GROUP BY PMC_NAME, PROPERTY_NAME
              )
-             SELECT PMC_NAME, PROPERTY_NAME, PROPERTY_STATE, PROPERTY_UNIT_COUNT,
-                    RENT_PAID_AMOUNT, BILLS_PAID_COUNT, ROLLOUT_MONTH, T12_CONNECTIONS
-             FROM agg
-             WHERE PROPERTY_UNIT_COUNT >= 10
-               AND PROPERTY_STATE IS NOT NULL AND PROPERTY_STATE != ''
+             SELECT a.PMC_NAME, a.PROPERTY_NAME, a.PROPERTY_STATE, a.PROPERTY_UNIT_COUNT,
+                    a.RENT_PAID_AMOUNT, a.BILLS_PAID_COUNT, a.ROLLOUT_MONTH, a.T12_CONNECTIONS,
+                    PRODUCTION.ANALYTICS.FIPS_TO_CENSUS_DATA(
+                        PRODUCTION.ANALYTICS.ZIP_TO_FIPS(LEFT(p.PROPERTY_ZIP, 5)),
+                        'median_renter_household_income'
+                    ) AS MEDIAN_RENTER_INCOME
+             FROM agg a
+             LEFT JOIN prop_zip p
+               ON p.PROPERTY_PUBLIC_ID = a.PROPERTY_PUBLIC_ID AND p.rn = 1
+             WHERE a.PROPERTY_UNIT_COUNT >= 10
+               AND a.PROPERTY_STATE IS NOT NULL AND a.PROPERTY_STATE != ''
              LIMIT 15000`,
             NetworkPoolSchema,
             [cutoffStr],
-            { label: "Pull network property pool for peer matching" }
+            { label: "Pull network property pool for peer matching (incl. median renter income for RTI tier)" }
           ).then((rows) => {
             // Cache the result for future runs
             _networkPoolCache = { cutoff: cutoffStr, data: rows, fetchedAt: Date.now() };
@@ -1983,7 +2013,81 @@ export default api({
           { label: "Pull DMA region detail for geo slide dropdowns" }
         ).catch(() => [] as { PROPERTY_STATE: string; PROPERTY_REGION: string; PROPERTIES: number; TOTAL_UNITS: number; BILLS_PAID: number }[]);
 
-      [networkPool, regionDetail] = await Promise.all([networkPoolPromise, regionDetailPromise]);
+      // Subject PMC's own property-level median renter income (same ZIP→FIPS→census UDF
+      // chain as the network pool query above) — lets the peer-matching resolver compare
+      // rent-to-income instead of raw rent for this PMC's properties.
+      const SubjectIncomeSchema = z.object({
+        PROPERTY_NAME: z.string(),
+        MEDIAN_RENTER_INCOME: z.number().nullable(),
+      });
+      const subjectIncomePromise = ctx.integrations.snowflake_sso.query(
+          `WITH prop_zip AS (
+              SELECT PROPERTY_PUBLIC_ID, PROPERTY_ZIP,
+                     ROW_NUMBER() OVER (PARTITION BY PROPERTY_PUBLIC_ID ORDER BY CREATED_AT_UTC DESC) AS rn
+              FROM PRODUCTION.ANALYTICS.DIM_PROPERTIES_PMCS
+           )
+           SELECT DISTINCT
+              t.PROPERTY_NAME,
+              PRODUCTION.ANALYTICS.FIPS_TO_CENSUS_DATA(
+                  PRODUCTION.ANALYTICS.ZIP_TO_FIPS(LEFT(p.PROPERTY_ZIP, 5)),
+                  'median_renter_household_income'
+              ) AS MEDIAN_RENTER_INCOME
+           FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS t
+           LEFT JOIN prop_zip p
+             ON p.PROPERTY_PUBLIC_ID = t.PROPERTY_PUBLIC_ID AND p.rn = 1
+           WHERE t.PMC_NAME = ?
+             AND t.IS_IN_NETWORK = TRUE`,
+          SubjectIncomeSchema,
+          [pmc_name],
+          { label: "Fetch subject PMC's property median renter income for RTI peer matching" }
+        ).catch(() => [] as { PROPERTY_NAME: string; MEDIAN_RENTER_INCOME: number | null }[]);
+
+      // Tenure percentile vs. all active PMCs — gates the anniversary-milestone callout to only
+      // the top 50% most-tenured partners, same as Flask's pull_pmc_tenure_percentile. Ranks by
+      // true rollout tenure (any integration status), which is what the milestone slide's
+      // tenure stat is about — a separate concept from months_since_launch's DI-only maturity.
+      const subjectPmcNames = second_pmc ? [pmc_name, second_pmc] : [pmc_name];
+      const subjectPlaceholders = subjectPmcNames.map(() => "?").join(", ");
+      const TenurePercentileSchema = z.object({
+        PERCENTILE_FROM_TOP: z.number().nullable(),
+      });
+      const tenurePercentilePromise = ctx.integrations.snowflake_sso.query(
+          `WITH pmc_tenures AS (
+              SELECT PMC_NAME, MIN(ROLLOUT_MONTH) AS launch_month
+              FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS
+              WHERE ROLLOUT_MONTH IS NOT NULL
+              GROUP BY PMC_NAME
+           ),
+           subject AS (
+              SELECT MIN(ROLLOUT_MONTH) AS launch_month
+              FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS
+              WHERE ROLLOUT_MONTH IS NOT NULL AND PMC_NAME IN (${subjectPlaceholders})
+           ),
+           counts AS (
+              SELECT
+                  (SELECT COUNT(*) FROM pmc_tenures) AS total_count,
+                  (SELECT COUNT(*) FROM pmc_tenures t, subject s
+                   WHERE t.launch_month < s.launch_month) + 1 AS tenure_rank
+           )
+           SELECT CEIL(100.0 * c.tenure_rank / NULLIF(c.total_count, 0)) AS PERCENTILE_FROM_TOP
+           FROM subject s CROSS JOIN counts c
+           WHERE s.launch_month IS NOT NULL`,
+          TenurePercentileSchema,
+          subjectPmcNames,
+          { label: "Fetch PMC tenure percentile for anniversary-milestone gate" }
+        ).catch(() => [] as { PERCENTILE_FROM_TOP: number | null }[]);
+
+      const [networkPoolResult, regionDetailResult, subjectIncomeRows, tenurePercentileRows] = await Promise.all([
+        networkPoolPromise, regionDetailPromise, subjectIncomePromise, tenurePercentilePromise,
+      ]);
+      networkPool = networkPoolResult;
+      regionDetail = regionDetailResult;
+      for (const row of subjectIncomeRows) {
+        if (row.MEDIAN_RENTER_INCOME != null && row.MEDIAN_RENTER_INCOME > 0) {
+          subjectIncomeByProperty.set(row.PROPERTY_NAME, row.MEDIAN_RENTER_INCOME);
+        }
+      }
+      tenurePercentileFromTop = tenurePercentileRows[0]?.PERCENTILE_FROM_TOP ?? null;
     }
 
     // --- Testimonials (user-selected from frontend, or auto-pulled from Zendesk) ---
@@ -2082,13 +2186,14 @@ export default api({
     // --- Transform ---
 
     // Monthly totals
-    const monthMap = new Map<string, { billsPaid: number; units: number; rentPaid: number; newSignups: number; propertyNames: Set<string> }>();
+    const monthMap = new Map<string, { billsPaid: number; units: number; rentPaid: number; newSignups: number; chargedUsers: number; propertyNames: Set<string> }>();
     for (const row of inNetwork) {
-      const existing = monthMap.get(row.BP_MONTH) || { billsPaid: 0, units: 0, rentPaid: 0, newSignups: 0, propertyNames: new Set<string>() };
+      const existing = monthMap.get(row.BP_MONTH) || { billsPaid: 0, units: 0, rentPaid: 0, newSignups: 0, chargedUsers: 0, propertyNames: new Set<string>() };
       existing.billsPaid += row.BILLS_PAID;
       existing.units += row.PROPERTY_UNIT_COUNT;
       existing.rentPaid += row.RENT_PAID;
       existing.newSignups += row.NEW_SIGNUPS ?? 0;
+      existing.chargedUsers += row.CHARGED_USERS ?? 0;
       existing.propertyNames.add(row.PROPERTY_NAME);
       monthMap.set(row.BP_MONTH, existing);
     }
@@ -2102,7 +2207,7 @@ export default api({
     }
 
     const monthlyTotals = Array.from(monthMap.entries())
-      .map(([month, { billsPaid, units, rentPaid, newSignups, propertyNames }]) => {
+      .map(([month, { billsPaid, units, rentPaid, newSignups, chargedUsers, propertyNames }]) => {
         // Established NAR: properties where rollout_month < (month - 2 calendar months).
         // DateOffset(months=2) gives a 3-full-month floor, aligned with Loyalty Rate's
         // months_available >= 3 and the trend legend "(excl. first 3 months)".
@@ -2126,6 +2231,7 @@ export default api({
           units,
           rentPaid,
           newSignups,
+          chargedUsers,
           adoptionRate: units > 0 ? billsPaid / units : 0,
           propertyCount: propertyNames.size,
           establishedNar,
@@ -2253,22 +2359,30 @@ export default api({
           nar,
           t12EngPer100,
           ageBucket: propertyAgeBucket(mLive),
+          medianRenterIncome: r.MEDIAN_RENTER_INCOME,
         };
       })
       .filter((p) => p.monthsLive >= 7 && (p.avgRent === 0 || (p.avgRent >= 700 && p.avgRent <= 2500)));
 
+    // Shared exclusion set for every peer-pool read below — on a combined 2-PMC report, both
+    // named PMCs' own properties must be excluded, or the second PMC's properties silently
+    // count as the first PMC's "peers" (and vice versa). Flask's resolver uses this same
+    // exclusion set for every tier, including its network-wide fallback tier — there's no
+    // separately-scoped fallback query on the Flask side to fall out of sync with.
+    const excludedPmcNames = second_pmc ? [pmc_name, second_pmc] : [pmc_name];
+
     // Apply per-property peer matching
     if (networkPoolProps.length > 0) {
-      const excludedPmcNames = second_pmc ? [pmc_name, second_pmc] : [pmc_name];
       for (const p of propertySnapshot) {
         if (!p.propertyState || p.monthsLive < 7 || p.units < 10) continue;
-        const narResult = resolvePropertyPeerNar(p.propertyState, p.units, p.avgRent, p.monthsLive, excludedPmcNames, networkPoolProps);
+        const subjectIncome = subjectIncomeByProperty.get(p.propertyName);
+        const narResult = resolvePropertyPeerNar(p.propertyState, p.units, p.avgRent, p.monthsLive, excludedPmcNames, networkPoolProps, subjectIncome);
         if (narResult) {
           p.peerNar = narResult.p50;
           p.peerNarCriteria = narResult.criteria;
           p.peerNarCount = narResult.peerCount;
         }
-        const engResult = resolvePropertyPeerEngagement(p.propertyState, p.units, p.avgRent, p.monthsLive, excludedPmcNames, networkPoolProps);
+        const engResult = resolvePropertyPeerEngagement(p.propertyState, p.units, p.avgRent, p.monthsLive, excludedPmcNames, networkPoolProps, subjectIncome);
         if (engResult) {
           p.peerEng = engResult.p50;
           p.peerEngCriteria = engResult.criteria;
@@ -2277,9 +2391,12 @@ export default api({
       }
     }
 
-    // Fallback: properties without peer NAR get the network-wide P50 (Flask does the same)
+    // Fallback: properties without peer NAR get the network-wide P50 (same exclusion set as
+    // the tiered matching above — this is not a distinct code path in Flask, just this tier's
+    // own "network-wide" bucket, so it must exclude both named PMCs the same way every other
+    // tier does)
     const networkNarValues = networkPoolProps
-      .filter((p) => p.pmcName !== pmc_name && p.nar > 0)
+      .filter((p) => !excludedPmcNames.includes(p.pmcName) && p.nar > 0)
       .map((p) => p.nar)
       .sort((a, b) => a - b);
     const networkNarP50 = networkNarValues.length > 0
@@ -3119,7 +3236,10 @@ export default api({
               currentRent: latestMonth?.rentPaid ?? 0,
               currentResidents: latestMonth?.billsPaid ?? 0,
               monthlyHistory: monthlyTotals.map((m) => ({ units: m.units, rentPaid: m.rentPaid })),
-              p50Nar: expNarPerc?.p50,
+              // Canonical value — every slide showing a peer-median NAR must read from this same
+              // one (see the rule at its declaration above), or a PMC can see two different
+              // "peer median" numbers in the same deck (this slide vs. Peer Benchmarks/Case Close).
+              p50Nar: canonicalPeerNarP50 ?? expNarPerc?.p50,
               p75Nar: expNarPerc?.p75,
             });
             pushSlide(r);
@@ -3157,17 +3277,58 @@ export default api({
         }
       }
 
-      const expJs = expSlideJsList.filter(Boolean).join("\n");
+      // ─── Renumber slideIds sequentially by document position ─────────────────
+      // `slideNum` increments on every case in the switch above, even when that case's
+      // renderer self-gates and returns empty html (e.g. by_state with <=2 distinct states,
+      // an empty peer-benchmark/rent-bucket dataset) — pushSlide only checks the earlier
+      // "cohort_overview" case decrements on its own empty path, every other case doesn't, so a
+      // skipped slot leaves every later slide's baked-in id="slide-N"/chartN/initSlideN not
+      // matching its real position once the empty slide is filtered out. Same fix already
+      // applied to the QBR path above (slideIdMap/slidesConcatenated) — reapply it here so
+      // navigation (getElementById('slide-'+n)) and the mandatory last "expansion_case_close"
+      // slide stay reachable regardless of which slides upstream happened to self-gate empty.
+      const expSlideIdMap = new Map<string, string>();
+      const expSlidesRenumbered = expSlideHtmls.map((slideHtml, idx) => {
+        const newId = idx + 1;
+        const m = slideHtml.match(/id="slide-(\d+)"/);
+        if (!m) return slideHtml;
+        const oldId = m[1];
+        expSlideIdMap.set(oldId, String(newId));
+        if (oldId === String(newId)) return slideHtml;
+        return slideHtml
+          .replace(new RegExp(`id="slide-${oldId}"`, "g"), `id="slide-${newId}"`)
+          .replace(new RegExp(`#slide-${oldId}\\b`, "g"), `#slide-${newId}`)
+          .replace(new RegExp(`id="chart${oldId}"`, "g"), `id="chart${newId}"`)
+          .replace(new RegExp(`chart${oldId}(?=['"])`, "g"), `chart${newId}`)
+          .replace(new RegExp(`initSlide${oldId}`, "g"), `initSlide${newId}`)
+          .replace(new RegExp(`slide-${oldId}(?=['"\\.\\s])`, "g"), `slide-${newId}`);
+      });
+
+      let expJs = expSlideJsList.filter(Boolean).join("\n");
+      for (const [oldId, newId] of expSlideIdMap) {
+        if (oldId === newId) continue;
+        expJs = expJs
+          .replace(new RegExp(`initSlide${oldId}\\b`, "g"), `initSlide__TMP${newId}__`)
+          .replace(new RegExp(`chart${oldId}(?=['"])`, "g"), `chart__TMP${newId}__`)
+          .replace(new RegExp(`#slide-${oldId}\\b`, "g"), `#slide-__TMP${newId}__`)
+          .replace(new RegExp(`"slide-${oldId}"`, "g"), `"slide-__TMP${newId}__"`);
+      }
+      expJs = expJs
+        .replace(/initSlide__TMP(\d+)__/g, "initSlide$1")
+        .replace(/chart__TMP(\d+)__/g, "chart$1")
+        .replace(/#slide-__TMP(\d+)__/g, "#slide-$1")
+        .replace(/"slide-__TMP(\d+)__"/g, '"slide-$1"');
+
       const reportMonth = monthOnly(latestCompletedMonth);
       const reportYear = yearOnly(latestCompletedMonth);
       const pdfFilename = displayName.replace(/[^a-zA-Z0-9]/g, "_") + "_expansion.pdf";
 
       const html = buildDeckHtml({
-        slides: expSlideHtmls.join("\n"),
+        slides: expSlidesRenumbered.join("\n"),
         pmc_name: displayName,
         report_month: reportMonth,
         report_year: reportYear,
-        slide_count: expSlideHtmls.length,
+        slide_count: expSlidesRenumbered.length,
         pdf_filename: pdfFilename,
         extra_js: expJs,
       });
@@ -3514,12 +3675,24 @@ export default api({
       trueRepeatRate: finalTrueRepeatRate,
       newPropertiesCount: newPropsThisQ,
       monthlyTotals,
+      // Anniversary-milestone check — fires for 1/2/3/5yr milestones within a 3-month window
+      // (the milestone month itself, or up to 2 months after), anchored to the true partner-
+      // since date (not raw rollout, which can inherit a prior owner's history), then
+      // suppressed unless this PMC is in the top 50% most-tenured partners network-wide —
+      // matches Flask's app.py:1225-1244 exactly.
       milestoneYears: (() => {
-        if (!earliestRollout) return null;
-        const start = new Date(earliestRollout + "T00:00:00Z");
-        const now = new Date(latestCompletedMonth + "T00:00:00Z");
-        const years = Math.floor((now.getTime() - start.getTime()) / (365.25 * 24 * 60 * 60 * 1000));
-        return years >= 3 && years % 1 === 0 ? years : null;
+        if (!partnerSince || !latestCompletedMonth) return null;
+        const start = new Date(partnerSince + "T00:00:00Z");
+        const rpt = new Date(latestCompletedMonth + "T00:00:00Z");
+        for (const yrs of [1, 2, 3, 5]) {
+          const msDate = new Date(start.getFullYear() + yrs, start.getMonth(), 1);
+          const deltaMo = (rpt.getFullYear() * 12 + rpt.getMonth()) - (msDate.getFullYear() * 12 + msDate.getMonth());
+          if (deltaMo >= 0 && deltaMo <= 2) {
+            if (tenurePercentileFromTop != null && tenurePercentileFromTop > 50) return null;
+            return yrs;
+          }
+        }
+        return null;
       })(),
       lifetimeDqShielded,
     });
@@ -3620,6 +3793,55 @@ export default api({
       extra_js: extraJs,
     });
 
-    return { html, empty: false };
+    // --- Speaker notes (downloaded client-side as a data URI, same pattern as the deck) ---
+    let notesHtml: string | undefined;
+    try {
+      // Same target-NAR cascade renderPortfolioProjection uses above (next real peer tier up
+      // from current NAR: P50 -> P75 -> P90 -> P99+2pp), so the notes explain the same number
+      // the projection slide actually shows.
+      const p25 = narPerc?.p25, p50 = canonicalPeerNarP50 ?? narPerc?.p50, p75 = narPerc?.p75, p90 = narPerc?.p90, p99 = narPerc?.p99;
+      const currentNarForTarget = latestMonth?.adoptionRate ?? 0;
+      let targetNarForNotes: number;
+      if (p99 != null && currentNarForTarget >= (p90 ?? Infinity)) targetNarForNotes = p99 + 0.02;
+      else if (p90 != null && currentNarForTarget >= (p75 ?? Infinity)) targetNarForNotes = p90;
+      else if (p75 != null && currentNarForTarget >= (p50 ?? Infinity)) targetNarForNotes = p75;
+      else if (p50 != null) targetNarForNotes = p50;
+      else targetNarForNotes = 0.20;
+      targetNarForNotes = Math.round(targetNarForNotes * 100) / 100;
+
+      const notesKpis: SpeakerNotesKpis = {
+        pmcName: displayName,
+        reportingMonth: latestCompletedMonth,
+        monthsSinceLaunch,
+        currentNar: currentNarForTarget,
+        currentBillsPaid: latestMonth?.billsPaid ?? 0,
+        currentNewSignups: latestMonth?.newSignups ?? 0,
+        targetNar: targetNarForNotes,
+        totalUnits: totalUnitsAll,
+        currentResidents: latestMonth?.billsPaid ?? 0,
+        hasNiro: false,
+      };
+      const notesBenchmark: SpeakerNotesBenchmark = {
+        benchmarkNar: canonicalPeerNarP50 ?? segmentNarAvg ?? 0.085,
+        peerCount: undefined,
+        p50Nar: p50 ?? null,
+        p75Nar: p75 ?? null,
+        p90Nar: p90 ?? null,
+        p99Nar: p99 ?? null,
+      };
+      const notesMonthly: SpeakerNotesMonthlyRow[] = monthlyTotals.map((m) => ({
+        month: m.month, billsPaid: m.billsPaid, units: m.units, rentPaid: m.rentPaid,
+        newSignups: m.newSignups, propertyCount: m.propertyCount,
+      }));
+      // Same Flask slide-ID sequence the deck itself was just assembled from (see the
+      // `slidesOrdered` array above) — notes are keyed by the real Flask slide ID, not by
+      // this deck's own renumbered document position.
+      const qbrSlideIdSequence = [1, 13, 56, 54, 6, 21, 14, 12, 39, 15, 26, 50, 44, 58, 34, 57, 47];
+      notesHtml = buildSpeakerNotesHtml(qbrSlideIdSequence, notesKpis, notesMonthly, notesBenchmark);
+    } catch (e) {
+      console.warn(`[PMC Report] speaker notes generation failed for ${pmc_name}: ${e instanceof Error ? e.message : String(e)}`);
+    }
+
+    return { html, empty: false, notes_html: notesHtml };
   },
 });

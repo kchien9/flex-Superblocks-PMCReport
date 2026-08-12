@@ -268,15 +268,25 @@ export default api({
     const segment = (segmentRaw || "SMB").trim();
     // Auto-derive footprint from states when user hasn't manually picked one
     // (Flask app.py:2488-2493 — same _footprint_bucket logic)
+    // UI sends "single_market"/"multi_state" (NewLogoTab.tsx); the footprint-bucket vocabulary
+    // used everywhere else in this file (footprintBucket/ADJACENT_FOOTPRINTS) is just
+    // "single"/"regional"/"multi"/"national" — without this normalization, "single_market"/
+    // "multi_state" never equal any real bucket name and silently fall through to "no
+    // footprint preference" (Tier 5's exact/adjacent footprint narrowing never fires).
+    const FOOTPRINT_ALIASES: Record<string, string> = { single_market: "single", multi_state: "multi" };
     let footprint = (footprintRaw || "").toLowerCase();
+    footprint = FOOTPRINT_ALIASES[footprint] ?? footprint;
     if (!footprint && states.length > 0) {
       const nStates = states.length;
       footprint = nStates <= 1 ? "single" : nStates <= 4 ? "regional" : nStates <= 9 ? "multi" : "national";
     }
     const portfolioType = (portfolioTypeRaw || "Multi Family");
     const isSfr = portfolioType.toLowerCase().includes("single");
-    const mixed = (assetSubtypes || []).some(s => s.includes("Mixed"));
-    const affordable = !mixed && (assetSubtypes || []).some(s => s.includes("Affordable") || s.includes("HUD"));
+    // Case-insensitive: NewLogoTab.tsx sends lowercase asset_subtypes ("affordable", "mixed"),
+    // not Flask's capitalized vocabulary ("Affordable", "Mixed") — a case-sensitive .includes()
+    // here means picking "Affordable/HUD" or "Mixed" in the UI never actually set these flags.
+    const mixed = (assetSubtypes || []).some(s => s.toLowerCase().includes("mixed"));
+    const affordable = !mixed && (assetSubtypes || []).some(s => { const sl = s.toLowerCase(); return sl.includes("affordable") || sl.includes("hud"); });
     const avgRent = avgRentInput || 0;
 
     const cutoff = bpSafeCutoff();
@@ -867,6 +877,7 @@ export default api({
       established_only: establishedBase.length >= MIN_POOL_SIZE,
       pms,
       affordable,
+      is_sfr: isSfr,
       prospect_units: units,
       prospect_segment: segment.toUpperCase().replace("_", " "),
       prospect_region: targetRegion,
@@ -1539,12 +1550,42 @@ export default api({
 
     // ─── Step 6: Email draft ─────────────────────────────────────────────────
     const pnar = benchmarks.median_nar;
-    const prent = benchmarks.median_monthly_rent;
     const ppool = benchmarks.pool_size;
-    const moTotal = units * pnar * (prent / Math.max(units * pnar, 1));
+    // median_avg_rent is the peer group's per-unit average rent — median_monthly_rent is each
+    // peer's portfolio-wide TOTAL rent, not a per-unit figure. The old formula's
+    // `/ Math.max(units * pnar, 1)` division was meant to fix that scale mismatch but instead
+    // cancels the whole `units` term back out algebraically (units*pnar*(prent/(units*pnar)) =
+    // prent), so every prospect was quoted the identical dollar figure regardless of portfolio
+    // size. Flask's fixed version (app.py) drops the division and uses the real per-unit rent.
+    const prent = benchmarks.median_avg_rent;
+    const moTotal = units * pnar * prent;
     const moStr = moTotal >= 1e6 ? `$${(moTotal / 1e6).toFixed(1)}M` : `$${(moTotal / 1e3).toFixed(0)}K`;
     const peerLine = `Comparable PMCs average ${(pnar * 100).toFixed(1)}% adoption — at that rate on ${units.toLocaleString()} units, that's ${moStr}/mo in guaranteed rent.`;
     const emailDraft = `Hi [First Name],\n\nAttaching a data-driven overview of what Flex looks like at ${prospect_name}'s scale — built from ${ppool} comparable PMCs on the platform today.\n\n• ${peerLine}\n• Median PMC has been on Flex 65 months — this isn't new or unproven.\n• Retention: 94% of residents who used Flex one month paid through it again the next.\n\nHappy to walk through it — takes 20 minutes. Let me know.\n\n[Your name]`;
+
+    // ─── Renumber slideIds sequentially by document position ─────────────────
+    // `slideId` advances via `slideId++` on every slide attempt, even when that slide returns
+    // empty html and never gets pushed (e.g. the affordable/high_rent branch, or a metro/ramp
+    // slide with no qualifying data) — so a later slide's baked-in id="slide-N"/chartN/
+    // initSlideN can end up not matching its real position once earlier empty slides are
+    // skipped. The client's slide navigation (wrap-slides-html.ts) looks up slides by
+    // `id="slide-" + position`, so this must match exactly — same fix already applied on the
+    // QBR path in get-pmc-monthly-report.ts.
+    for (let i = 0; i < slides.length; i++) {
+      const newId = i + 1;
+      const m = slides[i].html.match(/id="slide-(\d+)"/);
+      if (!m) continue;
+      const oldId = m[1];
+      if (oldId === String(newId)) continue;
+      const renumber = (s: string) => s
+        .replace(new RegExp(`id="slide-${oldId}"`, "g"), `id="slide-${newId}"`)
+        .replace(new RegExp(`#slide-${oldId}\\b`, "g"), `#slide-${newId}`)
+        .replace(new RegExp(`id="chart${oldId}"`, "g"), `id="chart${newId}"`)
+        .replace(new RegExp(`chart${oldId}(?=['"])`, "g"), `chart${newId}`)
+        .replace(new RegExp(`initSlide${oldId}`, "g"), `initSlide${newId}`)
+        .replace(new RegExp(`slide-${oldId}(?=['"\\.\\s])`, "g"), `slide-${newId}`);
+      slides[i] = { ...slides[i], html: renumber(slides[i].html), js: renumber(slides[i].js) };
+    }
 
     // ─── Compute default-hidden slides (market maps ranked 5+) ──────────────
     const defaultHiddenSlides: number[] = [];

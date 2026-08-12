@@ -114,6 +114,9 @@ export interface Benchmarks {
   established_only: boolean;
   pms: string;
   affordable: boolean;
+  // Single Family portfolio flag — without this, every asset-type label falls back to
+  // "Multifamily"/"conventional" regardless of the prospect's real Portfolio Type.
+  is_sfr?: boolean;
   prospect_units: number;
   prospect_segment: string;
   prospect_region: string;
@@ -224,7 +227,7 @@ export function renderProspectCover(
   const name = _e(prospect.name || "");
   const units = prospect.units || 0;
   const affordable = prospect.affordable;
-  const assetLbl = affordable ? "Affordable" : "Multifamily";
+  const assetLbl = affordable ? "Affordable" : (benchmarks.is_sfr ? "Single Family" : "Multifamily");
 
   const medianNar = benchmarks.median_nar || 0;
   const avgNar = benchmarks.avg_nar || 0;
@@ -370,7 +373,7 @@ export function renderPeerPerformance(
   const avgRentVal = benchmarks.avg_monthly_rent || 0;
   const affordable = benchmarks.affordable || false;
   const prospectUnits = benchmarks.prospect_units || 0;
-  const assetLbl = affordable ? "Affordable" : "Multifamily";
+  const assetLbl = affordable ? "Affordable" : (benchmarks.is_sfr ? "Single Family" : "Multifamily");
   const isOverlap = benchmarks.match_mode === "overlap";
 
   // Compute signups/months from pool
@@ -559,12 +562,12 @@ export function renderPeerRepeatUsage(
   benchmarks: Benchmarks,
   cohortDf: CohortRow[],
 ): SlideResult {
-  if (!metrics || metrics.median_retention == null) return { html: "", js: "" };
+  if (!metrics || !metrics.median_retention) return { html: "", js: "" };
 
   const retentionPct = Math.min(metrics.median_retention * 100, 99.0);
   const propCount = metrics.property_count || 0;
   const affordable = benchmarks.affordable || false;
-  const assetLbl = affordable ? "affordable" : "conventional";
+  const assetLbl = affordable ? "affordable" : (benchmarks.is_sfr ? "single family" : "conventional");
 
   // Cohort analysis
   const hasRealCohort = cohortDf && cohortDf.length > 0;
@@ -704,7 +707,7 @@ export function renderRampBenchmark(
   const p75Nar = benchmarks.p75_nar || 0;
   const avgRent = prospect.avg_rent || benchmarks.median_avg_rent || 0;
   const affordable = benchmarks.affordable || false;
-  const assetLbl = affordable ? "affordable" : "conventional";
+  const assetLbl = affordable ? "affordable" : (benchmarks.is_sfr ? "single family" : "conventional");
   const units = prospect.units || 0;
   const name = _e(prospect.name || "");
 

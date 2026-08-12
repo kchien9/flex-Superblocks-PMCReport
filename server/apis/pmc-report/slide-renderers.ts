@@ -68,6 +68,10 @@ export interface MonthlyTotal {
   units: number;
   rentPaid: number;
   newSignups: number;
+  /** Distinct from billsPaid — feeds the MoM-retention fallback (see renderQbrClose), which
+   * prefers this over billsPaid when available, matching Flask's monthly.get("charged_users",
+   * monthly.get("bills_paid", 0)). */
+  chargedUsers?: number;
   adoptionRate: number;
   propertyCount: number;
 }
@@ -875,6 +879,7 @@ interface PropertyRow {
   propertyState?: string;
   monthsLive?: number;
   rentPaid?: number;
+  avgRent?: number;
   trendFlag?: TrendFlag;
   t12EngPer100?: number;
   peerNar?: number | null;
@@ -883,6 +888,54 @@ interface PropertyRow {
   peerEng?: number | null;
   peerEngCriteria?: string;
   peerEngCount?: number;
+}
+
+/**
+ * Live 7+ months, (10+ units OR 0% adoption), $700–$2,500 avg rent (bypassed when the
+ * property has too few payers — under 3 bills paid — to trust the estimate). Mirrors Flask's
+ * `_build_established_pool` (generator/data.py:4306-4416) — the shared population both
+ * "Properties Worth Celebrating" and "These Properties Need Our Attention" rank within, so the
+ * two slides are always drawn from the same baseline and can never silently disagree on what
+ * "average" means for this portfolio. Without this shared pool, a genuine 0%-adoption laggard
+ * (or a small property whose one-resident rent sample lands just outside the rent band) can be
+ * silently invisible on both slides — confirmed real cases in Flask's own commit history.
+ *
+ * portfolioAvgNar is unit-weighted (sum(billsPaid) / sum(units) across the established pool),
+ * not a simple mean of each property's own adoptionRate — a few small, extreme-rate properties
+ * shouldn't move the average as much as portfolio-wide unit share does.
+ */
+function buildEstablishedPool(propertySnapshot: PropertyRow[]): {
+  established: PropertyRow[];
+  portfolioAvgNar: number;
+  portfolioAvgEng: number;
+} {
+  const established = propertySnapshot.filter((p) => {
+    const monthsLive = p.monthsLive ?? 0;
+    if (monthsLive < 7) return false;
+    const unitsOk = p.adoptionRate === 0 || p.units >= 10;
+    if (!unitsOk) return false;
+    const avgRent = p.avgRent ?? 0;
+    const rentOk = p.billsPaid < 3 || (avgRent >= 700 && avgRent <= 2500);
+    return rentOk;
+  });
+
+  if (established.length === 0) return { established: [], portfolioAvgNar: 0, portfolioAvgEng: 0 };
+
+  const estBills = established.reduce((s, p) => s + p.billsPaid, 0);
+  const estUnits = established.reduce((s, p) => s + p.units, 0);
+  const portfolioAvgNar = estUnits > 0 ? estBills / estUnits : 0;
+
+  const engValues = established
+    .map((p) => p.t12EngPer100 ?? (p.newSignups / Math.max(p.units, 1) * 100))
+    .sort((a, b) => a - b);
+  const mid = Math.floor(engValues.length / 2);
+  const portfolioAvgEng = engValues.length === 0
+    ? 0
+    : engValues.length % 2 !== 0
+      ? engValues[mid]
+      : (engValues[mid - 1] + engValues[mid]) / 2;
+
+  return { established, portfolioAvgNar, portfolioAvgEng };
 }
 
 export function renderPropertiesWorthCelebrating(input: {
@@ -894,17 +947,18 @@ export function renderPropertiesWorthCelebrating(input: {
 }): { html: string; js: string } {
   const { slideId, propertySnapshot, targetNar, peerMedianNar, peerMedianEngagement } = input;
 
-  // Portfolio average NAR
-  const portfolioAvgNar = propertySnapshot.length > 0
-    ? propertySnapshot.reduce((s, p) => s + p.adoptionRate, 0) / propertySnapshot.length
-    : 0;
+  // Shared established-property pool (live 7+mo, meaningful size/rent sample) — same baseline
+  // "These Properties Need Our Attention" ranks within, so the two slides can never silently
+  // disagree on what "average" means for this portfolio. Also fixes real cases where a genuine
+  // 0%-adoption laggard was invisible on both slides purely for being under the 10-unit floor.
+  const { established, portfolioAvgNar, portfolioAvgEng } = buildEstablishedPool(propertySnapshot);
 
   // Top performers: above portfolio average by a meaningful margin
   // Flask: impact_score = property_unit_count * outperformance (units × how much above target)
   // "the biggest, most replicable wins surface first — not just whichever single small property
   //  happens to have the highest raw NAR"
-  const celebrationDf = propertySnapshot
-    .filter((p) => p.adoptionRate > portfolioAvgNar && p.units >= 10)
+  const celebrationDf = established
+    .filter((p) => p.adoptionRate > portfolioAvgNar)
     .sort((a, b) => {
       const aImpact = a.units * (a.adoptionRate - portfolioAvgNar);
       const bImpact = b.units * (b.adoptionRate - portfolioAvgNar);
@@ -913,11 +967,6 @@ export function renderPropertiesWorthCelebrating(input: {
     .slice(0, 12);
 
   if (celebrationDf.length === 0) return { html: "", js: "" };
-
-  // Engagement metric: new signups per 100 units
-  const portfolioAvgEng = propertySnapshot.length > 0
-    ? propertySnapshot.reduce((s, p) => s + (p.newSignups / Math.max(p.units, 1) * 100), 0) / propertySnapshot.length
-    : 0;
 
   const hasTrend = celebrationDf.some((p) => p.trendFlag);
 
@@ -1021,15 +1070,16 @@ export function renderAdoptionOpportunities(input: {
 }): { html: string; js: string } {
   const { slideId, propertySnapshot, targetNar, peerMedianNar, peerMedianEngagement } = input;
 
-  // Portfolio average NAR
-  const portfolioAvgNar = propertySnapshot.length > 0
-    ? propertySnapshot.reduce((s, p) => s + p.adoptionRate, 0) / propertySnapshot.length
-    : 0;
+  // Shared established-property pool (live 7+mo, meaningful size/rent sample) — same baseline
+  // "Properties Worth Celebrating" ranks within, so the two slides can never silently disagree
+  // on what "average" means for this portfolio. Also fixes real cases where a genuine
+  // 0%-adoption laggard was invisible on both slides purely for being under the 10-unit floor,
+  // or a property whose rent estimate (from a single payer) landed just outside the rent band.
+  const { established, portfolioAvgNar, portfolioAvgEng } = buildEstablishedPool(propertySnapshot);
 
   // Bottom performers: largest opportunity by (gap × units)
-  // Flask: includes all properties below portfolio avg NAR with age >= 7 months
-  const laggards = propertySnapshot
-    .filter((p) => (p.monthsLive ?? 0) >= 7 && p.adoptionRate < portfolioAvgNar)
+  const laggards = established
+    .filter((p) => p.adoptionRate < portfolioAvgNar)
     .sort((a, b) => {
       const gapA = (portfolioAvgNar - a.adoptionRate) * a.units;
       const gapB = (portfolioAvgNar - b.adoptionRate) * b.units;
@@ -1038,11 +1088,6 @@ export function renderAdoptionOpportunities(input: {
     .slice(0, 12);
 
   if (laggards.length === 0) return { html: "", js: "" };
-
-  // Engagement metric: new signups per 100 units
-  const portfolioAvgEng = propertySnapshot.length > 0
-    ? propertySnapshot.reduce((s, p) => s + (p.newSignups / Math.max(p.units, 1) * 100), 0) / propertySnapshot.length
-    : 0;
 
   const totalPotential = laggards.reduce((s, p) => s + Math.round((portfolioAvgNar - p.adoptionRate) * p.units), 0);
 
@@ -1227,57 +1272,61 @@ export function renderDelinquency(input: {
   </div>`;
 
   const js = `
-(function() {
-  var fmtK = function(v) { return v >= 1e6 ? '$'+(v/1e6).toFixed(1)+'M' : v >= 1000 ? '$'+(v/1000).toFixed(1)+'K' : '$'+v; };
-  new Chart(document.getElementById('dqchart${slideId}'), {
-    type: 'bar',
-    data: {
-      labels: ${monthsJs},
-      datasets: [{
-        type: 'bar',
-        data: ${valsJs},
-        backgroundColor: 'rgba(106,61,184,0.25)',
-        borderColor: '#6A3DB8',
-        borderWidth: 1.5,
-        borderRadius: 6,
-        yAxisID: 'y',
-        datalabels: {
-          anchor: 'end', align: 'top',
-          formatter: function(v) { return v > 0 ? fmtK(v) : ''; },
-          color: '#6A3DB8', font: { size: 10, weight: '600' }
+window['initSlide${slideId}'] = (function() {
+  let done = false;
+  return function() {
+    if (done) return; done = true;
+    var fmtK = function(v) { return v >= 1e6 ? '$'+(v/1e6).toFixed(1)+'M' : v >= 1000 ? '$'+(v/1000).toFixed(1)+'K' : '$'+v; };
+    new Chart(document.getElementById('dqchart${slideId}'), {
+      type: 'bar',
+      data: {
+        labels: ${monthsJs},
+        datasets: [{
+          type: 'bar',
+          data: ${valsJs},
+          backgroundColor: 'rgba(106,61,184,0.25)',
+          borderColor: '#6A3DB8',
+          borderWidth: 1.5,
+          borderRadius: 6,
+          yAxisID: 'y',
+          datalabels: {
+            anchor: 'end', align: 'top',
+            formatter: function(v) { return v > 0 ? fmtK(v) : ''; },
+            color: '#6A3DB8', font: { size: 10, weight: '600' }
+          }
+        }, {
+          type: 'line',
+          label: 'Payments Shielded',
+          data: ${residentsJs},
+          borderColor: 'rgba(26,158,106,0.75)',
+          backgroundColor: 'transparent',
+          borderWidth: 2,
+          borderDash: [5, 3],
+          pointRadius: 3,
+          pointHoverRadius: 4,
+          pointBackgroundColor: 'rgba(26,158,106,0.8)',
+          tension: 0.35,
+          yAxisID: 'y2',
+          order: 0,
+          datalabels: {
+            anchor: 'center', align: 'bottom',
+            formatter: function(v) { return v > 0 ? v : ''; },
+            color: 'rgba(26,158,106,0.85)', font: { size: 9, weight: '600' }
+          }
+        }]
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        layout: { padding: { top: 32 } },
+        plugins: { legend: { display: false }, datalabels: {} },
+        scales: {
+          x: { stacked: true, grid: { display: false }, border: { display: false }, ticks: { color: '#9ca3af', font: { size: 10 } } },
+          y: { stacked: true, display: false, beginAtZero: true },
+          y2: { display: false, beginAtZero: true, position: 'right', max: ${y2Max} }
         }
-      }, {
-        type: 'line',
-        label: 'Payments Shielded',
-        data: ${residentsJs},
-        borderColor: 'rgba(26,158,106,0.75)',
-        backgroundColor: 'transparent',
-        borderWidth: 2,
-        borderDash: [5, 3],
-        pointRadius: 3,
-        pointHoverRadius: 4,
-        pointBackgroundColor: 'rgba(26,158,106,0.8)',
-        tension: 0.35,
-        yAxisID: 'y2',
-        order: 0,
-        datalabels: {
-          anchor: 'center', align: 'bottom',
-          formatter: function(v) { return v > 0 ? v : ''; },
-          color: 'rgba(26,158,106,0.85)', font: { size: 9, weight: '600' }
-        }
-      }]
-    },
-    options: {
-      responsive: true, maintainAspectRatio: false,
-      layout: { padding: { top: 32 } },
-      plugins: { legend: { display: false }, datalabels: {} },
-      scales: {
-        x: { stacked: true, grid: { display: false }, border: { display: false }, ticks: { color: '#9ca3af', font: { size: 10 } } },
-        y: { stacked: true, display: false, beginAtZero: true },
-        y2: { display: false, beginAtZero: true, position: 'right', max: ${y2Max} }
       }
-    }
-  });
+    });
+  };
 })();`;
 
   return { html, js };
@@ -1569,11 +1618,11 @@ export function renderAdoptionTrend(input: {
         const noteId = `peerOutlierNote${slideId}`;
 
         if (ratio >= 1.5) {
-          peerOutlierNote = `<div id="${noteId}" style="font-size:13px;color:#d4af37;font-weight:700;">\u2605 ${ratio.toFixed(1)}\u00d7 above comparable peer median (${peerLatest.toFixed(1)}%)${aboveNote}</div>`;
-        } else if (gapPpAbove > 0.05) {
-          peerOutlierNote = `<div id="${noteId}" style="font-size:13px;color:#d4af37;font-weight:700;">\u2605 +${gapPpAbove.toFixed(1)}pp above comparable peer median (${peerLatest.toFixed(1)}%)${aboveNote}</div>`;
+          peerOutlierNote = `<div id="${noteId}" style="font-size:13px;color:#15803d;font-weight:700;">${ratio.toFixed(1)}\u00d7 above comparable peer median (${peerLatest.toFixed(1)}%)${aboveNote}</div>`;
+        } else if (gapPpAbove > 0.5) {
+          peerOutlierNote = `<div id="${noteId}" style="font-size:13px;color:#15803d;font-weight:700;">+${gapPpAbove.toFixed(1)}pp above comparable peer median (${peerLatest.toFixed(1)}%)${aboveNote}</div>`;
         } else if (gapPpAbove >= -0.5) {
-          peerOutlierNote = `<div id="${noteId}" style="font-size:13px;color:#1a9e6a;">At comparable peer median (${peerLatest.toFixed(1)}%)</div>`;
+          peerOutlierNote = `<div id="${noteId}" style="font-size:13px;color:#6b7280;">At comparable peer median (${peerLatest.toFixed(1)}%)</div>`;
         } else {
           const gapPp = peerLatest - pmcCompare;
           peerOutlierNote = `<div id="${noteId}" style="font-size:13px;color:#dc2626;font-weight:700;">${gapPp.toFixed(1)}pp below comparable peer median (${peerLatest.toFixed(1)}%)</div>`;
@@ -2071,48 +2120,52 @@ export function renderHighRentAdoption(input: RentBucketInput): { html: string; 
   </div>`;
 
   const js = `
-(function() {
-  var fmtRent = function(v) { if (!v) return '$0'; return v < 1e6 ? '$' + Math.round(v / 1e3) + 'K' : '$' + (v / 1e6).toFixed(1) + 'M'; };
-  window['hrChart${slideId}'] = new Chart(document.getElementById('hrchart${slideId}'), {
-    type: 'bar',
-    data: {
-      labels: ${labelsJs},
-      datasets: [
-        {
-          label: '% of Flex users',
-          data: ${valsJs},
-          backgroundColor: ${JSON.stringify(purpleColors)},
-          borderColor: '#6A3DB8', borderWidth: 1.5, borderRadius: 4,
-          yAxisID: 'y',
-          datalabels: { anchor: 'end', align: 'end', formatter: function(v) { return v + '% of users'; }, color: '#2C194D',
-                        font: { size: 12, weight: '700' }, backgroundColor: 'rgba(255,255,255,0.85)',
-                        borderRadius: 4, padding: { top: 2, bottom: 2, left: 5, right: 5 } }
-        },
-        {
-          label: 'Rent Paid / mo',
-          data: ${rentJs},
-          backgroundColor: 'rgba(26,158,106,0.20)',
-          borderColor: '#1a9e6a', borderWidth: 1.5, borderRadius: 4,
-          yAxisID: 'y2',
-          datalabels: { anchor: 'end', align: 'end', formatter: function(v) { return fmtRent(v); }, color: '#1a9e6a', font: { size: 11, weight: '600' } }
+window['initSlide${slideId}'] = (function() {
+  let done = false;
+  return function() {
+    if (done) return; done = true;
+    var fmtRent = function(v) { if (!v) return '$0'; return v < 1e6 ? '$' + Math.round(v / 1e3) + 'K' : '$' + (v / 1e6).toFixed(1) + 'M'; };
+    window['hrChart${slideId}'] = new Chart(document.getElementById('hrchart${slideId}'), {
+      type: 'bar',
+      data: {
+        labels: ${labelsJs},
+        datasets: [
+          {
+            label: '% of Flex users',
+            data: ${valsJs},
+            backgroundColor: ${JSON.stringify(purpleColors)},
+            borderColor: '#6A3DB8', borderWidth: 1.5, borderRadius: 4,
+            yAxisID: 'y',
+            datalabels: { anchor: 'end', align: 'end', formatter: function(v) { return v + '% of users'; }, color: '#2C194D',
+                          font: { size: 12, weight: '700' }, backgroundColor: 'rgba(255,255,255,0.85)',
+                          borderRadius: 4, padding: { top: 2, bottom: 2, left: 5, right: 5 } }
+          },
+          {
+            label: 'Rent Paid / mo',
+            data: ${rentJs},
+            backgroundColor: 'rgba(26,158,106,0.20)',
+            borderColor: '#1a9e6a', borderWidth: 1.5, borderRadius: 4,
+            yAxisID: 'y2',
+            datalabels: { anchor: 'end', align: 'end', formatter: function(v) { return fmtRent(v); }, color: '#1a9e6a', font: { size: 11, weight: '600' } }
+          }
+        ]
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        layout: { padding: { top: 28, right: 8, bottom: 20 } },
+        plugins: { legend: { display: false } },
+        scales: {
+          x: { grid: { display: false }, border: { display: false }, ticks: { color: '#524e5b', font: { size: 12, weight: '600' } } },
+          y: { min: 0, max: ${chartMax}, position: 'left', grid: { color: '#f3f4f6' }, border: { display: false },
+               ticks: { color: '#9ca3af', font: { size: 10 }, callback: function(v) { return v + '%'; } }, title: { display: true, text: '% of Flex users', color: '#9ca3af', font: { size: 9 } } },
+          y2: { min: 0, max: ${rentChartMax}, position: 'right', grid: { display: false }, border: { display: false },
+                ticks: { color: '#1a9e6a', font: { size: 10 }, callback: function(v) { return fmtRent(v); } } }
         }
-      ]
-    },
-    options: {
-      responsive: true, maintainAspectRatio: false,
-      layout: { padding: { top: 28, right: 8, bottom: 20 } },
-      plugins: { legend: { display: false } },
-      scales: {
-        x: { grid: { display: false }, border: { display: false }, ticks: { color: '#524e5b', font: { size: 12, weight: '600' } } },
-        y: { min: 0, max: ${chartMax}, position: 'left', grid: { color: '#f3f4f6' }, border: { display: false },
-             ticks: { color: '#9ca3af', font: { size: 10 }, callback: function(v) { return v + '%'; } }, title: { display: true, text: '% of Flex users', color: '#9ca3af', font: { size: 9 } } },
-        y2: { min: 0, max: ${rentChartMax}, position: 'right', grid: { display: false }, border: { display: false },
-              ticks: { color: '#1a9e6a', font: { size: 10 }, callback: function(v) { return fmtRent(v); } } }
       }
-    }
-  });
-  window['hrState${slideId}'] = { period: 'last', data: ${hrDataJs} };
-  requestAnimationFrame(function() { window['hrChart${slideId}'].resize(); });
+    });
+    window['hrState${slideId}'] = { period: 'last', data: ${hrDataJs} };
+    requestAnimationFrame(function() { window['hrChart${slideId}'].resize(); });
+  };
 })();
 
 // ── Rent-bucket period toggle (client-side re-bucketing + Y-axis rescale) ──
@@ -2778,7 +2831,7 @@ export function renderQbrClose(input: QbrCloseInput): SlideResult {
     const prev = monthlyTotals[monthlyTotals.length - 2];
     const cur = monthlyTotals[monthlyTotals.length - 1];
     const currentNewSignups = cur.newSignups;
-    const prevCharged = prev.billsPaid;
+    const prevCharged = prev.chargedUsers ?? prev.billsPaid;
     if (prevCharged > 0) {
       const ret = (currentResidents - currentNewSignups) / prevCharged;
       momRetStr = `${Math.round(Math.max(0, Math.min(ret, 1)) * 100)}%`;

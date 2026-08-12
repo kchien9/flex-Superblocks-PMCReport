@@ -26,24 +26,30 @@ interface TestimonialsEditorProps {
   testimonials: Testimonial[];
   onChange: (testimonials: Testimonial[]) => void;
   pmcName: string;
+  /** Second PMC on a combined/ownership-group report — without this, only pmcName's residents'
+   * testimonials get fetched, silently, on a combined report. */
+  secondPmcName?: string;
   fetchLabel?: string;
   autoFetch?: boolean;
 }
 
-export function TestimonialsEditor({ testimonials, onChange, pmcName, fetchLabel, autoFetch = true }: TestimonialsEditorProps) {
+export function TestimonialsEditor({ testimonials, onChange, pmcName, secondPmcName, fetchLabel, autoFetch = true }: TestimonialsEditorProps) {
   const [candidates, setCandidates] = useState<ZendeskCandidate[]>([]);
   const [showCandidates, setShowCandidates] = useState(false);
   const { run: fetchTestimonials, loading: fetching } = useApi("GetPMCTestimonials");
   const lastAutoFetchedRef = useRef<string>("");
 
-  // Auto-fetch testimonials when pmcName changes (deduped)
+  // Auto-fetch testimonials when pmcName (or its combined-report partner) changes (deduped)
   useEffect(() => {
-    if (!autoFetch || !pmcName || pmcName === lastAutoFetchedRef.current) return;
-    lastAutoFetchedRef.current = pmcName;
+    const fetchKey = pmcName + "|" + (secondPmcName ?? "");
+    if (!autoFetch || !pmcName || fetchKey === lastAutoFetchedRef.current) return;
+    lastAutoFetchedRef.current = fetchKey;
     let cancelled = false;
     (async () => {
       try {
-        const result = await fetchTestimonials({ pmc_name: pmcName });
+        const result = await fetchTestimonials(
+          secondPmcName ? { pmc_name: pmcName, pmc_name_2: secondPmcName } : { pmc_name: pmcName }
+        );
         if (cancelled) return;
         if (result && result.testimonials.length > 0) {
           setCandidates(result.testimonials.map((t) => ({ ...t, selected: true })));
@@ -54,7 +60,7 @@ export function TestimonialsEditor({ testimonials, onChange, pmcName, fetchLabel
       }
     })();
     return () => { cancelled = true; };
-  }, [pmcName, autoFetch, fetchTestimonials]);
+  }, [pmcName, secondPmcName, autoFetch, fetchTestimonials]);
 
   const addEntry = useCallback(() => {
     onChange([...testimonials, { id: crypto.randomUUID(), name: "", propertyName: "", role: "Resident", quote: "" }]);
@@ -74,7 +80,9 @@ export function TestimonialsEditor({ testimonials, onChange, pmcName, fetchLabel
       return;
     }
     try {
-      const result = await fetchTestimonials({ pmc_name: pmcName });
+      const result = await fetchTestimonials(
+        secondPmcName ? { pmc_name: pmcName, pmc_name_2: secondPmcName } : { pmc_name: pmcName }
+      );
       if (result && result.testimonials.length > 0) {
         setCandidates(result.testimonials.map((t) => ({ ...t, selected: true })));
         setShowCandidates(true);
@@ -86,7 +94,7 @@ export function TestimonialsEditor({ testimonials, onChange, pmcName, fetchLabel
     } catch {
       toast.error("Failed to fetch testimonials from Zendesk");
     }
-  }, [pmcName, fetchTestimonials]);
+  }, [pmcName, secondPmcName, fetchTestimonials]);
 
   const toggleCandidate = useCallback((idx: number) => {
     setCandidates((prev) => prev.map((c, i) => i === idx ? { ...c, selected: !c.selected } : c));

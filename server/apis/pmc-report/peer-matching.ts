@@ -3,7 +3,11 @@
  * resolve_property_peer_engagement from Python generator/data.py.
  *
  * Tiered matching widens until min_peers (8) are found:
- *   1. same state + size ±40% + rent ±30% + same age bucket
+ *   0. same state + size ±40% + rent-TO-INCOME ±30% + same age bucket (only when the subject's
+ *      own income and the pool properties' median_renter_income are both available — a
+ *      cost-of-living-adjusted rent match, since identical rent means very different things in
+ *      different local income contexts)
+ *   1. same state + size ±40% + raw rent ±30% + same age bucket
  *   2. same state + size ±40% + same age bucket (drop rent)
  *   3. same region + size ±70% + same age bucket (drop state/rent)
  *   4. same region + same age bucket (drop size)
@@ -20,6 +24,8 @@ export interface NetworkPoolProperty {
   nar: number;
   t12EngPer100: number;
   ageBucket: string;
+  /** County median renter household income for this property's ZIP, when resolvable. */
+  medianRenterIncome?: number | null;
 }
 
 export interface PeerResult {
@@ -75,6 +81,7 @@ function resolvePropertyPeerMetric(
   pool: NetworkPoolProperty[],
   metricFn: (p: NetworkPoolProperty) => number,
   minPeers: number = 8,
+  subjectIncome?: number | null,
 ): PeerResult | null {
   if (pool.length === 0) return null;
 
@@ -95,23 +102,42 @@ function resolvePropertyPeerMetric(
     sizeLow: number;
     sizeHigh: number;
     rentMatch: boolean;
+    rtiMatch?: boolean;
+    subjectRti?: number;
     label: string;
-  }> = [
-    // Tier 1: same state + size ±40% + rent ±30% + same age bucket
-    {
-      subset: candidates.filter((p) => p.propertyState === state),
-      sizeLow: 0.60, sizeHigh: 1.40,
-      rentMatch: true,
-      label: "same state, comparable size & rent",
-    },
-    // Tier 2: same state + size ±40% + same age bucket (drop rent)
-    {
+  }> = [];
+
+  // Tier 0: same state + size ±40% + rent-TO-INCOME ±30% + same age bucket — only when the
+  // subject's own income and rent are both real, and at least the candidate pool has income
+  // data at all (individual candidates without income get dropped when the tier's own filter
+  // runs, same as Flask dropping rows with a NaN _rti before taking len()/median()).
+  const hasIncome = subjectIncome != null && subjectIncome > 0 && avgRent > 0;
+  if (hasIncome) {
+    const subjectRti = (avgRent * 12) / subjectIncome!;
+    tiers.push({
       subset: candidates.filter((p) => p.propertyState === state),
       sizeLow: 0.60, sizeHigh: 1.40,
       rentMatch: false,
-      label: "same state, comparable size",
-    },
-  ];
+      rtiMatch: true,
+      subjectRti,
+      label: "same state, comparable size & cost-of-living-adjusted rent",
+    });
+  }
+
+  // Tier 1: same state + size ±40% + rent ±30% + same age bucket
+  tiers.push({
+    subset: candidates.filter((p) => p.propertyState === state),
+    sizeLow: 0.60, sizeHigh: 1.40,
+    rentMatch: true,
+    label: "same state, comparable size & rent",
+  });
+  // Tier 2: same state + size ±40% + same age bucket (drop rent)
+  tiers.push({
+    subset: candidates.filter((p) => p.propertyState === state),
+    sizeLow: 0.60, sizeHigh: 1.40,
+    rentMatch: false,
+    label: "same state, comparable size",
+  });
 
   if (region) {
     const regionCandidates = candidates.filter(
@@ -147,7 +173,13 @@ function resolvePropertyPeerMetric(
     let sub = tier.subset.filter(
       (p) => p.propertyUnitCount >= units * tier.sizeLow && p.propertyUnitCount <= units * tier.sizeHigh,
     );
-    if (tier.rentMatch && avgRent > 0) {
+    if (tier.rtiMatch && tier.subjectRti) {
+      sub = sub.filter((p) => {
+        if (p.medianRenterIncome == null || p.medianRenterIncome <= 0 || p.avgRent <= 0) return false;
+        const rti = (p.avgRent * 12) / p.medianRenterIncome;
+        return rti >= tier.subjectRti! * 0.70 && rti <= tier.subjectRti! * 1.30;
+      });
+    } else if (tier.rentMatch && avgRent > 0) {
       sub = sub.filter(
         (p) => p.avgRent >= avgRent * 0.70 && p.avgRent <= avgRent * 1.30,
       );
@@ -169,19 +201,21 @@ function resolvePropertyPeerMetric(
 export function resolvePropertyPeerNar(
   state: string, units: number, avgRent: number, monthsLive: number,
   excludePmcNames: string[], pool: NetworkPoolProperty[],
+  subjectIncome?: number | null,
 ): PeerResult | null {
   return resolvePropertyPeerMetric(
     state, units, avgRent, monthsLive, excludePmcNames, pool,
-    (p) => p.nar,
+    (p) => p.nar, 8, subjectIncome,
   );
 }
 
 export function resolvePropertyPeerEngagement(
   state: string, units: number, avgRent: number, monthsLive: number,
   excludePmcNames: string[], pool: NetworkPoolProperty[],
+  subjectIncome?: number | null,
 ): PeerResult | null {
   return resolvePropertyPeerMetric(
     state, units, avgRent, monthsLive, excludePmcNames, pool,
-    (p) => p.t12EngPer100,
+    (p) => p.t12EngPer100, 8, subjectIncome,
   );
 }

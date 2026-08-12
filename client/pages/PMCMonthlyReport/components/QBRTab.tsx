@@ -255,7 +255,12 @@ export function QBRTab({ pmcNames, pmcLoading, generating, onGenerate }: QBRTabP
 
       {/* Customer Testimonials */}
       <Section title="Customer Testimonials">
-        <TestimonialsEditor testimonials={testimonials} onChange={setTestimonials} pmcName={reportBasis === "pmc" ? selectedPMC : ""} />
+        <TestimonialsEditor
+          testimonials={testimonials}
+          onChange={setTestimonials}
+          pmcName={reportBasis === "pmc" ? selectedPMC : ""}
+          secondPmcName={reportBasis === "pmc" ? secondPMC : ""}
+        />
       </Section>
 
       {/* What's New at Flex */}
