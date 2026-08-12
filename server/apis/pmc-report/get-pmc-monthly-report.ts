@@ -53,6 +53,9 @@ const RawRowSchema = z.object({
   PROPERTY_STATE: z.string().nullable(),
   NEW_BILL_CONNECTIONS: z.coerce.number(),
   HUBSPOT_DEAL_TOTAL_COMPANY_UNITS: z.coerce.number().nullable(),
+  // Internal Flex sales/CS team assignment (Flask: app.py "segment_team", used as the mode
+  // across a PMC's rows to detect SMB-managed accounts) — NOT a HubSpot company-segment field.
+  SEGMENT_TEAM: z.string().nullable(),
 });
 
 // --- Helpers ---
@@ -1576,7 +1579,8 @@ export default api({
           PROPERTY_STATE,
           IS_IN_NETWORK,
           COALESCE(NEW_BILL_CONNECTIONS_PROPERTY, 0) AS NEW_BILL_CONNECTIONS,
-          HUBSPOT_DEAL_TOTAL_COMPANY_UNITS
+          HUBSPOT_DEAL_TOTAL_COMPANY_UNITS,
+          STATIC_PARENT_TEAM_NAME_OPPORTUNITY AS SEGMENT_TEAM
        FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS
        WHERE PMC_NAME = ?
          AND BP_MONTH >= DATEADD('month', -?, CURRENT_DATE())
@@ -1685,6 +1689,17 @@ export default api({
       TRUE_REPEAT_RATE: z.number().nullable(),
     });
 
+    // Raw (customer, month) pairs for the MoM retention chart — Flask's real method
+    // (render_retention, generator/slides.py) computes MoM retention as a true customer-level
+    // set intersection between consecutive months: rate = |prior month's customers ∩ this
+    // month's customers| / |prior month's customers| — NOT an aggregate ratio from a
+    // pre-computed "repeat" column. Same NAR_CHARGED_USERS source as the loyalty-bucket query
+    // above, just unaggregated.
+    const CustomerMonthSchema = z.object({
+      CUSTOMER_PUBLIC_ID: z.string(),
+      BP_MONTH: z.string(),
+    });
+
     const NetworkPoolSchema = z.object({
       PMC_NAME: z.string(),
       PROPERTY_NAME: z.string(),
@@ -1725,7 +1740,7 @@ export default api({
     // - trendRawRows: Property trend badges (QBR appendix only)
     const needsQBRQueries = deck_mode === "qbr";
 
-    const [metricsRows, dqShieldedRows, yearlyRentBillsRows, trendRawRows, retentionCohortRows] = await Promise.all([
+    const [metricsRows, dqShieldedRows, yearlyRentBillsRows, trendRawRows, retentionCohortRows, customerMonthRows] = await Promise.all([
       ctx.integrations.snowflake_sso.query(
         `SELECT TO_VARCHAR(BP_MONTH, 'YYYY-MM-DD') AS BP_MONTH, NAR, SEGMENT_NAR_AVG,
                 BILLS_PAID, BILLS_PAID_NEW, BILLS_PAID_REPEAT, BILLS_PAID_PREV_MONTH,
@@ -1855,6 +1870,22 @@ export default api({
         [pmc_name, cutoffStr, cutoffStr, reportingMonthStr, reportingMonthStr],
         { label: "Compute loyalty buckets & true repeat rate from customer cohort" }
       ).catch(() => [] as { LOYALTY_BUCKET: string; BUCKET_COUNT: number; TOTAL_CUSTOMERS: number; TRUE_REPEAT_RATE: number | null }[]),
+      ctx.integrations.snowflake_sso.query(
+        `SELECT
+            n.CUSTOMER_PUBLIC_ID,
+            TO_VARCHAR(n.BP_MONTH, 'YYYY-MM-DD') AS BP_MONTH
+         FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS p
+         JOIN PRODUCTION.ANALYTICS.NAR_CHARGED_USERS n
+            ON n.PROPERTY_PUBLIC_ID = p.PROPERTY_PUBLIC_ID AND n.BP_MONTH = p.BP_MONTH
+         WHERE p.PMC_NAME = ?
+           AND p.IS_IN_NETWORK = TRUE
+           AND p.BP_MONTH >= DATEADD('month', -13, ?::DATE)
+           AND p.BP_MONTH < ?
+           AND n.HAS_BILL_PAID = TRUE`,
+        CustomerMonthSchema,
+        [pmc_name, cutoffStr, cutoffStr],
+        { label: "Fetch raw (customer, month) pairs for MoM retention set-intersection" }
+      ).catch(() => [] as { CUSTOMER_PUBLIC_ID: string; BP_MONTH: string }[]),
     ]);
 
     // --- Fire slow secondary queries in parallel ---
@@ -2466,12 +2497,33 @@ export default api({
     // --- Compute Lifetime DQ Shielded ---
     const lifetimeDqShielded = dqShieldedRows.reduce((sum, r) => sum + (r.TOTAL_RENT_SHIELDED ?? 0), 0);
 
-    // --- Segment NAR (peer benchmark) from metrics ---
-    const segmentNarAvg = latestMetrics?.SEGMENT_NAR_AVG ?? null;
-    const hubspotSegment = latestMetrics?.HUBSPOT_COMPANY_SEGMENT ?? null;
+    // --- Segment NAR / HubSpot segment label — REMOVED (fabricated data source) ---
+    // PARTNER_REPORTING_CORE_METRICS.HUBSPOT_COMPANY_SEGMENT / SEGMENT_NAR_AVG have zero
+    // equivalent anywhere in Flask (confirmed via full-repo grep) — this table/columns don't
+    // exist in real Snowflake. Every read site below is being migrated to the real
+    // geo/size/rent-matched peer cohort (lockedPeers / canonicalPeerNarP50), which is already
+    // sourced from real data (PROPERTY_BP_MONTH_STATS). Kept as explicit nulls (not deleted)
+    // so every downstream `?? fallback` still resolves correctly while that migration lands.
+    const segmentNarAvg: number | null = null;
+    const hubspotSegment: string | null = null;
 
-    // --- Auto-derive is_smb from segment (Python: mode of segment_team == "SMB Manager") ---
-    const is_smb = hubspotSegment != null && hubspotSegment.toUpperCase().includes("SMB");
+    // --- Auto-derive is_smb (Flask app.py:1551-1553): mode of STATIC_PARENT_TEAM_NAME_OPPORTUNITY
+    // (the internal Flex sales/CS team assignment, aliased SEGMENT_TEAM above) across the PMC's
+    // rows, true when the most common team name is "SMB Manager". This is NOT a HubSpot
+    // company-segment field — PARTNER_REPORTING_CORE_METRICS.HUBSPOT_COMPANY_SEGMENT has no
+    // Flask equivalent and was a fabricated data source; removed.
+    const is_smb = (() => {
+      const counts = new Map<string, number>();
+      for (const r of inNetwork) {
+        if (!r.SEGMENT_TEAM) continue;
+        counts.set(r.SEGMENT_TEAM, (counts.get(r.SEGMENT_TEAM) ?? 0) + 1);
+      }
+      let modeTeam: string | null = null, modeCount = 0;
+      for (const [team, count] of counts) {
+        if (count > modeCount) { modeTeam = team; modeCount = count; }
+      }
+      return modeTeam === "SMB Manager";
+    })();
 
     // --- Auto-derive evidence_type from property-level avg rent ---
     // Python logic: median of per-property (rent_paid / bills_paid); if < $950 → "affordable"
@@ -2508,8 +2560,12 @@ export default api({
     }
 
     // --- Locked peers for rolling median (pure JS tiered matching, no query) ---
+    // Computed regardless of tenure — the rolling time-series median (below) is only useful
+    // for established PMCs (>=36mo), but this cohort itself also backs the Peer Benchmarks
+    // slide's snapshot percentiles for PMCs of any tenure, so it can't be gated on _msl.
     let lockedPeers: string[] = [];
-    if (_msl >= 36 && networkPoolProps.length > 0) {
+    let lockedPeersCriteria = "comparable PMCs";
+    if (networkPoolProps.length > 0) {
       // Step 1: Aggregate networkPool to PMC level for peer matching
       const pmcAgg = new Map<string, { totalUnits: number; avgRent: number; primaryState: string; stateCount: number }>();
       const pmcStateUnits = new Map<string, Map<string, number>>();
@@ -2557,16 +2613,18 @@ export default api({
         candidates.push({ name: nm, totalUnits: agg.totalUnits, avgRent: agg.avgRent, primaryState: agg.primaryState });
       }
 
-      // Tiered matching (simplified Flask approach)
-      const tiers: Array<{ useState: boolean; lowMult: number; highMult: number; useRent: boolean; minPeers: number }> = [
-        { useState: true,  lowMult: 0.60, highMult: 1.40, useRent: true,  minPeers: 3 },
-        { useState: true,  lowMult: 0.60, highMult: 1.40, useRent: false, minPeers: 3 },
-        { useState: false, lowMult: 0.60, highMult: 1.40, useRent: true,  minPeers: 5 },
-        { useState: false, lowMult: 0.30, highMult: 1.70, useRent: true,  minPeers: 5 },
-        { useState: false, lowMult: 0.30, highMult: 1.70, useRent: false, minPeers: 5 },
-        { useState: false, lowMult: 0.30, highMult: 1.70, useRent: false, minPeers: 3 },
+      // Tiered matching (simplified Flask approach) — criteria labels match Flask's real
+      // tier ladder (generator/data.py:4156-4165) so the Peer Benchmarks subtitle describes
+      // the ACTUAL cohort that matched, instead of a fabricated segment name.
+      const tiers: Array<{ useState: boolean; lowMult: number; highMult: number; useRent: boolean; minPeers: number; label: string }> = [
+        { useState: true,  lowMult: 0.60, highMult: 1.40, useRent: true,  minPeers: 3, label: `same state (${subjectState}), comparable size & avg rent` },
+        { useState: true,  lowMult: 0.60, highMult: 1.40, useRent: false, minPeers: 3, label: `same state (${subjectState}), comparable size` },
+        { useState: false, lowMult: 0.60, highMult: 1.40, useRent: true,  minPeers: 5, label: "geographic footprint, comparable size & avg rent" },
+        { useState: false, lowMult: 0.30, highMult: 1.70, useRent: true,  minPeers: 5, label: "geographic footprint, comparable size & avg rent" },
+        { useState: false, lowMult: 0.30, highMult: 1.70, useRent: false, minPeers: 5, label: "geographic footprint & comparable size" },
+        { useState: false, lowMult: 0.30, highMult: 1.70, useRent: false, minPeers: 3, label: "comparable size" },
         // Final fallback: no filters at all, just need 3 peers (Flask also falls through)
-        { useState: false, lowMult: 0.00, highMult: 100.0, useRent: false, minPeers: 3 },
+        { useState: false, lowMult: 0.00, highMult: 100.0, useRent: false, minPeers: 3, label: "comparable PMCs" },
       ];
       for (const tier of tiers) {
         let pool = candidates.filter((c) =>
@@ -2578,69 +2636,81 @@ export default api({
         }
         if (pool.length >= tier.minPeers) {
           lockedPeers = pool.map((c) => c.name);
+          lockedPeersCriteria = tier.label;
           break;
         }
       }
     }
 
     const RollingPeerSchema = z.object({ BP_MONTH: z.string(), SMOOTHED_NAR: z.number().nullable() });
-    const excludedPmcsForSeg = [pmc_name];
-    if (second_pmc) excludedPmcsForSeg.push(second_pmc);
-    const excludePlaceholders = excludedPmcsForSeg.map(() => "?").join(", ");
 
-    const segPercPromise = (hubspotSegment && latestCompletedMonth)
+    // Peer-Benchmarks percentiles — real formulas ported from Flask's `_run_supplemental_
+    // benchmark` (generator/data.py:1920-2093), scoped to the SAME geo/size/rent-matched
+    // `lockedPeers` cohort NAR uses (matching app.py's "canonical supplemental recompute",
+    // app.py:1400-1421, which re-runs this exact query against the canonical peer list rather
+    // than an independent segment). Replaces the fabricated PARTNER_REPORTING_CORE_METRICS /
+    // HUBSPOT_COMPANY_SEGMENT read (that table+columns have zero Flask equivalent — confirmed
+    // via full-repo grep). PMC_VALUE (the subject's own dot) is left NULL here and overridden
+    // in JS below from values already computed elsewhere in this pipeline, so there's one
+    // source of truth per metric instead of a second, divergent calculation.
+    const segPercPromise = (lockedPeers.length >= 3 && latestCompletedMonth)
       ? ctx.integrations.snowflake_sso.query(
-        `WITH all_segment AS (
-           SELECT PMC_NAME, NAR,
-                  BILLS_PAID,
-                  BILLS_PAID_REPEAT,
-                  BILLS_PAID_PREV_MONTH,
-                  CASE WHEN BILLS_PAID_PREV_MONTH > 0
-                       THEN BILLS_PAID_REPEAT / BILLS_PAID_PREV_MONTH
-                       ELSE NULL END AS REPEAT_RATE,
-                  NEW_BILL_CONNECTIONS,
-                  CASE WHEN NAR > 0 AND BILLS_PAID > 0
-                       THEN NEW_BILL_CONNECTIONS / (BILLS_PAID / NAR) * 100
-                       ELSE NULL END AS ENG_PER_100
-           FROM PRODUCTION.EXTERNAL_REPORTING.PARTNER_REPORTING_CORE_METRICS
-           WHERE HUBSPOT_COMPANY_SEGMENT = ?
-             AND TO_VARCHAR(BP_MONTH, 'YYYY-MM-DD') = ?
-             AND NAR IS NOT NULL
+        `WITH peer_current AS (
+           SELECT PMC_NAME,
+                  SUM(PROPERTY_UNIT_COUNT) AS UNITS,
+                  SUM(CHARGED_USERS_COUNT) AS CHARGED_USERS
+           FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS
+           WHERE PMC_NAME IN (${lockedPeers.map(() => "?").join(", ")})
+             AND BP_MONTH = ?
+             AND IS_INTEGRATED_TOTAL = TRUE
+           GROUP BY PMC_NAME
          ),
-         peer_pool AS (
-           SELECT * FROM all_segment WHERE PMC_NAME NOT IN (${excludePlaceholders})
+         peer_engagement AS (
+           SELECT t.PMC_NAME,
+                  SUM(t.NEW_BILL_CONNECTIONS_PROPERTY) / NULLIF(pc.UNITS, 0) * 100 AS ENG_PER_100
+           FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS t
+           JOIN peer_current pc ON t.PMC_NAME = pc.PMC_NAME
+           WHERE t.BP_MONTH BETWEEN DATEADD('month', -11, ?::DATE) AND ?
+             AND t.IS_INTEGRATED_TOTAL = TRUE
+           GROUP BY t.PMC_NAME, pc.UNITS
+         ),
+         peer_repeat AS (
+           SELECT t.PMC_NAME,
+                  AVG(LEAST(1.0, GREATEST(0.0,
+                      (t.CHARGED_USERS_COUNT - t.NEW_SIGNUPS_COUNT)::FLOAT
+                      / NULLIF(t.PREVIOUS_MONTH_CHARGED_USERS_COUNT, 0)
+                  ))) AS REPEAT_RATE
+           FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS t
+           JOIN peer_current pc ON t.PMC_NAME = pc.PMC_NAME
+           WHERE t.BP_MONTH BETWEEN DATEADD('month', -11, ?::DATE) AND ?
+             AND t.PREVIOUS_MONTH_CHARGED_USERS_COUNT > 0
+           GROUP BY t.PMC_NAME
          )
          SELECT 'NAR' AS METRIC,
-                PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY NAR) AS P25,
-                PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY NAR) AS P50,
-                PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY NAR) AS P75,
-                PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY NAR) AS P90,
-                PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY NAR) AS P99,
-                (SELECT MAX(NAR) FROM all_segment WHERE PMC_NAME = ?) AS PMC_VALUE
-         FROM peer_pool
+                PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY CHARGED_USERS / NULLIF(UNITS, 0)) AS P25,
+                PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY CHARGED_USERS / NULLIF(UNITS, 0)) AS P50,
+                PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY CHARGED_USERS / NULLIF(UNITS, 0)) AS P75,
+                NULL AS P90, NULL AS P99, NULL AS PMC_VALUE
+         FROM peer_current
+         WHERE UNITS > 0
          UNION ALL
          SELECT 'REPEAT_RATE' AS METRIC,
                 PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY REPEAT_RATE) AS P25,
                 PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY REPEAT_RATE) AS P50,
                 PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY REPEAT_RATE) AS P75,
-                PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY REPEAT_RATE) AS P90,
-                PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY REPEAT_RATE) AS P99,
-                (SELECT MAX(REPEAT_RATE) FROM all_segment WHERE PMC_NAME = ?) AS PMC_VALUE
-         FROM peer_pool
-         WHERE REPEAT_RATE IS NOT NULL
+                NULL AS P90, NULL AS P99, NULL AS PMC_VALUE
+         FROM peer_repeat
          UNION ALL
          SELECT 'NEW_CONNECTIONS' AS METRIC,
                 PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY ENG_PER_100) AS P25,
                 PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY ENG_PER_100) AS P50,
                 PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY ENG_PER_100) AS P75,
-                PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY ENG_PER_100) AS P90,
-                PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY ENG_PER_100) AS P99,
-                (SELECT MAX(ENG_PER_100) FROM all_segment WHERE PMC_NAME = ?) AS PMC_VALUE
-         FROM peer_pool
+                NULL AS P90, NULL AS P99, NULL AS PMC_VALUE
+         FROM peer_engagement
          WHERE ENG_PER_100 IS NOT NULL`,
         SegmentPercentilesSchema,
-        [hubspotSegment, latestCompletedMonth, ...excludedPmcsForSeg, pmc_name, pmc_name, pmc_name],
-        { label: "Compute segment P25/P50/P75 for multi-benchmark (peer-pool excludes self)" }
+        [...lockedPeers, latestCompletedMonth, latestCompletedMonth, latestCompletedMonth, latestCompletedMonth, latestCompletedMonth],
+        { label: "Compute peer-cohort P25/P50/P75 for multi-benchmark (real cohort, not a segment table)" }
       ).catch(() => [] as z.infer<typeof SegmentPercentilesSchema>[])
       : Promise.resolve([] as z.infer<typeof SegmentPercentilesSchema>[]);
 
@@ -2681,8 +2751,11 @@ export default api({
     // Fire both independent round-trips together instead of one at a time
     const [percRows, rollingRows] = await Promise.all([segPercPromise, rollingPromise]);
 
+    // PMC_VALUE is always NULL from the query above (the subject is excluded from lockedPeers,
+    // so it can't appear in its own peer-percentile query) — filled in from values already
+    // computed elsewhere in this pipeline right below, one source of truth per metric.
     segmentPercentiles = percRows
-      .filter((r) => r.P25 != null && r.P50 != null && r.P75 != null && r.PMC_VALUE != null)
+      .filter((r) => r.P25 != null && r.P50 != null && r.P75 != null)
       .map((r) => ({
         metric: r.METRIC,
         p25: r.P25!,
@@ -2690,8 +2763,26 @@ export default api({
         p75: r.P75!,
         p90: r.P90 ?? r.P75! * 1.2,
         p99: r.P99 ?? r.P75! * 1.4,
-        pmcValue: r.PMC_VALUE!,
+        pmcValue: r.PMC_VALUE ?? 0,
       }));
+
+    // Fill in the subject's own value per metric from real, already-computed data (not a
+    // second/divergent calculation): NAR from the subject's latest-month adoption rate;
+    // engagement from the subject's own trailing-12mo per-property T12_CONNECTIONS, matching
+    // the peer query's units-weighted formula exactly.
+    {
+      const subjectNarValue = latestMonth?.adoptionRate ?? null;
+      const subjectPoolProps = networkPoolProps.filter((p) => p.pmcName === pmc_name || (second_pmc && p.pmcName === second_pmc));
+      const subjectEngUnits = subjectPoolProps.reduce((s, p) => s + p.propertyUnitCount, 0);
+      const subjectEngValue = subjectEngUnits > 0
+        ? subjectPoolProps.reduce((s, p) => s + p.t12EngPer100 * p.propertyUnitCount, 0) / subjectEngUnits
+        : null;
+      segmentPercentiles = segmentPercentiles.map((m) => {
+        if (m.metric === "NAR" && subjectNarValue != null) return { ...m, pmcValue: subjectNarValue };
+        if (m.metric === "NEW_CONNECTIONS" && subjectEngValue != null) return { ...m, pmcValue: subjectEngValue };
+        return m;
+      });
+    }
 
     for (const row of rollingRows) {
       if (row.SMOOTHED_NAR != null) {
@@ -2700,43 +2791,18 @@ export default api({
     }
 
     // --- Canonical Peer Benchmark (one resolved P50 NAR per deck) ---
-    // Resolution order per docs/clark-session-qbr-multi-pmc-scoping.md:
-    //   1. Rolling calendar-time peer median (only for established PMCs, tenure >= 36 months)
-    //   2. Stage-bucket benchmark (nearest months_active bucket for younger PMCs)
-    //   3. Raw segment P50 fallback
+    // Resolution order (mirrors Flask's resolve_canonical_benchmark, generator/data.py:2095-2177,
+    // minus the stage-bucket tier — that one is a separate real query, _pull_stage_benchmarks,
+    // data.py:2524, not yet ported; PMCs younger than 36mo fall through to tier 2 below instead
+    // of a dedicated young-PMC benchmark, a known gap):
+    //   1. Rolling calendar-time peer median (established PMCs, tenure >= 36 months) — real,
+    //      time-series, from the SAME geo/size/rent-matched lockedPeers cohort.
+    //   2. Snapshot P50 across lockedPeers (real, single-month) — used for all other tenures,
+    //      and as tier 1's own fallback if the rolling query came back empty.
     // Every slide that shows a peer-median number MUST read from this single value.
     {
       const narPerc = segmentPercentiles.find((s) => s.metric === "NAR");
-
-      if (_msl >= 36) {
-        // Priority 1: segment percentile P50 (true median of peer segment)
-        // Flask uses per-property geo/size/rent-matched median; segment P50 is the
-        // best available approximation without a full time-series peer query.
-        if (narPerc) {
-          canonicalPeerNarP50 = narPerc.p50;
-        } else {
-          // Fallback: latest SEGMENT_NAR_AVG (segment-wide average, less precise)
-          const rollingValues = metricsRows
-            .filter((r) => r.SEGMENT_NAR_AVG != null)
-            .sort((a, b) => a.BP_MONTH.localeCompare(b.BP_MONTH));
-          const latestRolling = rollingValues.length > 0 ? rollingValues[rollingValues.length - 1].SEGMENT_NAR_AVG : null;
-          if (latestRolling != null) {
-            canonicalPeerNarP50 = latestRolling;
-          }
-        }
-      } else if (_msl > 0) {
-        // Priority 2: stage-bucket benchmark — use the nearest stage's SEGMENT_NAR_AVG
-        // metricsRows are sorted by BP_MONTH ascending, so index maps to months-since-launch
-        const stageRows = metricsRows.filter((r) => r.SEGMENT_NAR_AVG != null);
-        if (stageRows.length > 0) {
-          // Pick the row closest to the PMC's current tenure (clamped to available rows)
-          const idx = Math.min(_msl - 1, stageRows.length - 1);
-          canonicalPeerNarP50 = stageRows[idx].SEGMENT_NAR_AVG!;
-        } else if (narPerc) {
-          canonicalPeerNarP50 = narPerc.p50;
-        }
-      } else if (narPerc) {
-        // Priority 3: raw segment P50 fallback
+      if (narPerc) {
         canonicalPeerNarP50 = narPerc.p50;
       }
 
@@ -2920,17 +2986,38 @@ export default api({
         residentsShielded: r.NUMBER_OF_RESIDENTS ?? 0,
       }));
 
-    const momRetentionRates: { month: string; rate: number }[] = metricsRows
-      .filter((r) => r.BILLS_PAID_REPEAT != null && r.BILLS_PAID_PREV_MONTH != null && r.BILLS_PAID_PREV_MONTH! > 0
-        && r.BP_MONTH <= latestCompletedMonth)
-      .map((r) => ({
-        month: r.BP_MONTH,
-        rate: Math.max(0, Math.min(1, r.BILLS_PAID_REPEAT! / r.BILLS_PAID_PREV_MONTH!)),
-      }));
+    // Flask's real MoM retention (render_retention, generator/slides.py) is a true
+    // customer-level set intersection between consecutive months — NOT a ratio of two
+    // pre-aggregated columns. Build month -> set(customer_public_id) from the raw pairs,
+    // then rate = |prior month's customers ∩ this month's customers| / |prior month's customers|.
+    const customerMonthMap = new Map<string, Set<string>>();
+    for (const row of customerMonthRows) {
+      if (!customerMonthMap.has(row.BP_MONTH)) customerMonthMap.set(row.BP_MONTH, new Set());
+      customerMonthMap.get(row.BP_MONTH)!.add(row.CUSTOMER_PUBLIC_ID);
+    }
+    const sortedCustomerMonths = [...customerMonthMap.keys()]
+      .filter((m) => m <= latestCompletedMonth)
+      .sort();
+    const momRetentionRates: { month: string; rate: number }[] = [];
+    for (let i = 1; i < sortedCustomerMonths.length; i++) {
+      const priorIds = customerMonthMap.get(sortedCustomerMonths[i - 1])!;
+      const curIds = customerMonthMap.get(sortedCustomerMonths[i])!;
+      if (priorIds.size === 0) continue;
+      let intersectionCount = 0;
+      for (const id of priorIds) if (curIds.has(id)) intersectionCount++;
+      momRetentionRates.push({ month: sortedCustomerMonths[i], rate: intersectionCount / priorIds.size });
+    }
 
     const retentionAvg = momRetentionRates.length > 0
       ? momRetentionRates.reduce((s, r) => s + r.rate, 0) / momRetentionRates.length
       : 0;
+
+    // Subject's own true repeat rate for the Peer Benchmarks REPEAT_RATE row's dot — matching
+    // Flask's kpis.get("true_repeat_rate") or kpis.get("avg_retention") fallback (slides.py:328).
+    // Computed here (shared by both QBR and expansion mode, which branches before QBR's own
+    // later retention-slide computation of the same value) so it exists before either code path
+    // that might read it.
+    const subjectRepeatValue = (retentionCohortRows[0]?.TRUE_REPEAT_RATE ?? trueRepeatRate) ?? retentionAvg;
 
     let loyaltyBuckets: { name: string; description: string; count: number; color: string }[] | null = null;
     let loyaltyTotal = 0;
@@ -3173,13 +3260,15 @@ export default api({
 
           case "peer_benchmarks": {
             // Use canonical-resolved metrics for NAR P50 consistency
-            const expBenchMetrics = segmentPercentiles.map((m) =>
-              m.metric === "NAR" && canonicalPeerNarP50 != null ? { ...m, p50: canonicalPeerNarP50 } : m
-            );
+            const expBenchMetrics = segmentPercentiles.map((m) => {
+              if (m.metric === "NAR" && canonicalPeerNarP50 != null) return { ...m, p50: canonicalPeerNarP50 };
+              if (m.metric === "REPEAT_RATE" && subjectRepeatValue != null) return { ...m, pmcValue: subjectRepeatValue };
+              return m;
+            });
             const r = renderPeerBenchmarks({
               slideId: slideNum,
               pmcName: pmc_name,
-              segment: hubspotSegment ?? "Mid-Market",
+              segment: lockedPeersCriteria,
               metrics: expBenchMetrics,
             });
             pushSlide(sid, r);
@@ -3492,17 +3581,23 @@ export default api({
 
     // --- Peer Benchmarks slide ---
     // Override metrics' P50 with locked-peer-derived values for consistency with Flask
-    // Flask uses the same geo/size/rent-matched peer pool for all three benchmark metrics
+    // Flask uses the same geo/size/rent-matched peer pool for all three benchmark metrics.
+    // The REPEAT_RATE row's own dot is the subject's true repeat rate (subjectRepeatValue,
+    // computed above — matching Flask's kpis.get("true_repeat_rate") or
+    // kpis.get("avg_retention") fallback, slides.py:328).
     const benchmarkMetrics = segmentPercentiles.map((m) => {
       if (m.metric === "NAR" && canonicalPeerNarP50 != null) {
         return { ...m, p50: canonicalPeerNarP50 };
+      }
+      if (m.metric === "REPEAT_RATE" && subjectRepeatValue != null) {
+        return { ...m, pmcValue: subjectRepeatValue };
       }
       return m;
     });
     const peerBenchResult = renderPeerBenchmarks({
       slideId: 9,
       pmcName: pmc_name,
-      segment: hubspotSegment ?? "Mid-Market",
+      segment: lockedPeersCriteria,
       metrics: benchmarkMetrics,
     });
 
@@ -3591,15 +3686,16 @@ export default api({
     }
     const finalTrueRepeatRate = cohortTrueRepeatRate ?? trueRepeatRate;
 
-    // Average rent per resident per month (for KPI card)
+    // Average rent per resident per month (for KPI card) — from monthlyTotals (real,
+    // PROPERTY_BP_MONTH_STATS-derived), not the fabricated PARTNER_REPORTING_CORE_METRICS table.
     const avgPaymentPerResident = (() => {
-      const totalRent = metricsRows.reduce((s, r) => s + (r.RENT_PAID ?? 0), 0);
-      const totalBills = metricsRows.reduce((s, r) => s + (r.BILLS_PAID ?? 0), 0);
+      const totalRent = monthlyTotals.reduce((s, m) => s + m.rentPaid, 0);
+      const totalBills = monthlyTotals.reduce((s, m) => s + m.billsPaid, 0);
       return totalBills > 0 ? totalRent / totalBills : 0;
     })();
 
-    // New signups in latest month
-    const newInLatestMonth = latestMetrics?.BILLS_PAID_NEW ?? 0;
+    // New signups in latest month — from monthlyTotals, same reasoning as above.
+    const newInLatestMonth = latestMonth?.newSignups ?? 0;
 
     const retentionResult = renderRetention({
       slideId: 14,
