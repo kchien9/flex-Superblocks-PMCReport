@@ -2397,6 +2397,14 @@ function flexRentBucketData(dataset, breaks) {
   var rentRaw = labels.map(function(l) { return agg[l].rent; });
   return { labels: labels, userShare: floored2, rentRaw: rentRaw };
 }
+function flexRentGradient(n) {
+  var colors = [];
+  for (var i = 0; i < n; i++) {
+    var opacity = 0.25 + (i / Math.max(n - 1, 1)) * 0.65;
+    colors.push('rgba(106,61,184,' + opacity.toFixed(2) + ')');
+  }
+  return colors;
+}
 function flexRentBucket(sid, period) {
   var st = window['hrState' + sid];
   var chart = window['hrChart' + sid];
@@ -2411,6 +2419,11 @@ function flexRentBucket(sid, period) {
   if (!bucketed.labels.length) return;
   chart.data.labels = bucketed.labels;
   chart.data.datasets[0].data = bucketed.userShare;
+  // Re-derive the purple gradient for the new bucket count — re-toggling between periods can
+  // produce a different number of buckets (a wider All-Time rent spread bins differently than
+  // Last Month), and the bar colors never got recomputed to match, so they went stale/misaligned
+  // with the new data (this is the "shading doesn't update" bug).
+  chart.data.datasets[0].backgroundColor = flexRentGradient(bucketed.labels.length);
   chart.data.datasets[1].data = bucketed.rentRaw;
   // Update legend: "Rent Paid / mo" vs "Total Rent Paid" depending on period
   var rentLabel = st.period === 'all' ? 'Total Rent Paid' : 'Rent Paid / mo';
