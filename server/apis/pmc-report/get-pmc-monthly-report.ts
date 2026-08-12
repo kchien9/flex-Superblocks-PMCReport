@@ -2488,90 +2488,17 @@ export default api({
       }
     }
 
-    // --- Fetch segment percentiles for multi-benchmark slide ---
-    // We need to know the segment first, so this runs after metricsRows
+    // --- Segment percentiles (multi-benchmark slide) + rolling peer median (adoption trend) ---
+    // These two Snowflake round-trips are independent of each other — segment percentiles only
+    // needs hubspotSegment/latestCompletedMonth, rolling peer median only needs
+    // networkPoolProps/latestRows (via lockedPeers, computed below) — but were previously
+    // awaited one at a time. Compute lockedPeers first (pure JS, no query), then fire both
+    // queries together.
     // CRITICAL: Exclude the named PMC(s) from the peer pool to avoid self-contamination.
     // On a 2-PMC combined report, the second PMC's NAR would otherwise inflate the P50.
     let segmentPercentiles: { metric: string; p25: number; p50: number; p75: number; p90: number; p99: number; pmcValue: number }[] = [];
-    if (hubspotSegment && latestCompletedMonth) {
-      // Build exclusion list: always exclude the primary PMC; also exclude second_pmc if present
-      const excludedPmcs = [pmc_name];
-      if (second_pmc) excludedPmcs.push(second_pmc);
-      const excludePlaceholders = excludedPmcs.map(() => "?").join(", ");
-
-      const percRows = await ctx.integrations.snowflake_sso.query(
-        `WITH all_segment AS (
-           SELECT PMC_NAME, NAR,
-                  BILLS_PAID,
-                  BILLS_PAID_REPEAT,
-                  BILLS_PAID_PREV_MONTH,
-                  CASE WHEN BILLS_PAID_PREV_MONTH > 0
-                       THEN BILLS_PAID_REPEAT / BILLS_PAID_PREV_MONTH
-                       ELSE NULL END AS REPEAT_RATE,
-                  NEW_BILL_CONNECTIONS,
-                  CASE WHEN NAR > 0 AND BILLS_PAID > 0
-                       THEN NEW_BILL_CONNECTIONS / (BILLS_PAID / NAR) * 100
-                       ELSE NULL END AS ENG_PER_100
-           FROM PRODUCTION.EXTERNAL_REPORTING.PARTNER_REPORTING_CORE_METRICS
-           WHERE HUBSPOT_COMPANY_SEGMENT = ?
-             AND TO_VARCHAR(BP_MONTH, 'YYYY-MM-DD') = ?
-             AND NAR IS NOT NULL
-         ),
-         peer_pool AS (
-           SELECT * FROM all_segment WHERE PMC_NAME NOT IN (${excludePlaceholders})
-         )
-         SELECT 'NAR' AS METRIC,
-                PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY NAR) AS P25,
-                PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY NAR) AS P50,
-                PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY NAR) AS P75,
-                PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY NAR) AS P90,
-                PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY NAR) AS P99,
-                (SELECT MAX(NAR) FROM all_segment WHERE PMC_NAME = ?) AS PMC_VALUE
-         FROM peer_pool
-         UNION ALL
-         SELECT 'REPEAT_RATE' AS METRIC,
-                PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY REPEAT_RATE) AS P25,
-                PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY REPEAT_RATE) AS P50,
-                PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY REPEAT_RATE) AS P75,
-                PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY REPEAT_RATE) AS P90,
-                PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY REPEAT_RATE) AS P99,
-                (SELECT MAX(REPEAT_RATE) FROM all_segment WHERE PMC_NAME = ?) AS PMC_VALUE
-         FROM peer_pool
-         WHERE REPEAT_RATE IS NOT NULL
-         UNION ALL
-         SELECT 'NEW_CONNECTIONS' AS METRIC,
-                PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY ENG_PER_100) AS P25,
-                PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY ENG_PER_100) AS P50,
-                PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY ENG_PER_100) AS P75,
-                PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY ENG_PER_100) AS P90,
-                PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY ENG_PER_100) AS P99,
-                (SELECT MAX(ENG_PER_100) FROM all_segment WHERE PMC_NAME = ?) AS PMC_VALUE
-         FROM peer_pool
-         WHERE ENG_PER_100 IS NOT NULL`,
-        SegmentPercentilesSchema,
-        [hubspotSegment, latestCompletedMonth, ...excludedPmcs, pmc_name, pmc_name, pmc_name],
-        { label: "Compute segment P25/P50/P75 for multi-benchmark (peer-pool excludes self)" }
-      );
-      segmentPercentiles = percRows
-        .filter((r) => r.P25 != null && r.P50 != null && r.P75 != null && r.PMC_VALUE != null)
-        .map((r) => ({
-          metric: r.METRIC,
-          p25: r.P25!,
-          p50: r.P50!,
-          p75: r.P75!,
-          p90: r.P90 ?? r.P75! * 1.2,
-          p99: r.P99 ?? r.P75! * 1.4,
-          pmcValue: r.PMC_VALUE!,
-        }));
-    }
-
-    // --- Canonical Peer Benchmark (one resolved P50 NAR per deck) ---
-    // Resolution order per docs/clark-session-qbr-multi-pmc-scoping.md:
-    //   1. Rolling calendar-time peer median (only for established PMCs, tenure >= 36 months)
-    //   2. Stage-bucket benchmark (nearest months_active bucket for younger PMCs)
-    //   3. Raw segment P50 fallback
-    // Every slide that shows a peer-median number MUST read from this single value.
     let canonicalPeerNarP50: number | null = null;
+    let rollingPeerMedianMap: Record<string, { p50: number }> = {};
     // Compute months since launch for benchmark resolution (used by peer median + adoption trend)
     let _msl = 0;
     if (earliestRollout && latestCompletedMonth) {
@@ -2580,46 +2507,8 @@ export default api({
       _msl = (ly - ey) * 12 + (lm - em) + 1;
     }
 
-    {
-      const narPerc = segmentPercentiles.find((s) => s.metric === "NAR");
-
-      if (_msl >= 36) {
-        // Priority 1: segment percentile P50 (true median of peer segment)
-        // Flask uses per-property geo/size/rent-matched median; segment P50 is the
-        // best available approximation without a full time-series peer query.
-        if (narPerc) {
-          canonicalPeerNarP50 = narPerc.p50;
-        } else {
-          // Fallback: latest SEGMENT_NAR_AVG (segment-wide average, less precise)
-          const rollingValues = metricsRows
-            .filter((r) => r.SEGMENT_NAR_AVG != null)
-            .sort((a, b) => a.BP_MONTH.localeCompare(b.BP_MONTH));
-          const latestRolling = rollingValues.length > 0 ? rollingValues[rollingValues.length - 1].SEGMENT_NAR_AVG : null;
-          if (latestRolling != null) {
-            canonicalPeerNarP50 = latestRolling;
-          }
-        }
-      } else if (_msl > 0) {
-        // Priority 2: stage-bucket benchmark — use the nearest stage's SEGMENT_NAR_AVG
-        // metricsRows are sorted by BP_MONTH ascending, so index maps to months-since-launch
-        const stageRows = metricsRows.filter((r) => r.SEGMENT_NAR_AVG != null);
-        if (stageRows.length > 0) {
-          // Pick the row closest to the PMC's current tenure (clamped to available rows)
-          const idx = Math.min(_msl - 1, stageRows.length - 1);
-          canonicalPeerNarP50 = stageRows[idx].SEGMENT_NAR_AVG!;
-        } else if (narPerc) {
-          canonicalPeerNarP50 = narPerc.p50;
-        }
-      } else if (narPerc) {
-        // Priority 3: raw segment P50 fallback
-        canonicalPeerNarP50 = narPerc.p50;
-      }
-    }
-
-    // --- Rolling peer median (per-month series for adoption trend chart) ---
-    // Flask's pull_rolling_peer_median: locks geo/size/rent-matched PMCs, pulls their
-    // monthly NAR with 3-month trailing smoothing, computes P50 per calendar month.
-    let rollingPeerMedianMap: Record<string, { p50: number }> = {};
+    // --- Locked peers for rolling median (pure JS tiered matching, no query) ---
+    let lockedPeers: string[] = [];
     if (_msl >= 36 && networkPoolProps.length > 0) {
       // Step 1: Aggregate networkPool to PMC level for peer matching
       const pmcAgg = new Map<string, { totalUnits: number; avgRent: number; primaryState: string; stateCount: number }>();
@@ -2669,7 +2558,6 @@ export default api({
       }
 
       // Tiered matching (simplified Flask approach)
-      let lockedPeers: string[] = [];
       const tiers: Array<{ useState: boolean; lowMult: number; highMult: number; useRent: boolean; minPeers: number }> = [
         { useState: true,  lowMult: 0.60, highMult: 1.40, useRent: true,  minPeers: 3 },
         { useState: true,  lowMult: 0.60, highMult: 1.40, useRent: false, minPeers: 3 },
@@ -2693,105 +2581,220 @@ export default api({
           break;
         }
       }
+    }
 
-      // Step 3: Query locked peers' monthly NAR with 3-month trailing smoothing
-      if (lockedPeers.length >= 3) {
-        const RollingPeerSchema = z.object({ BP_MONTH: z.string(), SMOOTHED_NAR: z.number().nullable() });
-        const placeholders = lockedPeers.map(() => "?").join(", ");
-        try {
-          const rollingRows = await ctx.integrations.snowflake_sso.query(
-            `WITH peer_monthly AS (
-                SELECT
-                  BP_MONTH,
-                  PMC_NAME,
-                  SUM(CHARGED_USERS_COUNT) / NULLIF(SUM(PROPERTY_UNIT_COUNT)::FLOAT, 0) AS nar
-                FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS
-                WHERE PMC_NAME IN (${placeholders})
-                  AND IS_INTEGRATED_TOTAL = TRUE
-                  AND BP_MONTH BETWEEN DATEADD('month', -${lookback_months + 3}, ?::DATE) AND ?
-                GROUP BY BP_MONTH, PMC_NAME
-             ),
-             smoothed AS (
-                SELECT
-                  BP_MONTH, PMC_NAME,
-                  AVG(nar) OVER (PARTITION BY PMC_NAME ORDER BY BP_MONTH ROWS BETWEEN 2 PRECEDING AND CURRENT ROW) AS smoothed_nar
-                FROM peer_monthly
-             )
-             SELECT
-               TO_VARCHAR(BP_MONTH, 'YYYY-MM-DD') AS BP_MONTH,
-               PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY smoothed_nar) AS SMOOTHED_NAR
-             FROM smoothed
-             WHERE BP_MONTH BETWEEN DATEADD('month', -?, ?::DATE) AND ?
-               AND smoothed_nar IS NOT NULL
-             GROUP BY BP_MONTH
-             HAVING COUNT(*) >= 3
-             ORDER BY BP_MONTH`,
-            RollingPeerSchema,
-            [...lockedPeers, cutoffStr, cutoffStr, lookback_months, cutoffStr, cutoffStr],
-            { label: "Rolling peer median NAR (per-month P50 from locked peers)" }
-          );
-          for (const row of rollingRows) {
-            if (row.SMOOTHED_NAR != null) {
-              rollingPeerMedianMap[row.BP_MONTH] = { p50: row.SMOOTHED_NAR };
-            }
+    const RollingPeerSchema = z.object({ BP_MONTH: z.string(), SMOOTHED_NAR: z.number().nullable() });
+    const excludedPmcsForSeg = [pmc_name];
+    if (second_pmc) excludedPmcsForSeg.push(second_pmc);
+    const excludePlaceholders = excludedPmcsForSeg.map(() => "?").join(", ");
+
+    const segPercPromise = (hubspotSegment && latestCompletedMonth)
+      ? ctx.integrations.snowflake_sso.query(
+        `WITH all_segment AS (
+           SELECT PMC_NAME, NAR,
+                  BILLS_PAID,
+                  BILLS_PAID_REPEAT,
+                  BILLS_PAID_PREV_MONTH,
+                  CASE WHEN BILLS_PAID_PREV_MONTH > 0
+                       THEN BILLS_PAID_REPEAT / BILLS_PAID_PREV_MONTH
+                       ELSE NULL END AS REPEAT_RATE,
+                  NEW_BILL_CONNECTIONS,
+                  CASE WHEN NAR > 0 AND BILLS_PAID > 0
+                       THEN NEW_BILL_CONNECTIONS / (BILLS_PAID / NAR) * 100
+                       ELSE NULL END AS ENG_PER_100
+           FROM PRODUCTION.EXTERNAL_REPORTING.PARTNER_REPORTING_CORE_METRICS
+           WHERE HUBSPOT_COMPANY_SEGMENT = ?
+             AND TO_VARCHAR(BP_MONTH, 'YYYY-MM-DD') = ?
+             AND NAR IS NOT NULL
+         ),
+         peer_pool AS (
+           SELECT * FROM all_segment WHERE PMC_NAME NOT IN (${excludePlaceholders})
+         )
+         SELECT 'NAR' AS METRIC,
+                PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY NAR) AS P25,
+                PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY NAR) AS P50,
+                PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY NAR) AS P75,
+                PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY NAR) AS P90,
+                PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY NAR) AS P99,
+                (SELECT MAX(NAR) FROM all_segment WHERE PMC_NAME = ?) AS PMC_VALUE
+         FROM peer_pool
+         UNION ALL
+         SELECT 'REPEAT_RATE' AS METRIC,
+                PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY REPEAT_RATE) AS P25,
+                PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY REPEAT_RATE) AS P50,
+                PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY REPEAT_RATE) AS P75,
+                PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY REPEAT_RATE) AS P90,
+                PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY REPEAT_RATE) AS P99,
+                (SELECT MAX(REPEAT_RATE) FROM all_segment WHERE PMC_NAME = ?) AS PMC_VALUE
+         FROM peer_pool
+         WHERE REPEAT_RATE IS NOT NULL
+         UNION ALL
+         SELECT 'NEW_CONNECTIONS' AS METRIC,
+                PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY ENG_PER_100) AS P25,
+                PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY ENG_PER_100) AS P50,
+                PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY ENG_PER_100) AS P75,
+                PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY ENG_PER_100) AS P90,
+                PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY ENG_PER_100) AS P99,
+                (SELECT MAX(ENG_PER_100) FROM all_segment WHERE PMC_NAME = ?) AS PMC_VALUE
+         FROM peer_pool
+         WHERE ENG_PER_100 IS NOT NULL`,
+        SegmentPercentilesSchema,
+        [hubspotSegment, latestCompletedMonth, ...excludedPmcsForSeg, pmc_name, pmc_name, pmc_name],
+        { label: "Compute segment P25/P50/P75 for multi-benchmark (peer-pool excludes self)" }
+      ).catch(() => [] as z.infer<typeof SegmentPercentilesSchema>[])
+      : Promise.resolve([] as z.infer<typeof SegmentPercentilesSchema>[]);
+
+    const rollingPromise = (lockedPeers.length >= 3)
+      ? ctx.integrations.snowflake_sso.query(
+        `WITH peer_monthly AS (
+            SELECT
+              BP_MONTH,
+              PMC_NAME,
+              SUM(CHARGED_USERS_COUNT) / NULLIF(SUM(PROPERTY_UNIT_COUNT)::FLOAT, 0) AS nar
+            FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS
+            WHERE PMC_NAME IN (${lockedPeers.map(() => "?").join(", ")})
+              AND IS_INTEGRATED_TOTAL = TRUE
+              AND BP_MONTH BETWEEN DATEADD('month', -${lookback_months + 3}, ?::DATE) AND ?
+            GROUP BY BP_MONTH, PMC_NAME
+         ),
+         smoothed AS (
+            SELECT
+              BP_MONTH, PMC_NAME,
+              AVG(nar) OVER (PARTITION BY PMC_NAME ORDER BY BP_MONTH ROWS BETWEEN 2 PRECEDING AND CURRENT ROW) AS smoothed_nar
+            FROM peer_monthly
+         )
+         SELECT
+           TO_VARCHAR(BP_MONTH, 'YYYY-MM-DD') AS BP_MONTH,
+           PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY smoothed_nar) AS SMOOTHED_NAR
+         FROM smoothed
+         WHERE BP_MONTH BETWEEN DATEADD('month', -?, ?::DATE) AND ?
+           AND smoothed_nar IS NOT NULL
+         GROUP BY BP_MONTH
+         HAVING COUNT(*) >= 3
+         ORDER BY BP_MONTH`,
+        RollingPeerSchema,
+        [...lockedPeers, cutoffStr, cutoffStr, lookback_months, cutoffStr, cutoffStr],
+        { label: "Rolling peer median NAR (per-month P50 from locked peers)" }
+      ).catch(() => [] as z.infer<typeof RollingPeerSchema>[])
+      : Promise.resolve([] as z.infer<typeof RollingPeerSchema>[]);
+
+    // Fire both independent round-trips together instead of one at a time
+    const [percRows, rollingRows] = await Promise.all([segPercPromise, rollingPromise]);
+
+    segmentPercentiles = percRows
+      .filter((r) => r.P25 != null && r.P50 != null && r.P75 != null && r.PMC_VALUE != null)
+      .map((r) => ({
+        metric: r.METRIC,
+        p25: r.P25!,
+        p50: r.P50!,
+        p75: r.P75!,
+        p90: r.P90 ?? r.P75! * 1.2,
+        p99: r.P99 ?? r.P75! * 1.4,
+        pmcValue: r.PMC_VALUE!,
+      }));
+
+    for (const row of rollingRows) {
+      if (row.SMOOTHED_NAR != null) {
+        rollingPeerMedianMap[row.BP_MONTH] = { p50: row.SMOOTHED_NAR };
+      }
+    }
+
+    // --- Canonical Peer Benchmark (one resolved P50 NAR per deck) ---
+    // Resolution order per docs/clark-session-qbr-multi-pmc-scoping.md:
+    //   1. Rolling calendar-time peer median (only for established PMCs, tenure >= 36 months)
+    //   2. Stage-bucket benchmark (nearest months_active bucket for younger PMCs)
+    //   3. Raw segment P50 fallback
+    // Every slide that shows a peer-median number MUST read from this single value.
+    {
+      const narPerc = segmentPercentiles.find((s) => s.metric === "NAR");
+
+      if (_msl >= 36) {
+        // Priority 1: segment percentile P50 (true median of peer segment)
+        // Flask uses per-property geo/size/rent-matched median; segment P50 is the
+        // best available approximation without a full time-series peer query.
+        if (narPerc) {
+          canonicalPeerNarP50 = narPerc.p50;
+        } else {
+          // Fallback: latest SEGMENT_NAR_AVG (segment-wide average, less precise)
+          const rollingValues = metricsRows
+            .filter((r) => r.SEGMENT_NAR_AVG != null)
+            .sort((a, b) => a.BP_MONTH.localeCompare(b.BP_MONTH));
+          const latestRolling = rollingValues.length > 0 ? rollingValues[rollingValues.length - 1].SEGMENT_NAR_AVG : null;
+          if (latestRolling != null) {
+            canonicalPeerNarP50 = latestRolling;
           }
-          // Also update canonicalPeerNarP50 to latest month's value for consistency
-          if (rollingRows.length > 0) {
-            const latestPeer = rollingRows[rollingRows.length - 1];
-            if (latestPeer.SMOOTHED_NAR != null) {
-              canonicalPeerNarP50 = latestPeer.SMOOTHED_NAR;
-            }
-          }
-        } catch (_e) {
-          // Fallback to static value if query fails
         }
+      } else if (_msl > 0) {
+        // Priority 2: stage-bucket benchmark — use the nearest stage's SEGMENT_NAR_AVG
+        // metricsRows are sorted by BP_MONTH ascending, so index maps to months-since-launch
+        const stageRows = metricsRows.filter((r) => r.SEGMENT_NAR_AVG != null);
+        if (stageRows.length > 0) {
+          // Pick the row closest to the PMC's current tenure (clamped to available rows)
+          const idx = Math.min(_msl - 1, stageRows.length - 1);
+          canonicalPeerNarP50 = stageRows[idx].SEGMENT_NAR_AVG!;
+        } else if (narPerc) {
+          canonicalPeerNarP50 = narPerc.p50;
+        }
+      } else if (narPerc) {
+        // Priority 3: raw segment P50 fallback
+        canonicalPeerNarP50 = narPerc.p50;
       }
 
-      // Fallback: if tiered matching failed to produce per-month data, run a broader
-      // network-wide rolling median (all PMCs except subject) to avoid a flat line
-      if (Object.keys(rollingPeerMedianMap).length === 0) {
-        try {
-          const RollingPeerSchema = z.object({ BP_MONTH: z.string(), SMOOTHED_NAR: z.number().nullable() });
-          const networkWideRolling = await ctx.integrations.snowflake_sso.query(
-            `WITH peer_monthly AS (
-                SELECT
-                  BP_MONTH,
-                  PMC_NAME,
-                  SUM(CHARGED_USERS_COUNT) / NULLIF(SUM(PROPERTY_UNIT_COUNT)::FLOAT, 0) AS nar
-                FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS
-                WHERE PMC_NAME != ?
-                  AND IS_INTEGRATED_TOTAL = TRUE
-                  AND BP_MONTH BETWEEN DATEADD('month', -${lookback_months + 3}, ?::DATE) AND ?
-                GROUP BY BP_MONTH, PMC_NAME
-                HAVING SUM(PROPERTY_UNIT_COUNT) >= 10
-             ),
-             smoothed AS (
-                SELECT
-                  BP_MONTH, PMC_NAME,
-                  AVG(nar) OVER (PARTITION BY PMC_NAME ORDER BY BP_MONTH ROWS BETWEEN 2 PRECEDING AND CURRENT ROW) AS smoothed_nar
-                FROM peer_monthly
-             )
-             SELECT
-               TO_VARCHAR(BP_MONTH, 'YYYY-MM-DD') AS BP_MONTH,
-               PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY smoothed_nar) AS SMOOTHED_NAR
-             FROM smoothed
-             WHERE BP_MONTH BETWEEN DATEADD('month', -?, ?::DATE) AND ?
-               AND smoothed_nar IS NOT NULL
-             GROUP BY BP_MONTH
-             HAVING COUNT(*) >= 10
-             ORDER BY BP_MONTH`,
-            RollingPeerSchema,
-            [pmc_name, cutoffStr, cutoffStr, lookback_months, cutoffStr, cutoffStr],
-            { label: "Network-wide rolling median NAR (fallback)" }
-          );
-          for (const row of networkWideRolling) {
-            if (row.SMOOTHED_NAR != null) {
-              rollingPeerMedianMap[row.BP_MONTH] = { p50: row.SMOOTHED_NAR };
-            }
-          }
-        } catch (_e2) {
-          // If even the network-wide query fails, peer median line will be hidden
+      // Rolling per-month data, if present, overrides the single P50 above with the latest
+      // month's own smoothed value for consistency with the adoption-trend chart's own line.
+      if (rollingRows.length > 0) {
+        const latestPeer = rollingRows[rollingRows.length - 1];
+        if (latestPeer.SMOOTHED_NAR != null) {
+          canonicalPeerNarP50 = latestPeer.SMOOTHED_NAR;
         }
+      }
+    }
+
+    // Fallback: if tiered matching failed to produce per-month data, run a broader
+    // network-wide rolling median (all PMCs except subject) to avoid a flat line. This one
+    // stays sequential — it's a genuine fallback that only fires when the query above came
+    // back empty, so it can't be fired in parallel with it.
+    if (_msl >= 36 && networkPoolProps.length > 0 && Object.keys(rollingPeerMedianMap).length === 0) {
+      try {
+        const networkWideRolling = await ctx.integrations.snowflake_sso.query(
+          `WITH peer_monthly AS (
+              SELECT
+                BP_MONTH,
+                PMC_NAME,
+                SUM(CHARGED_USERS_COUNT) / NULLIF(SUM(PROPERTY_UNIT_COUNT)::FLOAT, 0) AS nar
+              FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS
+              WHERE PMC_NAME != ?
+                AND IS_INTEGRATED_TOTAL = TRUE
+                AND BP_MONTH BETWEEN DATEADD('month', -${lookback_months + 3}, ?::DATE) AND ?
+              GROUP BY BP_MONTH, PMC_NAME
+              HAVING SUM(PROPERTY_UNIT_COUNT) >= 10
+           ),
+           smoothed AS (
+              SELECT
+                BP_MONTH, PMC_NAME,
+                AVG(nar) OVER (PARTITION BY PMC_NAME ORDER BY BP_MONTH ROWS BETWEEN 2 PRECEDING AND CURRENT ROW) AS smoothed_nar
+              FROM peer_monthly
+           )
+           SELECT
+             TO_VARCHAR(BP_MONTH, 'YYYY-MM-DD') AS BP_MONTH,
+             PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY smoothed_nar) AS SMOOTHED_NAR
+           FROM smoothed
+           WHERE BP_MONTH BETWEEN DATEADD('month', -?, ?::DATE) AND ?
+             AND smoothed_nar IS NOT NULL
+           GROUP BY BP_MONTH
+           HAVING COUNT(*) >= 10
+           ORDER BY BP_MONTH`,
+          RollingPeerSchema,
+          [pmc_name, cutoffStr, cutoffStr, lookback_months, cutoffStr, cutoffStr],
+          { label: "Network-wide rolling median NAR (fallback)" }
+        );
+        for (const row of networkWideRolling) {
+          if (row.SMOOTHED_NAR != null) {
+            rollingPeerMedianMap[row.BP_MONTH] = { p50: row.SMOOTHED_NAR };
+          }
+        }
+      } catch (_e2) {
+        // If even the network-wide query fails, peer median line will be hidden
       }
     }
 
