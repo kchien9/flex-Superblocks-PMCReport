@@ -1,0 +1,247 @@
+/**
+ * Market Map slide renderer.
+ * Produces one HTML slide with a Leaflet map + stats panel per qualifying market.
+ */
+
+import type { SlideResult } from "./slide-renderers.js";
+import type {
+  Market,
+  MarketSummary,
+  NetworkPin,
+  ProspectPin,
+  MarketGuarantee,
+} from "./market-map-data.js";
+import { marketTotals, marketAnnualGuarantee } from "./market-map-data.js";
+
+// ─── Helpers ────────────────────────────────────────────────────────────────
+
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function fmtAbbrev(v: number, decimals = 0): string {
+  const trim = (s: string) => {
+    if (decimals > 0 && s.includes(".")) return s.replace(/0+$/, "").replace(/\.$/, "");
+    return s;
+  };
+  if (v >= 1_000_000_000) return `$${trim((v / 1_000_000_000).toFixed(decimals))}B`;
+  if (v >= 1_000_000) return `$${trim((v / 1_000_000).toFixed(decimals))}M`;
+  if (v >= 1_000) return `$${trim((v / 1_000).toFixed(decimals))}K`;
+  return `$${trim(v.toFixed(decimals))}`;
+}
+
+// ─── Constants ──────────────────────────────────────────────────────────────
+
+const NETWORK_PURPLE = "#6A3DB8";
+const NEW_HIGHLIGHT = "#DDC6F9";
+const PROSPECT_GREEN = "#1a9e6a";
+
+function pinIconSvg(color: string): string {
+  return (
+    `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" style="flex-shrink:0;margin-top:2px;">` +
+    `<path d="M12 2C7.58 2 4 5.58 4 10c0 5.25 6.72 11.34 7.39 11.94a.9.9 0 0 0 1.22 0` +
+    `C13.28 21.34 20 15.25 20 10c0-4.42-3.58-8-8-8z" fill="${color}"/>` +
+    `<circle cx="12" cy="10" r="3.2" fill="#FFFFFF"/></svg>`
+  );
+}
+
+function bullet(label: string, value: string, sub = "", color = NETWORK_PURPLE): string {
+  const subHtml = sub
+    ? `<div style="font-size:13px;color:#6b7280;margin-top:4px;">${sub}</div>`
+    : "";
+  return `
+    <div style="display:flex;align-items:flex-start;gap:14px;padding:18px 0;border-bottom:1px solid #ede9fe;">
+      ${pinIconSvg(color)}
+      <div>
+        <div style="font-size:16px;color:#1D1D1D;">${label}: <strong style="color:${color};">${value}</strong></div>
+        ${subHtml}
+      </div>
+    </div>`;
+}
+
+// ─── Public ─────────────────────────────────────────────────────────────────
+
+export function renderMarketMap(
+  slideId: number,
+  market: Market,
+  summaryByDma: Record<string, MarketSummary>,
+  prospectPins: ProspectPin[],
+  networkPins: NetworkPin[],
+  prospectUnits: number,
+  avgRentInput: number | null
+): SlideResult {
+  const totals = marketTotals(market, summaryByDma);
+  const {
+    total_properties,
+    total_pmcs,
+    total_active_users,
+    avg_adoption,
+    rent_paid_month,
+    total_rent_paid_all_time,
+    new_properties_this_year,
+    new_pmcs_this_year,
+    new_properties_rent_paid,
+  } = totals;
+
+  // Build stats bullets
+  let bulletsHtml =
+    bullet(
+      "Properties on Flex in this market",
+      `${total_properties.toLocaleString()}`,
+      `across ${total_pmcs.toLocaleString()} property management companies`
+    ) +
+    bullet("Active residents splitting rent", `${total_active_users.toLocaleString()}`) +
+    bullet("Average adoption rate", `${(avg_adoption * 100).toFixed(1)}%`) +
+    bullet(
+      "Rent guaranteed through Flex",
+      `${fmtAbbrev(rent_paid_month, 1)}/mo`,
+      `${fmtAbbrev(total_rent_paid_all_time, 1)} paid out all-time`
+    ) +
+    bullet(
+      "New to Flex this year",
+      `${new_properties_this_year.toLocaleString()} properties`,
+      `across ${new_pmcs_this_year.toLocaleString()} PMCs — already generating ${fmtAbbrev(new_properties_rent_paid, 1)} in guaranteed rent`,
+      NEW_HIGHLIGHT
+    );
+
+  // Green guarantee bullet
+  const guarantee: MarketGuarantee = marketAnnualGuarantee(totals, prospectUnits, avgRentInput);
+  let guaranteeFootnoteHtml = "";
+  if (guarantee.show_guarantee) {
+    bulletsHtml += bullet(
+      "Your portfolio could be guaranteeing",
+      `${fmtAbbrev(guarantee.annual_guarantee, 1)}/yr`,
+      "",
+      PROSPECT_GREEN
+    );
+    const rentSource = guarantee.avg_rent_is_market_fallback
+      ? "this market's average rent"
+      : "your average rent input";
+    guaranteeFootnoteHtml = `
+      <div style="font-size:11px;color:#a09cb0;margin-top:14px;line-height:1.5;">
+        Estimated guarantee: your ${prospectUnits.toLocaleString()} units &times; $${guarantee.avg_rent.toLocaleString(undefined, { maximumFractionDigits: 0 })}/mo
+        (${rentSource}) &times; ${(avg_adoption * 100).toFixed(1)}% market adoption rate, annualized.
+        Actual results will vary.
+      </div>`;
+  }
+
+  // Header
+  const headerHtml = `
+    <div style="font-size:14px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:${NETWORK_PURPLE};margin-bottom:10px;">FLEX IS ALREADY IN YOUR MARKET</div>
+    <div style="font-size:32px;font-weight:700;color:#1D1D1D;margin-bottom:14px;">${escapeHtml(market.label)}</div>
+    <div style="border-top:2px solid ${NETWORK_PURPLE};margin-bottom:8px;"></div>`;
+
+  // "Not pictured" note
+  const pinsNotPictured = Math.max(0, total_properties - networkPins.length);
+  const notPicturedHtml = pinsNotPictured > 0
+    ? `<div style="margin-top:6px;padding-top:6px;border-top:1px solid rgba(0,0,0,0.08);color:#6b7280;">
+        Showing ${networkPins.length.toLocaleString()} of ${total_properties.toLocaleString()} properties &mdash;
+        <strong style="color:#1D1D1D;">${pinsNotPictured.toLocaleString()} more</strong> not pictured
+      </div>`
+    : "";
+
+  // Legend
+  const prospectLabel = prospectPins.length === 1 ? "Your 1 property" : `Your ${prospectPins.length.toLocaleString()} properties`;
+
+  const html = `
+  <style>
+    .market-map-pin-label {
+      background: #FFFFFF; border: 1px solid ${NETWORK_PURPLE}; border-radius: 4px;
+      font-family: inherit; font-size: 10px; font-weight: 600; color: #1D1D1D;
+      padding: 2px 6px; box-shadow: none;
+    }
+    .market-map-pin-label::before { display: none; }
+  </style>
+  <div class="slide" id="slide-${slideId}" style="background:#FFFFFF;flex-direction:row;padding:0;">
+    <div style="flex:1.2;position:relative;">
+      <div id="map-${slideId}" style="position:absolute;inset:0;"></div>
+      <div style="position:absolute;bottom:16px;left:16px;z-index:1000;background:rgba(255,255,255,0.92);border-radius:8px;padding:10px 14px;font-size:11px;color:#1D1D1D;box-shadow:0 2px 8px rgba(0,0,0,0.12);">
+        <div style="display:flex;align-items:center;gap:7px;margin-bottom:5px;"><span style="width:9px;height:9px;border-radius:50%;background:${PROSPECT_GREEN};display:inline-block;"></span>${prospectLabel}</div>
+        <div style="display:flex;align-items:center;gap:7px;margin-bottom:5px;"><span style="width:9px;height:9px;border-radius:50%;background:${NETWORK_PURPLE};display:inline-block;"></span>Flex network</div>
+        <div style="display:flex;align-items:center;gap:7px;"><span style="width:9px;height:9px;border-radius:50%;background:${NEW_HIGHLIGHT};display:inline-block;"></span>New to Flex this year</div>
+        ${notPicturedHtml}
+      </div>
+    </div>
+    <div style="flex:1;padding:32px 28px;overflow-y:auto;border-left:2px solid #1D1D1D;">
+      ${headerHtml}
+      ${bulletsHtml}
+      ${guaranteeFootnoteHtml}
+    </div>
+  </div>`;
+
+  // Serialize pin data for JS
+  const networkPinsJson = JSON.stringify(
+    networkPins.map(p => ({ lat: p.lat, lon: p.lon, is_new_this_year: p.is_new_this_year }))
+  );
+  const prospectPinsJson = JSON.stringify(
+    prospectPins.map(p => ({ lat: p.lat, lon: p.lon, property_name: p.property_name }))
+  );
+
+  const js = `<script>
+window['initSlide${slideId}'] = (function() {
+  let done = false;
+  return function() {
+    if (done) return;
+    if (typeof L === 'undefined') return;
+    done = true;
+    const map = L.map('map-${slideId}', {center: [39.8, -98.6], zoom: 4});
+    L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png', {
+      attribution: '&copy; OpenStreetMap &copy; CARTO'
+    }).addTo(map);
+    function isFinitePin(p) { return Number.isFinite(p.lat) && Number.isFinite(p.lon); }
+    const networkPins = (${networkPinsJson}).filter(isFinitePin);
+    const prospectPins = (${prospectPinsJson}).filter(isFinitePin);
+    const bounds = [];
+    function pinIcon(color, size) {
+      const w = size || 26, h = w * 32 / 24;
+      return L.divIcon({
+        className: '',
+        html: '<svg width="' + w + '" height="' + h + '" viewBox="0 0 24 32" fill="none">'
+          + '<path d="M12 0C5.37 0 0 5.37 0 12c0 8.5 10.5 18.5 11.3 19.3a1 1 0 0 0 1.4 0'
+          + 'C13.5 30.5 24 20.5 24 12 24 5.37 18.63 0 12 0z" fill="' + color + '"/>'
+          + '<circle cx="12" cy="12" r="4.2" fill="#FFFFFF"/></svg>',
+        iconSize: [w, h], iconAnchor: [w / 2, h],
+      });
+    }
+    networkPins.forEach(function(p) {
+      var pinColor = p.is_new_this_year ? '${NEW_HIGHLIGHT}' : '${NETWORK_PURPLE}';
+      L.marker([p.lat, p.lon], {icon: pinIcon(pinColor)}).addTo(map);
+      bounds.push([p.lat, p.lon]);
+    });
+    prospectPins.forEach(function(p) {
+      var marker = L.marker([p.lat, p.lon], {icon: pinIcon('${PROSPECT_GREEN}'), zIndexOffset: 1000}).addTo(map);
+      if (p.property_name) {
+        marker.bindTooltip(p.property_name, {permanent: true, direction: 'right', offset: [10, -14], className: 'market-map-pin-label'});
+      }
+      bounds.push([p.lat, p.lon]);
+    });
+    setTimeout(function() {
+      map.invalidateSize();
+      try {
+        if (bounds.length) {
+          // Wrap in L.latLngBounds first — calling .pad() on a plain array crashes.
+          // The same object is reused for both fitBounds and setMaxBounds.
+          var fittedBounds = L.latLngBounds(bounds);
+          map.fitBounds(fittedBounds, {padding: [20, 20], animate: false});
+          map.setMinZoom(map.getZoom());
+          // Constrain panning to prevent the map from scrolling into empty space.
+          // pad(0.3) adds 30% breathing room so the user can still drag a little.
+          map.setMaxBounds(fittedBounds.pad(0.3));
+        } else {
+          map.setMinZoom(4);
+        }
+      } catch (e) {
+        console.error('slide ${slideId} fitBounds failed:', e);
+        map.setMinZoom(4);
+      }
+    }, 0);
+  };
+})();
+</script>`;
+
+  return { html, js };
+}
