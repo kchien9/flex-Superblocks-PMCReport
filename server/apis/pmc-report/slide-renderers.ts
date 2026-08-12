@@ -891,6 +891,7 @@ interface PropertyRow {
   avgRent?: number;
   trendFlag?: TrendFlag;
   t12EngPer100?: number;
+  hasMarketingIntegration?: boolean;
   peerNar?: number | null;
   peerNarCriteria?: string;
   peerNarCount?: number;
@@ -1070,14 +1071,42 @@ export function renderPropertiesWorthCelebrating(input: {
 // Adoption Opportunities — bottom performers needing attention
 // ─────────────────────────────────────────────────────────────────────────────
 
+export interface NewRolloutCandidate {
+  propertyName: string;
+  propertyState?: string;
+  units: number;
+  ageMonths: number;
+  adoptionRate: number;
+  benchNar: number;
+  observedEngPer100: number;
+  expectedEngPer100: number;
+  hasMarketingIntegration?: boolean;
+}
+
+export interface DisabledPropertyRow {
+  propertyName: string;
+  units: number;
+  deactivationLabel: string;
+  lastSeenMonth?: string | null;
+}
+
 export function renderAdoptionOpportunities(input: {
   slideId: number;
   propertySnapshot: PropertyRow[];
   targetNar: number;
   peerMedianNar?: number;
   peerMedianEngagement?: number;
+  /** Properties rolled out in the last 6 months, below their age-matched benchmark. */
+  newRolloutCandidates?: NewRolloutCandidate[];
+  /** Deactivated properties (churn/transfer/API-access/enrollment), partner-relevant reasons only. */
+  disabledProperties?: DisabledPropertyRow[];
+  /** Live presenting has no fixed-height/no-scroll PDF export constraint, so row caps lift. */
+  presentingMode?: boolean;
 }): { html: string; js: string } {
-  const { slideId, propertySnapshot, targetNar, peerMedianNar, peerMedianEngagement } = input;
+  const {
+    slideId, propertySnapshot, targetNar: _targetNar, peerMedianNar, peerMedianEngagement,
+    newRolloutCandidates = [], disabledProperties = [], presentingMode = false,
+  } = input;
 
   // Shared established-property pool (live 7+mo, meaningful size/rent sample) — same baseline
   // "Properties Worth Celebrating" ranks within, so the two slides can never silently disagree
@@ -1086,24 +1115,147 @@ export function renderAdoptionOpportunities(input: {
   // or a property whose rent estimate (from a single payer) landed just outside the rent band.
   const { established, portfolioAvgNar, portfolioAvgEng } = buildEstablishedPool(propertySnapshot);
 
-  // Bottom performers: largest opportunity by (gap × units)
-  const laggards = established
+  // Row-budget split between the New Rollouts and Established sections. Mirrors Flask's
+  // real split (generator/slides.py:5215-5223): 11 total when only one section has content,
+  // 5 (new-rollout) + 7 (established) when both do — the proven-safe combined total for the
+  // fixed-height slide with no scroll fallback in the static/PDF export path. Both caps lift
+  // entirely when presenting live in-browser (scrolling works fine there).
+  const totalRowBudget = 11;
+  const estHasCandidates = established.some((p) => p.adoptionRate < portfolioAvgNar);
+
+  // ── New Rollouts — Below Benchmark ──────────────────────────────────────
+  // Flask: render_adoption_opportunities, generator/slides.py:5226-5318. Properties rolled
+  // out in the last 6 months, compared against an age-since-rollout benchmark (network-wide,
+  // not geo-matched — the established peer pool excludes anything under 7mo live, so it has
+  // no candidates this young). Filtered to age>=2mo, adoption<50% of benchmark, and skips
+  // anything already at/above expected engagement (that gap is Flex-side, not PMC-actionable).
+  // Sorted by engagement gap descending — the easiest, most concrete conversation first.
+  const nrCap = presentingMode ? Infinity : (estHasCandidates ? 5 : totalRowBudget);
+  const nrConcern = newRolloutCandidates
+    .filter((c) => c.ageMonths >= 2 && c.benchNar > 0 && c.adoptionRate < c.benchNar * 0.5
+      && !(c.expectedEngPer100 > 0 && c.observedEngPer100 >= c.expectedEngPer100))
+    .sort((a, b) => (b.expectedEngPer100 - b.observedEngPer100) - (a.expectedEngPer100 - a.observedEngPer100));
+  const nrShown = Number.isFinite(nrCap) ? nrConcern.slice(0, nrCap) : nrConcern;
+  const nrOnTrackCount = Math.max(0, newRolloutCandidates.length - nrConcern.length);
+
+  let newRolloutSection = "";
+  if (nrShown.length > 0) {
+    const nrRowsHtml = nrShown.map((c) => {
+      const d2c = c.hasMarketingIntegration
+        ? '<span style="font-size:8px;font-weight:600;color:#15803d;background:#dcfce7;border:1px solid #bbf7d0;border-radius:3px;padding:1px 5px;margin-left:5px;">Direct Marketing on</span>'
+        : '<span style="font-size:8px;font-weight:600;color:#dc2626;background:#fee2e2;border:1px solid #fecaca;border-radius:3px;padding:1px 5px;margin-left:5px;">Direct Marketing off</span>';
+      return `
+      <tr style="border-bottom:1px solid #f0f0f4;">
+        <td style="padding:5px 8px 5px 4px;">
+          <div style="font-size:11px;font-weight:600;color:#1D1D1D;line-height:1.3;">${_e(c.propertyName)}${d2c}</div>
+          <div style="font-size:9px;color:#a09cb0;margin-top:1px;">${_e(c.propertyState || "")} · ${c.units.toLocaleString()} units · mo ${c.ageMonths}</div>
+        </td>
+        <td style="padding:5px 8px;text-align:right;font-size:13px;font-weight:700;color:#dc2626;">${(c.adoptionRate * 100).toFixed(1)}%</td>
+        <td style="padding:5px 8px;text-align:right;font-size:12px;color:#6b7280;">${(c.benchNar * 100).toFixed(1)}%</td>
+        <td style="padding:5px 8px;text-align:right;font-size:12px;color:#374151;">${c.observedEngPer100.toFixed(0)}</td>
+        <td style="padding:5px 8px;text-align:right;font-size:12px;color:#9ca3af;">${c.expectedEngPer100 > 0 ? c.expectedEngPer100.toFixed(0) : "-"}</td>
+      </tr>`;
+    }).join("");
+    const onTrackNote = nrOnTrackCount > 0
+      ? ` · <span style="color:#16a34a;font-weight:600;">${nrOnTrackCount} on track</span>`
+      : "";
+    newRolloutSection = `
+    <div style="flex-shrink:0;margin-bottom:12px;">
+      <div style="background:#fff7ed;border-left:4px solid #d97706;border-radius:0 6px 6px 0;padding:6px 12px;margin-bottom:8px;display:flex;align-items:baseline;gap:8px;">
+        <span style="font-size:11px;font-weight:700;color:#d97706;text-transform:uppercase;letter-spacing:0.06em;">New Rollouts - Below Benchmark</span>
+        <span style="font-size:10px;color:#a09cb0;">${newRolloutCandidates.length} launched last 6 months · ${nrConcern.length} below benchmark${onTrackNote}</span>
+      </div>
+      <table style="width:100%;border-collapse:collapse;table-layout:fixed;">
+        <colgroup><col style="width:190px;"><col style="width:68px;"><col style="width:75px;"><col style="width:80px;"><col style="width:88px;"></colgroup>
+        <thead>
+          <tr>
+            <th rowspan="2" style="padding:3px 8px 3px 4px;font-size:8px;font-weight:600;color:#9ca3af;text-align:left;text-transform:uppercase;letter-spacing:0.06em;vertical-align:bottom;">Property</th>
+            <th colspan="2" style="padding:4px 8px 3px;font-size:9px;font-weight:800;color:#374151;text-align:center;text-transform:uppercase;letter-spacing:0.08em;border-bottom:2px solid #9ca3af;">Adoption Rate</th>
+            <th colspan="2" style="padding:4px 8px 3px;font-size:9px;font-weight:800;color:#374151;text-align:center;text-transform:uppercase;letter-spacing:0.08em;border-bottom:2px solid #9ca3af;">Engagement (per 100, T12)</th>
+          </tr>
+          <tr style="border-bottom:1px solid #e5e7eb;">
+            <th style="padding:2px 8px 3px;font-size:8px;font-weight:600;color:#6b7280;text-align:right;text-transform:uppercase;letter-spacing:0.04em;">Observed</th>
+            <th style="padding:2px 8px 3px;font-size:8px;font-weight:600;color:#6b7280;text-align:right;text-transform:uppercase;letter-spacing:0.04em;">Expected</th>
+            <th style="padding:2px 8px 3px;font-size:8px;font-weight:600;color:#6b7280;text-align:right;text-transform:uppercase;letter-spacing:0.04em;">Observed</th>
+            <th style="padding:2px 8px 3px;font-size:8px;font-weight:600;color:#6b7280;text-align:right;text-transform:uppercase;letter-spacing:0.04em;">Expected</th>
+          </tr>
+        </thead>
+        <tbody>${nrRowsHtml}</tbody>
+      </table>
+      <div style="font-size:9px;color:#9ca3af;margin-top:5px;font-style:italic;">Adoption expected = network P50 at same months since rollout · Engagement = new bill connections per 100 units, T12 · Expected = network P50</div>
+    </div>`;
+  }
+
+  // ── Established — Lagging ───────────────────────────────────────────────
+  // Sort: biggest gap to portfolio avg first, then 0%-adoption, then D2C-off, then
+  // opportunity score (gap × units) as the final tiebreaker — matches Flask's real priority
+  // order (generator/slides.py:5388-5390) exactly. Was previously sorted by opportunity score
+  // (gap × units) alone, which could bury a severe (large-gap, small-property) laggard under
+  // several milder-gap-but-larger ones.
+  const ranked = established
     .filter((p) => p.adoptionRate < portfolioAvgNar)
-    .sort((a, b) => {
-      const gapA = (portfolioAvgNar - a.adoptionRate) * a.units;
-      const gapB = (portfolioAvgNar - b.adoptionRate) * b.units;
-      return gapB - gapA;
+    .map((p) => {
+      const narGap = portfolioAvgNar - p.adoptionRate;
+      const isZero = p.adoptionRate === 0;
+      const noD2c = p.hasMarketingIntegration !== true;
+      const opportunityScore = p.units * narGap;
+      const eng = p.t12EngPer100 ?? (p.newSignups / Math.max(p.units, 1)) * 100;
+      const expEng = p.peerEng ?? peerMedianEngagement ?? 0;
+      return { p, narGap, isZero, noD2c, opportunityScore, eng, expEng };
     })
-    .slice(0, 12);
+    .sort((a, b) => {
+      if (b.narGap !== a.narGap) return b.narGap - a.narGap;
+      if (Number(b.isZero) !== Number(a.isZero)) return Number(b.isZero) - Number(a.isZero);
+      if (Number(b.noD2c) !== Number(a.noD2c)) return Number(b.noD2c) - Number(a.noD2c);
+      return b.opportunityScore - a.opportunityScore;
+    });
 
-  if (laggards.length === 0) return { html: "", js: "" };
+  // Zero-adoption rows capped at 3 (content curation — matches Flask's _MAX_ZERO), and any
+  // row where engagement is already at/above peer-expected is skipped entirely — that gap is
+  // Flex-side (underwriting/UX/pricing), not something the PMC can act on. Total row budget
+  // shrinks to 7 when the New Rollouts section also has content; both caps lift when
+  // presenting live.
+  const maxTotal = presentingMode ? Infinity : (newRolloutSection ? 7 : totalRowBudget);
+  const maxZero = 3;
+  let zeroShown = 0;
+  let totalShown = 0;
+  const laggards: typeof ranked = [];
+  for (const r of ranked) {
+    if (totalShown >= maxTotal) continue;
+    if (r.isZero) {
+      if (zeroShown >= maxZero) continue;
+      zeroShown++;
+    }
+    if (r.expEng > 0 && r.eng >= r.expEng) continue;
+    totalShown++;
+    laggards.push(r);
+  }
 
-  const totalPotential = laggards.reduce((s, p) => s + Math.round((portfolioAvgNar - p.adoptionRate) * p.units), 0);
+  // ── Disabled Properties ─────────────────────────────────────────────────
+  const disabledRowsHtml = disabledProperties.map((d) => `
+    <tr style="border-bottom:1px solid #f0f0f4;">
+      <td style="padding:5px 8px 5px 4px;">
+        <div style="font-size:11px;font-weight:600;color:#6b7280;">${_e(d.propertyName)}</div>
+        <div style="font-size:9px;color:#a09cb0;margin-top:1px;">${d.units.toLocaleString()} units${d.lastSeenMonth ? ` · left ${_e(d.lastSeenMonth)}` : ""}</div>
+      </td>
+      <td style="padding:5px 8px;font-size:11px;color:#6b7280;" colspan="3">${_e(d.deactivationLabel)}</td>
+    </tr>`).join("");
+  const disabledSection = disabledRowsHtml ? `
+    <div style="flex-shrink:0;padding-top:8px;border-top:1px solid #f0f0f4;margin-top:6px;">
+      <div style="font-size:8px;font-weight:700;color:#9ca3af;text-transform:uppercase;letter-spacing:0.1em;margin-bottom:4px;">No Longer Active</div>
+      <table style="width:100%;border-collapse:collapse;table-layout:fixed;">
+        <colgroup><col style="width:220px;"><col></colgroup>
+        <tbody>${disabledRowsHtml}</tbody>
+      </table>
+    </div>` : "";
 
-  const hasTrend = laggards.some((p) => p.trendFlag);
+  // ── Early exit if nothing to show ───────────────────────────────────────
+  if (laggards.length === 0 && !newRolloutSection && !disabledSection) return { html: "", js: "" };
 
-  const rowsHtml = laggards.map((p) => {
-    const eng = p.t12EngPer100 ?? (p.newSignups / Math.max(p.units, 1)) * 100;
+  const totalPotential = laggards.reduce((s, r) => s + Math.round(r.narGap * r.p.units), 0);
+  const hasTrend = laggards.some((r) => r.p.trendFlag);
+
+  const rowsHtml = laggards.map(({ p, eng, expEng }) => {
     // Per-property peer NAR (geography/rent/time-aware) — falls back to slide-level peerMedianNar
     const pNar = p.peerNar ?? peerMedianNar;
     const peerNarTitle = p.peerNarCriteria && p.peerNarCount
@@ -1113,22 +1265,24 @@ export function renderAdoptionOpportunities(input: {
       ? `<span style="text-decoration:underline dotted #9ca3af;text-underline-offset:2px;cursor:help;" title="${peerNarTitle}">${(pNar * 100).toFixed(1)}%</span>`
       : "-";
     // Per-property peer engagement
-    const pEng = p.peerEng ?? peerMedianEngagement;
     const peerEngTitle = p.peerEngCriteria && p.peerEngCount
       ? `${_e(p.peerEngCriteria)} · ${p.peerEngCount} peers`
       : (p.peerEng == null && peerMedianEngagement != null ? "Network-wide median" : "");
-    const peerEngCell = pEng != null
-      ? `<span style="text-decoration:underline dotted #9ca3af;text-underline-offset:2px;cursor:help;" title="${peerEngTitle}">${pEng.toFixed(0)}</span>`
+    const peerEngCell = expEng > 0
+      ? `<span style="text-decoration:underline dotted #9ca3af;text-underline-offset:2px;cursor:help;" title="${peerEngTitle}">${expEng.toFixed(0)}</span>`
       : "-";
+    const d2cBadge = p.hasMarketingIntegration
+      ? '<span style="font-size:8px;font-weight:600;color:#15803d;background:#dcfce7;border:1px solid #bbf7d0;border-radius:3px;padding:1px 5px;margin-left:5px;vertical-align:middle;">Direct Marketing on</span>'
+      : '<span style="font-size:8px;font-weight:600;color:#dc2626;background:#fee2e2;border:1px solid #fecaca;border-radius:3px;padding:1px 5px;margin-left:5px;vertical-align:middle;">Direct Marketing off</span>';
     // Reconcile contradiction: "improving" badge on a "needs attention" property
-    let badge = p.trendFlag ? _trendBadgeHtml(p.trendFlag, p.monthsLive) : "";
-    if (badge && p.trendFlag?.direction === "improve") {
-      badge += `<span style="font-size:8px;color:#6b7280;margin-left:3px;">(still below avg)</span>`;
+    let trendBadge = p.trendFlag ? _trendBadgeHtml(p.trendFlag, p.monthsLive) : "";
+    if (trendBadge && p.trendFlag?.direction === "improve") {
+      trendBadge += `<span style="font-size:8px;color:#6b7280;margin-left:3px;">(still below avg)</span>`;
     }
     return `
       <tr style="border-bottom:1px solid #f0f0f4;">
         <td style="padding:6px 8px 6px 4px;">
-          <div style="font-size:11px;font-weight:600;color:#1D1D1D;line-height:1.3;">${_e(p.propertyName)}${badge}</div>
+          <div style="font-size:11px;font-weight:600;color:#1D1D1D;line-height:1.3;">${_e(p.propertyName)}${d2cBadge}${trendBadge}</div>
           <div style="font-size:9px;color:#a09cb0;margin-top:1px;">${_e(p.propertyState || "")} · ${p.units.toLocaleString()} units${p.monthsLive ? ` · ${p.monthsLive}mo` : ""}</div>
         </td>
         <td style="padding:6px 8px;text-align:right;font-size:13px;font-weight:700;color:#dc5050;">${(p.adoptionRate * 100).toFixed(1)}%</td>
@@ -1140,8 +1294,14 @@ export function renderAdoptionOpportunities(input: {
       </tr>`;
   }).join("");
 
-  const tableHtml = `
+  const establishedHeaderHtml = newRolloutSection ? `
+      <div style="background:#f5f3ff;border-left:4px solid #6A3DB8;border-radius:0 6px 6px 0;padding:6px 12px;margin-bottom:8px;">
+        <span style="font-size:11px;font-weight:700;color:#6A3DB8;text-transform:uppercase;letter-spacing:0.06em;">Established - Lagging</span>
+      </div>` : "";
+
+  const establishedSection = rowsHtml ? `
     <div style="flex:1;overflow-y:auto;min-height:0;">
+      ${establishedHeaderHtml}
       <table style="width:100%;border-collapse:collapse;table-layout:fixed;">
         <colgroup>
           <col style="width:150px;">
@@ -1170,7 +1330,7 @@ export function renderAdoptionOpportunities(input: {
         <tbody>${rowsHtml}</tbody>
       </table>
       <div style="font-size:9px;color:#9ca3af;margin-top:5px;font-style:italic;">Portfolio avg = this portfolio's own average · Peer median = comparable properties network-wide (same state/size/rent) · Engagement = new bill connections per 100 units</div>
-    </div>`;
+    </div>` : "";
 
   const trendToggle = hasTrend ? `
     <style>#slide-${slideId}.trend-hidden .trend-badge { display: none; }</style>
@@ -1178,15 +1338,20 @@ export function renderAdoptionOpportunities(input: {
             onclick="document.getElementById('slide-${slideId}').classList.toggle('trend-hidden'); this.classList.toggle('is-active');"
             title="Show/hide the declining/improving badges">Trend badges</button>` : "";
 
+  const summaryLine = laggards.length > 0
+    ? `<div style="font-size:12px;color:#6b7280;margin-top:4px;">${laggards.length} properties below portfolio avg · ${totalPotential.toLocaleString()} potential new residents</div>`
+    : "";
+
   const html = `
   <div class="slide" id="slide-${slideId}" style="background:#fff;justify-content:flex-start;">
     <div class="slide-header" style="margin-bottom:8px;">
       <div class="slide-label">PROPERTY DEEP DIVE</div>
       <div class="slide-title" style="display:flex;align-items:center;">These properties need our attention.${trendToggle}</div>
-      <div style="font-size:12px;color:#6b7280;margin-top:4px;">${laggards.length} properties below portfolio avg · ${totalPotential.toLocaleString()} potential new residents</div>
+      ${summaryLine}
     </div>
-    ${tableHtml}
-
+    ${newRolloutSection}
+    ${establishedSection}
+    ${disabledSection}
   </div>`;
 
   return { html, js: "" };

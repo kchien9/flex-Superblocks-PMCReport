@@ -15,7 +15,7 @@ import {
   renderCustomerExperience,
   computePropertyTrendFlags,
 } from "./slide-renderers.js";
-import type { BenchmarkMetric, ResidentTrend, Testimonial, TrendFlag, YearlyData } from "./slide-renderers.js";
+import type { BenchmarkMetric, ResidentTrend, Testimonial, TrendFlag, YearlyData, NewRolloutCandidate, DisabledPropertyRow } from "./slide-renderers.js";
 import { buildSpeakerNotesHtml, buildExpansionSpeakerNotesHtml } from "./speaker-notes.js";
 import type { SpeakerNotesKpis, SpeakerNotesBenchmark, SpeakerNotesMonthlyRow } from "./speaker-notes.js";
 import {
@@ -56,7 +56,22 @@ const RawRowSchema = z.object({
   // Internal Flex sales/CS team assignment (Flask: app.py "segment_team", used as the mode
   // across a PMC's rows to detect SMB-managed accounts) — NOT a HubSpot company-segment field.
   SEGMENT_TEAM: z.string().nullable(),
+  // Direct-to-resident marketing opt-in (Flask: is_marketing_opt_in) — drives the "Direct
+  // Marketing on/off" badge and D2C tiebreaker on the Property Deep Dive slides.
+  HAS_MARKETING_INTEGRATION: z.boolean().nullable(),
 });
+
+// Partner-relevant deactivation reasons (Flask: PARTNER_DEACTIVATION_REASONS, generator/data.py:3860)
+// — internal ops codes are excluded entirely (not in this map, filtered out at the query's
+// WHERE clause). Human-friendly labels for the "No Longer Active" section.
+const DEACTIVATION_LABELS: Record<string, string> = {
+  CHURN_PARTNER_PROCESS: "Churned — misalignment with Flex",
+  CHURN_PRODUCT: "Churned — product dissatisfaction",
+  PARTNER_VOLUNTARY_CHURN: "Churned",
+  FAILED_TO_ACTIVATE: "Failed to activate",
+  PMC_TO_PMC_TRANSFER: "Transferred to new management",
+  PARTNER_INITIATED_LOSS_OF_API_ACCESS: "API access revoked — needs investigation",
+};
 
 // --- Helpers ---
 
@@ -1603,7 +1618,8 @@ export default api({
           IS_IN_NETWORK,
           COALESCE(NEW_BILL_CONNECTIONS_PROPERTY, 0) AS NEW_BILL_CONNECTIONS,
           HUBSPOT_DEAL_TOTAL_COMPANY_UNITS,
-          STATIC_PARENT_TEAM_NAME_OPPORTUNITY AS SEGMENT_TEAM
+          STATIC_PARENT_TEAM_NAME_OPPORTUNITY AS SEGMENT_TEAM,
+          HAS_MARKETING_INTEGRATION
        FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS
        WHERE PMC_NAME = ?
          AND BP_MONTH >= DATEADD('month', -?, CURRENT_DATE())
@@ -1980,6 +1996,11 @@ export default api({
     // Tenure percentile vs. all active PMCs (1 = oldest) — gates the anniversary-milestone
     // callout below to only the top 50% most-tenured partners, matching Flask.
     let tenurePercentileFromTop: number | null = null;
+    // Deactivated properties + network-wide age-since-rollout benchmark, feeding the
+    // "These properties need our attention" slide's New Rollouts and No-Longer-Active
+    // sections (QBR only, same as the rest of this block).
+    let disabledPropertyRows: { PROPERTY_NAME: string; DEACTIVATION_REASON: string; PROPERTY_UNIT_COUNT: number; LAST_SEEN_MONTH: string | null }[] = [];
+    let stageAgeBenchmarkRows: { AGE_MONTHS: number; P50_NAR: number | null; P50_ENG_PER_100: number | null; N: number }[] = [];
 
     if (needsQBRQueries) {
       // Check cache first
@@ -2131,11 +2152,88 @@ export default api({
           { label: "Fetch PMC tenure percentile for anniversary-milestone gate" }
         ).catch(() => [] as { PERCENTILE_FROM_TOP: number | null }[]);
 
-      const [networkPoolResult, regionDetailResult, subjectIncomeRows, tenurePercentileRows] = await Promise.all([
+      // Disabled/deactivated properties for the "These properties need our attention" slide's
+      // No-Longer-Active section (Flask: pull_disabled_properties, generator/data.py:4247).
+      // Partner-relevant reasons only — internal ops codes are excluded via the WHERE clause,
+      // and PARTNER_INITIATED_LOSS_OF_API_ACCESS is additionally dropped at render time
+      // (ambiguous — may be intentional/migration, not necessarily churn).
+      const DisabledPropertySchema = z.object({
+        PROPERTY_NAME: z.string(),
+        DEACTIVATION_REASON: z.string(),
+        PROPERTY_UNIT_COUNT: z.number(),
+        LAST_SEEN_MONTH: z.string().nullable(),
+      });
+      const disabledPropertiesPromise = ctx.integrations.snowflake_sso.query(
+        `SELECT
+            PROPERTY_NAME,
+            DEACTIVATION_REASON,
+            PROPERTY_UNIT_COUNT,
+            TO_VARCHAR(MAX(BP_MONTH), 'YYYY-MM-DD') AS LAST_SEEN_MONTH
+         FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS
+         WHERE PMC_NAME IN (${subjectPlaceholders})
+           AND DEACTIVATION_REASON IN (${Object.keys(DEACTIVATION_LABELS).map(() => "?").join(", ")})
+           AND BP_MONTH >= DATEADD('month', -18, CURRENT_DATE())
+         GROUP BY PROPERTY_NAME, DEACTIVATION_REASON, PROPERTY_UNIT_COUNT
+         ORDER BY LAST_SEEN_MONTH DESC, PROPERTY_NAME`,
+        DisabledPropertySchema,
+        [...subjectPmcNames, ...Object.keys(DEACTIVATION_LABELS)],
+        { label: "Fetch deactivated properties for the No-Longer-Active section" }
+      ).catch(() => [] as z.infer<typeof DisabledPropertySchema>[]);
+
+      // Network-wide NAR + T12-engagement benchmark by months-since-rollout (age 1-11), for
+      // the New Rollouts section's "expected" columns. Flask's real equivalent
+      // (_pull_stage_benchmarks, generator/data.py:2524) geo/size/rent/D2C/NIRO-tiers this by
+      // PMC portfolio; simplified here to a network-wide-only percentile (still 100% real data,
+      // just not geo-matched) since the established per-property peer pool used elsewhere on
+      // this slide structurally excludes anything under 7 months live and has no candidates
+      // this young.
+      const StageAgeBenchmarkSchema = z.object({
+        AGE_MONTHS: z.number(),
+        P50_NAR: z.number().nullable(),
+        P50_ENG_PER_100: z.number().nullable(),
+        N: z.number(),
+      });
+      const stageAgeBenchmarkPromise = ctx.integrations.snowflake_sso.query(
+        `WITH base AS (
+            SELECT
+              PROPERTY_PUBLIC_ID,
+              PMC_NAME,
+              PROPERTY_UNIT_COUNT,
+              BP_MONTH,
+              DATEDIFF('month', ROLLOUT_MONTH, BP_MONTH) + 1 AS AGE_MONTHS,
+              BILLS_PAID_COUNT,
+              SUM(COALESCE(NEW_BILL_CONNECTIONS_PROPERTY, 0)) OVER (
+                PARTITION BY PROPERTY_PUBLIC_ID ORDER BY BP_MONTH
+              ) AS CUM_CONNECTIONS
+            FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS
+            WHERE IS_IN_NETWORK = TRUE
+              AND ROLLOUT_MONTH IS NOT NULL
+              AND PMC_NAME NOT IN (${subjectPlaceholders})
+              AND BP_MONTH >= DATEADD('month', -24, CURRENT_DATE())
+              AND BP_MONTH < ?
+         )
+         SELECT
+            AGE_MONTHS,
+            PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY BILLS_PAID_COUNT::FLOAT / NULLIF(PROPERTY_UNIT_COUNT, 0)) AS P50_NAR,
+            PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY CUM_CONNECTIONS::FLOAT / NULLIF(PROPERTY_UNIT_COUNT, 0) * 100) AS P50_ENG_PER_100,
+            COUNT(*) AS N
+         FROM base
+         WHERE AGE_MONTHS BETWEEN 1 AND 11
+         GROUP BY AGE_MONTHS
+         HAVING COUNT(*) >= 5`,
+        StageAgeBenchmarkSchema,
+        [...subjectPmcNames, cutoffStr],
+        { label: "Fetch network-wide age-since-rollout benchmark for New Rollouts section" }
+      ).catch(() => [] as z.infer<typeof StageAgeBenchmarkSchema>[]);
+
+      const [networkPoolResult, regionDetailResult, subjectIncomeRows, tenurePercentileRows, disabledPropertyResult, stageAgeBenchmarkResult] = await Promise.all([
         networkPoolPromise, regionDetailPromise, subjectIncomePromise, tenurePercentilePromise,
+        disabledPropertiesPromise, stageAgeBenchmarkPromise,
       ]);
       networkPool = networkPoolResult;
       regionDetail = regionDetailResult;
+      disabledPropertyRows = disabledPropertyResult;
+      stageAgeBenchmarkRows = stageAgeBenchmarkResult;
       for (const row of subjectIncomeRows) {
         if (row.MEDIAN_RENTER_INCOME != null && row.MEDIAN_RENTER_INCOME > 0) {
           subjectIncomeByProperty.set(row.PROPERTY_NAME, row.MEDIAN_RENTER_INCOME);
@@ -2375,6 +2473,7 @@ export default api({
           t12EngPer100: r.PROPERTY_UNIT_COUNT > 0
             ? (t12ConnMap.get(propKey) ?? 0) / r.PROPERTY_UNIT_COUNT * 100
             : 0,
+          hasMarketingIntegration: r.HAS_MARKETING_INTEGRATION ?? false,
           peerNar: undefined as number | null | undefined,
           peerNarCriteria: undefined as string | undefined,
           peerNarCount: undefined as number | undefined,
@@ -3802,6 +3901,50 @@ export default api({
       ? networkEngValues[Math.floor(networkEngValues.length / 2)]
       : undefined;
 
+    // --- New Rollouts — below age-since-rollout benchmark (Flask: generator/slides.py:5226-5318) ---
+    // Only meaningful once the portfolio itself has enough history to distinguish "new" from
+    // "everything is new" — Flask's own gate (_msfirst >= 6).
+    const stageAgeBenchmarkMap = new Map<number, { p50Nar: number; p50Eng: number }>();
+    for (const row of stageAgeBenchmarkRows) {
+      if (row.P50_NAR != null) {
+        stageAgeBenchmarkMap.set(row.AGE_MONTHS, { p50Nar: row.P50_NAR, p50Eng: row.P50_ENG_PER_100 ?? 0 });
+      }
+    }
+    const newRolloutCandidates: NewRolloutCandidate[] = [];
+    if (_msl >= 6) {
+      const newCutoffDate = latestCompletedMonth ? new Date(latestCompletedMonth) : new Date();
+      newCutoffDate.setMonth(newCutoffDate.getMonth() - 6);
+      const newCutoffStr = newCutoffDate.toISOString().slice(0, 10);
+      for (const p of propertySnapshot) {
+        if (!p.rolloutMonth || p.rolloutMonth <= newCutoffStr) continue;
+        const age = Math.max(1, p.monthsLive);
+        const bench = stageAgeBenchmarkMap.get(age);
+        newRolloutCandidates.push({
+          propertyName: p.propertyName,
+          propertyState: p.propertyState,
+          units: p.units,
+          ageMonths: age,
+          adoptionRate: p.adoptionRate,
+          benchNar: bench?.p50Nar ?? 0,
+          observedEngPer100: p.t12EngPer100 ?? 0,
+          expectedEngPer100: bench?.p50Eng ?? 0,
+          hasMarketingIntegration: p.hasMarketingIntegration,
+        });
+      }
+    }
+
+    // --- Disabled properties (Flask: pull_disabled_properties, generator/data.py:4247) ---
+    const disabledProperties: DisabledPropertyRow[] = disabledPropertyRows
+      .filter((r) => r.DEACTIVATION_REASON !== "PARTNER_INITIATED_LOSS_OF_API_ACCESS")
+      .map((r) => ({
+        propertyName: r.PROPERTY_NAME,
+        units: r.PROPERTY_UNIT_COUNT,
+        deactivationLabel: DEACTIVATION_LABELS[r.DEACTIVATION_REASON] ?? r.DEACTIVATION_REASON,
+        lastSeenMonth: r.LAST_SEEN_MONTH
+          ? new Date(r.LAST_SEEN_MONTH + "T00:00:00Z").toLocaleDateString("en-US", { month: "short", year: "numeric", timeZone: "UTC" })
+          : null,
+      }));
+
     const deepDiveBaseSlide = 9 + newDataSlideCount + testimonialSlideRendered;
     const celebrateResult = renderPropertiesWorthCelebrating({
       slideId: deepDiveBaseSlide,
@@ -3817,6 +3960,9 @@ export default api({
       targetNar,
       peerMedianNar: canonicalPeerNarP50 ?? undefined,
       peerMedianEngagement: peerMedianEngFallback,
+      newRolloutCandidates,
+      disabledProperties,
+      presentingMode: presenting_mode,
     });
 
     // Shift MetroSight & QBR Close slide IDs based on how many deep-dive slides rendered
