@@ -1252,7 +1252,6 @@ export function renderAdoptionOpportunities(input: {
   // ── Early exit if nothing to show ───────────────────────────────────────
   if (laggards.length === 0 && !newRolloutSection && !disabledSection) return { html: "", js: "" };
 
-  const totalPotential = laggards.reduce((s, r) => s + Math.round(r.narGap * r.p.units), 0);
   const hasTrend = laggards.some((r) => r.p.trendFlag);
 
   const rowsHtml = laggards.map(({ p, eng, expEng }) => {
@@ -1268,7 +1267,7 @@ export function renderAdoptionOpportunities(input: {
     const peerEngTitle = p.peerEngCriteria && p.peerEngCount
       ? `${_e(p.peerEngCriteria)} · ${p.peerEngCount} peers`
       : (p.peerEng == null && peerMedianEngagement != null ? "Network-wide median" : "");
-    const peerEngCell = expEng > 0
+    const peerEngCell = (p.peerEng ?? peerMedianEngagement) != null
       ? `<span style="text-decoration:underline dotted #9ca3af;text-underline-offset:2px;cursor:help;" title="${peerEngTitle}">${expEng.toFixed(0)}</span>`
       : "-";
     const d2cBadge = p.hasMarketingIntegration
@@ -1338,16 +1337,14 @@ export function renderAdoptionOpportunities(input: {
             onclick="document.getElementById('slide-${slideId}').classList.toggle('trend-hidden'); this.classList.toggle('is-active');"
             title="Show/hide the declining/improving badges">Trend badges</button>` : "";
 
-  const summaryLine = laggards.length > 0
-    ? `<div style="font-size:12px;color:#6b7280;margin-top:4px;">${laggards.length} properties below portfolio avg · ${totalPotential.toLocaleString()} potential new residents</div>`
-    : "";
-
+  // No summary line here — Flask's real header (generator/slides.py:5593-5601) goes straight
+  // from the title to the sections with nothing in between; a "N properties below portfolio
+  // avg · M potential new residents" line here had no basis in the reference.
   const html = `
   <div class="slide" id="slide-${slideId}" style="background:#fff;justify-content:flex-start;">
     <div class="slide-header" style="margin-bottom:8px;">
       <div class="slide-label">PROPERTY DEEP DIVE</div>
       <div class="slide-title" style="display:flex;align-items:center;">These properties need our attention.${trendToggle}</div>
-      ${summaryLine}
     </div>
     ${newRolloutSection}
     ${establishedSection}
@@ -1722,8 +1719,13 @@ export function renderAdoptionTrend(input: {
     const sbm = kpis.stage_benchmarks ?? {};
     const msl = kpis.months_since_launch ?? 0;
     const n = monthly.length;
+    // Real tenure gate — was previously only set as a side effect of stage_benchmarks having
+    // data, so when stage_benchmarks was empty (as it always is now — SEGMENT_NAR_AVG comes
+    // from a table with no real Flask equivalent), _mslIsCapped stayed false forever and the
+    // rolling_peer_median block below never ran, even though it had real, correct data. This
+    // was the actual reason the peer-median line never appeared on this chart.
+    _mslIsCapped = msl >= 36;
     if (Object.keys(sbm).length > 0 && msl > 0) {
-      _mslIsCapped = msl >= 36;
       for (let i = 0; i < n; i++) {
         const mn = msl - (n - 1 - i);
         const mnLookup = Math.max(1, Math.min(36, mn));

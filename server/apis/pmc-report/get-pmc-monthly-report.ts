@@ -289,7 +289,10 @@ function renderExecSummary(d: ExecSummaryInput): { html: string; js: string } {
     });
     const lineD = "M " + pts.map((p) => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(" L ");
     const areaD = `${lineD} L ${pts[pts.length - 1].x.toFixed(1)},${height} L ${pts[0].x.toFixed(1)},${height} Z`;
-    return `<svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" fill="none" style="display:block;">`
+    // width="100%" + preserveAspectRatio="none" so the line stretches to fill the hero card
+    // regardless of its actual rendered width — a fixed pixel width left the line stopping
+    // partway across the tile instead of spanning it.
+    return `<svg width="100%" height="${height}" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" fill="none" style="display:block;">`
       + `<path d="${areaD}" fill="rgba(255,255,255,0.06)" stroke="none"/>`
       + `<path d="${lineD}" stroke="rgba(255,255,255,0.55)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>`
       + `</svg>`;
