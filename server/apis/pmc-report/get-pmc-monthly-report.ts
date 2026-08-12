@@ -2819,15 +2819,22 @@ export default api({
     // source of truth per metric instead of a second, divergent calculation.
     const segPercPromise = (lockedPeers.length >= 3 && latestCompletedMonth)
       ? ctx.integrations.snowflake_sso.query(
-        `WITH peer_current AS (
-           SELECT PMC_NAME,
-                  SUM(PROPERTY_UNIT_COUNT) AS UNITS,
-                  SUM(CHARGED_USERS_COUNT) AS CHARGED_USERS
+        `WITH peer_latest AS (
+           SELECT PMC_NAME, MAX(BP_MONTH) AS BP_MONTH
            FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS
            WHERE PMC_NAME IN (${lockedPeers.map(() => "?").join(", ")})
-             AND BP_MONTH = ?
+             AND BP_MONTH <= ?
              AND IS_INTEGRATED_TOTAL = TRUE
            GROUP BY PMC_NAME
+         ),
+         peer_current AS (
+           SELECT t.PMC_NAME,
+                  SUM(t.PROPERTY_UNIT_COUNT) AS UNITS,
+                  SUM(t.CHARGED_USERS_COUNT) AS CHARGED_USERS
+           FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS t
+           JOIN peer_latest pl ON t.PMC_NAME = pl.PMC_NAME AND t.BP_MONTH = pl.BP_MONTH
+           WHERE t.IS_INTEGRATED_TOTAL = TRUE
+           GROUP BY t.PMC_NAME
          ),
          peer_engagement AS (
            SELECT t.PMC_NAME,
