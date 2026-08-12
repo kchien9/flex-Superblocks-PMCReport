@@ -467,10 +467,28 @@ export function renderPeerBenchmarks(input: {
   peerCount?: number;
   /** Which optional metric keys to show initially (null = show all). Adoption is always shown. */
   visibleMetrics?: Set<string> | null;
+  /** TEMPORARY diagnostic — shows internal pipeline counts on the slide instead of going blank
+   * when metrics is empty, so this can be inspected directly without server/Snowflake access.
+   * Remove once the empty-metrics root cause is confirmed and fixed. */
+  debugInfo?: string;
 }): SlideResult {
-  const { slideId, pmcName, segment, metrics, peerCount, visibleMetrics } = input;
+  const { slideId, pmcName, segment, metrics, peerCount, visibleMetrics, debugInfo } = input;
   const pmc = _e(pmcName);
-  if (metrics.length === 0) return { html: "", js: "" };
+  if (metrics.length === 0) {
+    if (debugInfo) {
+      return {
+        html: `
+  <div class="slide" id="slide-${slideId}" style="background:#fff;justify-content:center;align-items:center;">
+    <div style="max-width:600px;font-family:monospace;font-size:13px;color:#1D1D1D;background:#fff3cd;border:1px solid #ffe69c;border-radius:8px;padding:20px 24px;white-space:pre-wrap;">
+      <div style="font-weight:700;margin-bottom:8px;">DEBUG: Peer Benchmarks metrics.length === 0</div>
+      ${_e(debugInfo)}
+    </div>
+  </div>`,
+        js: "",
+      };
+    }
+    return { html: "", js: "" };
+  }
 
   const subtitlePeers = peerCount
     ? `${peerCount} comparable PMCs (${_e(segment)})`
@@ -1532,8 +1550,10 @@ export function renderRetention(input: {
   newInMonth: number;
   avgPayment: number;
   slideTitle?: string;
+  /** TEMPORARY diagnostic overlay — remove once retention numbers are confirmed correct. */
+  debugInfo?: string;
 }): SlideResult {
-  const { slideId, reportingMonth, trueRepeatRate, avgRetention, momRates, loyaltyBuckets, loyaltyTotal, loyaltyTitle, newInMonth, avgPayment, slideTitle } = input;
+  const { slideId, reportingMonth, trueRepeatRate, avgRetention, momRates, loyaltyBuckets, loyaltyTotal, loyaltyTitle, newInMonth, avgPayment, slideTitle, debugInfo } = input;
   const resolvedSlideTitle = slideTitle || "Residents use Flex their own way, but once they start, most keep coming back.";
 
   // Hero metric
@@ -1667,8 +1687,17 @@ export function renderRetention(input: {
     ? `<div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;height:100%;min-height:0;overflow:hidden;">${cohortSection}${retentionSection}</div>`
     : `<div style="display:grid;grid-template-columns:1fr;gap:14px;height:100%;min-height:0;overflow:hidden;">${retentionSection}</div>`;
 
+  const debugPanel = debugInfo ? `
+    <div style="position:absolute;bottom:8px;left:8px;right:8px;max-height:220px;overflow-y:auto;
+                font-family:monospace;font-size:10px;line-height:1.5;color:#1D1D1D;
+                background:#fff3cd;border:1px solid #ffe69c;border-radius:6px;padding:8px 10px;
+                white-space:pre-wrap;z-index:10;">
+      <div style="font-weight:700;margin-bottom:4px;">DEBUG (temporary)</div>
+      ${_e(debugInfo)}
+    </div>` : "";
+
   const html = `
-  <div class="slide" id="slide-${slideId}" style="background:#fff;justify-content:flex-start;overflow:hidden;">
+  <div class="slide" id="slide-${slideId}" style="background:#fff;justify-content:flex-start;overflow:hidden;position:relative;">
     <div class="slide-header" style="margin-bottom:12px;flex-shrink:0;">
       <div class="slide-label">Resident Retention</div>
       <div class="slide-title">${_e(resolvedSlideTitle)}</div>
@@ -1676,6 +1705,7 @@ export function renderRetention(input: {
     ${topCardsHtml}
     <div style="height:1px;background:#eceaf2;flex-shrink:0;margin-bottom:14px;"></div>
     <div style="flex:1;min-height:0;overflow:hidden;">${bottomGrid}</div>
+    ${debugPanel}
   </div>`;
 
   return { html, js: retentionJs };

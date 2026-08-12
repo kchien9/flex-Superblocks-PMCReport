@@ -3792,6 +3792,22 @@ export default api({
       pmcName: pmcDisplayName,
       segment: lockedPeersCriteria,
       metrics: benchmarkMetrics,
+      // TEMPORARY diagnostic — remove once the empty-metrics root cause is confirmed and fixed.
+      debugInfo: [
+        `pmc_name (query param): ${pmc_name}`,
+        `latestCompletedMonth: ${latestCompletedMonth}`,
+        `cutoffStr: ${cutoffStr}`,
+        `_msl (months since launch): ${_msl}`,
+        `networkPool.length (raw SQL rows): ${networkPool.length}`,
+        `networkPoolProps.length (post-filter): ${networkPoolProps.length}`,
+        `lockedPeers.length: ${lockedPeers.length}`,
+        `lockedPeersCriteria: ${lockedPeersCriteria}`,
+        `lockedPeers (first 10): ${lockedPeers.slice(0, 10).join(", ")}`,
+        `segmentPercentiles.length: ${segmentPercentiles.length}`,
+        `segmentPercentiles: ${JSON.stringify(segmentPercentiles)}`,
+        `canonicalPeerNarP50: ${canonicalPeerNarP50}`,
+        `rollingPeerMedianMap keys: ${Object.keys(rollingPeerMedianMap).length}`,
+      ].join("\n"),
     });
 
     // --- Flex Is For Everyone (high rent adoption) slide ---
@@ -3919,6 +3935,23 @@ export default api({
       loyaltyTitle,
       newInMonth: newInLatestMonth,
       avgPayment: avgPaymentPerResident,
+      // TEMPORARY diagnostic — remove once retention numbers are confirmed correct.
+      debugInfo: [
+        `latestCompletedMonth: ${latestCompletedMonth}`,
+        `reportingMonthStr: ${reportingMonthStr}`,
+        `cutoffStr: ${cutoffStr}`,
+        `lookback_months (raw input): ${lookback_months}`,
+        `customerMonthRows.length: ${customerMonthRows.length}`,
+        `sortedCustomerMonths: ${sortedCustomerMonths.join(", ")}`,
+        `momRetentionRates: ${JSON.stringify(momRetentionRates)}`,
+        `retentionCohortRows.length: ${retentionCohortRows.length}`,
+        `retentionCohortRows: ${JSON.stringify(retentionCohortRows)}`,
+        `trueRepeatRate (fabricated-table fallback): ${trueRepeatRate}`,
+        `cohortTrueRepeatRate: ${cohortTrueRepeatRate}`,
+        `finalTrueRepeatRate: ${finalTrueRepeatRate}`,
+        `retentionAvg: ${retentionAvg}`,
+        `loyaltyTotal: ${loyaltyTotal}`,
+      ].join("\n"),
     });
 
     // --- Dynamic slide ID allocator ---
