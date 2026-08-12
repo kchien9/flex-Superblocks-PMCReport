@@ -3783,13 +3783,30 @@ export default api({
     });
     const [residentRentRows, alltimeResidentRows] = await Promise.all([
       ctx.integrations.snowflake_sso.query(
-        `SELECT n.RENT_AMOUNT AS RESIDENT_AMOUNT_PAID
-         FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS p
+        `WITH scoped_props AS (
+            SELECT PROPERTY_PUBLIC_ID, BP_MONTH
+            FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS
+            WHERE PMC_NAME = ?
+              AND IS_IN_NETWORK = TRUE
+         ),
+         latest AS (
+            -- NAR_CHARGED_USERS lags PROPERTY_BP_MONTH_STATS's own BILLS_PAID_COUNT — a month
+            -- can already show as "completed" (bills paid > 0) before this table has been
+            -- populated for it. Requiring an exact match on latestCompletedMonth here silently
+            -- returned zero resident rows, which fell back to inflated property-level totals.
+            -- Mirrors Flask's pull_resident_detail (generator/data.py:3317-3327) exactly: the
+            -- real "latest" for THIS table is whichever month it actually has data joined for.
+            SELECT MAX(p.BP_MONTH) AS BP_MONTH
+            FROM scoped_props p
+            JOIN PRODUCTION.ANALYTICS.NAR_CHARGED_USERS n
+               ON n.PROPERTY_PUBLIC_ID = p.PROPERTY_PUBLIC_ID AND n.BP_MONTH = p.BP_MONTH
+            WHERE n.HAS_BILL_PAID = TRUE AND p.BP_MONTH <= ?
+         )
+         SELECT n.RENT_AMOUNT AS RESIDENT_AMOUNT_PAID
+         FROM scoped_props p
          JOIN PRODUCTION.ANALYTICS.NAR_CHARGED_USERS n
            ON n.PROPERTY_PUBLIC_ID = p.PROPERTY_PUBLIC_ID AND n.BP_MONTH = p.BP_MONTH
-         WHERE p.PMC_NAME = ?
-           AND p.IS_IN_NETWORK = TRUE
-           AND p.BP_MONTH = ?
+         WHERE p.BP_MONTH = (SELECT BP_MONTH FROM latest)
            AND n.HAS_BILL_PAID = TRUE
          LIMIT 50000`,
         ResidentRentSchema,
