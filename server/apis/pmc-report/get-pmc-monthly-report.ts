@@ -91,6 +91,15 @@ function monthOnly(dateStr: string): string {
   return d.toLocaleDateString("en-US", { month: "long", timeZone: "UTC" });
 }
 
+// Snowflake's PMC_NAME sometimes carries a "(FKA <old name>)" suffix for continuity after a
+// rename/acquisition (e.g. "AG Living (FKA Ashland Greene Capital Partners)"). Useful in a
+// system-of-record, but reads as clutter on every slide title across QBR/Expansion/New Logo —
+// strip it for display everywhere the PMC name is shown, while leaving the raw pmc_name
+// variable itself untouched everywhere it's used as a query parameter.
+function stripFkaSuffix(name: string): string {
+  return name.replace(/\s*\(\s*FKA\b[^)]*\)\s*$/i, "").trim();
+}
+
 function yearOnly(dateStr: string): string {
   if (!dateStr) return "";
   const d = new Date(dateStr + "T00:00:00Z");
@@ -1666,8 +1675,12 @@ export default api({
       allRows = [...rows, ...secondRows];
     }
 
+    // Display-only PMC name (FKA suffix stripped) — pmc_name itself stays untouched everywhere
+    // it's used as a query parameter; this is only for what actually shows up on a slide.
+    const pmcDisplayName = stripFkaSuffix(pmc_name);
+
     // Apply report_name override if provided
-    const displayName = report_name || pmc_name;
+    const displayName = report_name || pmcDisplayName;
 
     // Filter to in-network only
     const inNetwork = allRows.filter((r) => r.IS_IN_NETWORK === true);
@@ -2617,7 +2630,7 @@ export default api({
     const uniqueProperties = new Set(latestRows.map((r) => r.PROPERTY_NAME));
 
     const kpis = {
-      pmcName: pmc_name,
+      pmcName: pmcDisplayName,
       reportingMonth: latestCompletedMonth,
       partnerSince,
       propertyCount: uniqueProperties.size,
@@ -3092,7 +3105,7 @@ export default api({
     const effectiveTrueRepeat = cohortTrueRepeatEarly ?? trueRepeatRate;
 
     const execResult = renderExecSummary({
-      pmcName: pmc_name,
+      pmcName: pmcDisplayName,
       reportingMonth: latestCompletedMonth,
       partnerSince,
       lookbackMonths: lookback_months,
@@ -3219,7 +3232,7 @@ export default api({
 
       const launchResult = renderLaunchSnapshot({
         slideId: 2,
-        pmcName: pmc_name,
+        pmcName: pmcDisplayName,
         partnerSince,
         propertyCount: uniqueProperties.size,
         totalUnits: totalUnitsAll,
@@ -3243,7 +3256,7 @@ export default api({
 
       const rentBucketResult = renderHighRentAdoption({
         slideId: 3,
-        pmcName: pmc_name,
+        pmcName: pmcDisplayName,
         propertySnapshot: propSnapshotWithRent,
       });
 
@@ -3418,7 +3431,7 @@ export default api({
             });
             const r = renderPeerBenchmarks({
               slideId: slideNum,
-              pmcName: pmc_name,
+              pmcName: pmcDisplayName,
               segment: lockedPeersCriteria,
               metrics: expBenchMetrics,
             });
@@ -3429,7 +3442,7 @@ export default api({
           case "retention": {
             const r = renderRetention({
               slideId: slideNum,
-              pmcName: pmc_name,
+              pmcName: pmcDisplayName,
               reportingMonth: latestCompletedMonth,
               trueRepeatRate,
               avgRetention: retentionAvg,
@@ -3447,10 +3460,10 @@ export default api({
 
           case "high_rent": {
             if (evidence_type === "affordable") {
-              const r = renderAffordableHousing({ slideId: slideNum, pmcName: pmc_name, propertySnapshot: expRentBucketProps });
+              const r = renderAffordableHousing({ slideId: slideNum, pmcName: pmcDisplayName, propertySnapshot: expRentBucketProps });
               pushSlide(sid, r);
             } else {
-              const r = renderHighRentAdoption({ slideId: slideNum, pmcName: pmc_name, propertySnapshot: expRentBucketProps });
+              const r = renderHighRentAdoption({ slideId: slideNum, pmcName: pmcDisplayName, propertySnapshot: expRentBucketProps });
               pushSlide(sid, r);
             }
             break;
@@ -3470,7 +3483,7 @@ export default api({
           case "expansion_metrosight": {
             const r = renderExpansionMetrosight({
               slideId: slideNum,
-              pmcName: pmc_name,
+              pmcName: pmcDisplayName,
               enrolledUnits,
               totalPortfolioUnits: expTotalPortfolio,
               avgRent: latestMonth ? (latestMonth.rentPaid / Math.max(latestMonth.billsPaid, 1)) : 0,
@@ -3482,7 +3495,7 @@ export default api({
           case "expansion_gap": {
             const r = renderExpansionGap({
               slideId: slideNum,
-              pmcName: pmc_name,
+              pmcName: pmcDisplayName,
               totalPortfolioUnits: expTotalPortfolio,
               enrolledUnits,
               currentNar: latestMonth?.adoptionRate ?? 0,
@@ -3512,7 +3525,7 @@ export default api({
           case "expansion_case_close": {
             const r = renderExpansionCaseClose({
               slideId: slideNum,
-              pmcName: pmc_name,
+              pmcName: pmcDisplayName,
               enrolledUnits,
               totalPortfolioUnits: expTotalPortfolio,
               currentNar: latestMonth?.adoptionRate ?? 0,
@@ -3653,7 +3666,7 @@ export default api({
 
     const sinceInceptionResult = renderSinceInception({
       slideId: 3,
-      pmcName: pmc_name,
+      pmcName: pmcDisplayName,
       reportingMonth: latestCompletedMonth,
       yearlyData,
       monthlyTotals,
@@ -3702,7 +3715,7 @@ export default api({
       currentNar: latestMonth?.adoptionRate ?? 0,
       totalUnits: totalUnitsAll,
       monthlyTotals,
-      pmcName: pmc_name,
+      pmcName: pmcDisplayName,
       slideId: 6,
       peerPercentiles: narPerc ? {
         p25: narPerc.p25,
@@ -3747,7 +3760,7 @@ export default api({
     });
     const peerBenchResult = renderPeerBenchmarks({
       slideId: 9,
-      pmcName: pmc_name,
+      pmcName: pmcDisplayName,
       segment: lockedPeersCriteria,
       metrics: benchmarkMetrics,
     });
@@ -3806,7 +3819,7 @@ export default api({
 
     const flexForEveryoneResult = renderHighRentAdoption({
       slideId: 12,
-      pmcName: pmc_name,
+      pmcName: pmcDisplayName,
       propertySnapshot: propertySnapshot.map((p) => ({
         propertyName: p.propertyName,
         units: p.units,
@@ -3850,7 +3863,7 @@ export default api({
 
     const retentionResult = renderRetention({
       slideId: 14,
-      pmcName: pmc_name,
+      pmcName: pmcDisplayName,
       reportingMonth: latestCompletedMonth,
       trueRepeatRate: finalTrueRepeatRate,
       avgRetention: retentionAvg,
@@ -3862,8 +3875,22 @@ export default api({
       avgPayment: avgPaymentPerResident,
     });
 
-    // Count how many of the 3 new data slides actually rendered
-    const newDataSlideCount = [peerBenchResult.html].filter(Boolean).length;
+    // --- Dynamic slide ID allocator ---
+    // Every slide above this point uses a fixed literal slideId (2 through 14 — exec, since
+    // inception, residents/units, adoption trend, projection, cohort, state, peer benchmarks,
+    // flex-for-everyone, delinquency, retention). The slides below (testimonials, celebrate,
+    // opportunities, metrosight, QBR close) previously computed their IDs via ad-hoc arithmetic
+    // ("9 + newDataSlideCount + testimonialSlideRendered", etc.) trying to guess a free number —
+    // that arithmetic could (and did) land back on 9, 12, 13, or 14, colliding with a slide
+    // already using that literal. A collision on the same slideId means BOTH slides' JS ends up
+    // sharing one entry in the renumbering map (get-pmc-monthly-report.ts's slidesOrdered
+    // renumbering pass below), so one of them gets its canvas-lookup renumbered to the WRONG
+    // final position — exactly the "Failed to create chart: can't acquire context from the
+    // given item" / getElementById-returns-null bug. A simple monotonic counter, safely clear
+    // of every literal above, makes a collision structurally impossible regardless of which
+    // combination of these slides ends up empty vs. rendered.
+    let _nextDynamicSlideId = 100;
+    const allocSlideId = () => _nextDynamicSlideId++;
 
     // Testimonials slide (after retention, before celebrate/opportunities)
     // Resolve the deferred Zendesk promise now
@@ -3881,7 +3908,7 @@ export default api({
       scored.sort((a, b) => b.score - a.score);
       topTestimonials = scored.slice(0, 4).map((r) => ({ name: r.RESIDENT_NAME ?? "", property: r.PROPERTY_NAME ?? "", quote: r.COMMENT }));
     }
-    const testimonialSlideId = 9 + newDataSlideCount + 5; // base 9 + new-data + 5 (flexForEveryone, delinquency, retention, +2 buffer)
+    const testimonialSlideId = allocSlideId();
     const [csatTrendRows, responseTrendRows] = await residentTrendPromise;
     const residentTrend: ResidentTrend = {
       csatByMonth: csatTrendRows.map((r) => ({ month: r.MONTH, nTotal: r.N_TOTAL, nGood: r.N_GOOD })),
@@ -3892,8 +3919,6 @@ export default api({
       testimonials: topTestimonials,
       trend: residentTrend,
     });
-    const testimonialSlideRendered = testimonialResult.html ? 1 : 0;
-
     // Count new properties onboarded in trailing 3 months for QBR close
     let newPropsThisQ = 0;
     if (latestCompletedMonth) {
@@ -3968,9 +3993,8 @@ export default api({
           : null,
       }));
 
-    const deepDiveBaseSlide = 9 + newDataSlideCount + testimonialSlideRendered;
     const celebrateResult = renderPropertiesWorthCelebrating({
-      slideId: deepDiveBaseSlide,
+      slideId: allocSlideId(),
       propertySnapshot,
       targetNar,
       peerMedianNar: canonicalPeerNarP50 ?? undefined,
@@ -3978,7 +4002,7 @@ export default api({
     });
 
     const opportunitiesResult = renderAdoptionOpportunities({
-      slideId: deepDiveBaseSlide + 1,
+      slideId: allocSlideId(),
       propertySnapshot,
       targetNar,
       peerMedianNar: canonicalPeerNarP50 ?? undefined,
@@ -3988,15 +4012,13 @@ export default api({
       presentingMode: presenting_mode,
     });
 
-    // Shift MetroSight & QBR Close slide IDs based on how many deep-dive slides rendered
-    const deepDiveCount = [celebrateResult.html, opportunitiesResult.html].filter(Boolean).length;
-    const metrosightSlideId = deepDiveBaseSlide + deepDiveCount;
-    const qbrCloseSlideId = metrosightSlideId + 1;
+    const metrosightSlideId = allocSlideId();
+    const qbrCloseSlideId = allocSlideId();
 
     // Re-render metrosight and QBR close with corrected slide IDs
     const metrosightFinal = renderMetrosightEvidence({
       slideId: metrosightSlideId,
-      pmcName: pmc_name,
+      pmcName: pmcDisplayName,
       totalUnits: totalUnitsAll,
       avgRent: (latestMonth?.billsPaid ?? 0) > 0
         ? (latestMonth?.rentPaid ?? 0) / latestMonth!.billsPaid
@@ -4005,7 +4027,7 @@ export default api({
 
     const qbrFinal = renderQbrClose({
       slideId: qbrCloseSlideId,
-      pmcName: pmc_name,
+      pmcName: pmcDisplayName,
       currentNar: latestMonth?.adoptionRate ?? 0,
       currentRent: latestMonth?.rentPaid ?? 0,
       lifetimeRent,
@@ -4037,10 +4059,20 @@ export default api({
         return null;
       })(),
       lifetimeDqShielded,
+      // % of units with D2C marketing enabled (Flask: platinum_pct, generator/data.py:2219-2226
+      // — plat_units/total_units where HAS_MARKETING_INTEGRATION) — this was never threaded
+      // through, so "Drive co-marketing" (gated on optInPct > 70%) never showed on this port
+      // regardless of the PMC's real opt-in rate.
+      optInPct: (() => {
+        const totalUnits = latestRows.reduce((s, r) => s + r.PROPERTY_UNIT_COUNT, 0);
+        if (totalUnits === 0) return 0;
+        const optInUnits = latestRows.reduce((s, r) => s + (r.HAS_MARKETING_INTEGRATION ? r.PROPERTY_UNIT_COUNT : 0), 0);
+        return optInUnits / totalUnits;
+      })(),
     });
 
     // Full Property Table = appendix after QBR Close
-    const propTableSlideId = qbrCloseSlideId + 1;
+    const propTableSlideId = allocSlideId();
     const propertyTableHtml = renderFullPropertyTable(propertySnapshot, propTableSlideId);
 
     // Flask SLIDE_ORDER: [3, 54, 6, 21, 14, 49, 12, 39, 15, 26, 50, 44, 23, 58, 34, 45, 53, 57, 59]
