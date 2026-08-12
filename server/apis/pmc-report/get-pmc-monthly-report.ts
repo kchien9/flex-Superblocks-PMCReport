@@ -36,7 +36,7 @@ const SNOWFLAKE_SSO = "d38ee94a-4e93-46f5-ab44-c65a99b3aea5";
 // ─── Module-level cache: network pool (same for all PMCs in a given cutoff month) ───
 type NetworkPoolRow = { PMC_NAME: string; PROPERTY_NAME: string; PROPERTY_STATE: string | null; PROPERTY_UNIT_COUNT: number; RENT_PAID_AMOUNT: number | null; BILLS_PAID_COUNT: number; ROLLOUT_MONTH: string | null; T12_CONNECTIONS: number; MEDIAN_RENTER_INCOME: number | null };
 let _networkPoolCache: { cutoff: string; data: NetworkPoolRow[]; fetchedAt: number } | null = null;
-const NETWORK_POOL_TTL_MS = 10 * 60 * 1000; // 10 minutes
+const _NETWORK_POOL_TTL_MS = 10 * 60 * 1000; // 10 minutes — unused while caching is disabled, see below
 
 const RawRowSchema = z.object({
   BP_MONTH: z.string(),
@@ -2039,10 +2039,12 @@ export default api({
     let stageAgeBenchmarkRows: { AGE_MONTHS: number; P50_NAR: number | null; P50_ENG_PER_100: number | null; N: number }[] = [];
 
     if (needsQBRQueries) {
-      // Check cache first
-      const cacheValid = _networkPoolCache
-        && _networkPoolCache.cutoff === cutoffStr
-        && (Date.now() - _networkPoolCache.fetchedAt) < NETWORK_POOL_TTL_MS;
+      // Caching disabled — this module-level cache was almost certainly serving stale,
+      // pre-bugfix results for up to 10 minutes after every deploy this session (the server
+      // process doesn't necessarily restart on a git-synced code update, so `let`-scoped module
+      // state can outlive the code that populated it). Correctness over the small perf win while
+      // this pipeline is under active repair; worth reinstating once things are verified stable.
+      const cacheValid = false;
 
       const networkPoolPromise = cacheValid
         ? Promise.resolve(_networkPoolCache!.data)
