@@ -16,7 +16,7 @@ import {
   computePropertyTrendFlags,
 } from "./slide-renderers.js";
 import type { BenchmarkMetric, ResidentTrend, Testimonial, TrendFlag, YearlyData } from "./slide-renderers.js";
-import { buildSpeakerNotesHtml } from "./speaker-notes.js";
+import { buildSpeakerNotesHtml, buildExpansionSpeakerNotesHtml } from "./speaker-notes.js";
 import type { SpeakerNotesKpis, SpeakerNotesBenchmark, SpeakerNotesMonthlyRow } from "./speaker-notes.js";
 import {
   renderExpansionMetrosight,
@@ -3046,10 +3046,15 @@ export default api({
     if (deck_mode === "expansion") {
       const expSlideHtmls: string[] = [];
       const expSlideJsList: string[] = [];
+      // Parallel to expSlideHtmls — the string slide key that actually rendered at each
+      // position, in order, for speaker-notes generation below (mirrors Flask's
+      // rendered_exp_sids: only slides that actually produced html, not everything attempted).
+      const expRenderedKeys: string[] = [];
 
-      const pushSlide = (result: { html: string; js: string }) => {
+      const pushSlide = (sid: string, result: { html: string; js: string }) => {
         if (result.html) {
           expSlideHtmls.push(result.html);
+          expRenderedKeys.push(sid);
           if (result.js) expSlideJsList.push(result.js);
         }
       };
@@ -3116,12 +3121,17 @@ export default api({
       for (const sid of activeOrder) {
         slideNum++;
         switch (sid) {
-          case "cover":
-            expSlideHtmls.push(renderCover(kpis));
+          case "cover": {
+            const coverHtml = renderCover(kpis);
+            if (coverHtml) {
+              expSlideHtmls.push(coverHtml);
+              expRenderedKeys.push(sid);
+            }
             break;
+          }
 
           case "exec_bottom_line":
-            pushSlide(execResult);
+            pushSlide(sid, execResult);
             break;
 
           case "by_state": {
@@ -3134,20 +3144,20 @@ export default api({
                 reportingMonth: latestCompletedMonth,
                 slideId: slideNum,
               });
-              pushSlide(r);
+              pushSlide(sid, r);
             }
             break;
           }
 
           case "residents_units": {
             const r = renderResidentsUnitsCombo({ slideId: slideNum, monthlyTotals });
-            pushSlide(r);
+            pushSlide(sid, r);
             break;
           }
 
           case "adoption_trend": {
             const r = renderAdoptionTrend({ slideId: slideNum, monthly: monthlyTotals });
-            pushSlide(r);
+            pushSlide(sid, r);
             break;
           }
 
@@ -3169,7 +3179,7 @@ export default api({
               segment: hubspotSegment ?? "Mid-Market",
               metrics: expBenchMetrics,
             });
-            pushSlide(r);
+            pushSlide(sid, r);
             break;
           }
 
@@ -3188,17 +3198,17 @@ export default api({
               avgPayment: latestMonth ? (latestMonth.rentPaid / Math.max(latestMonth.billsPaid, 1)) : 0,
               slideTitle: "Your residents use Flex their own way, but once they start, most keep coming back.",
             });
-            pushSlide(r);
+            pushSlide(sid, r);
             break;
           }
 
           case "high_rent": {
             if (evidence_type === "affordable") {
               const r = renderAffordableHousing({ slideId: slideNum, pmcName: pmc_name, propertySnapshot: expRentBucketProps });
-              pushSlide(r);
+              pushSlide(sid, r);
             } else {
               const r = renderHighRentAdoption({ slideId: slideNum, pmcName: pmc_name, propertySnapshot: expRentBucketProps });
-              pushSlide(r);
+              pushSlide(sid, r);
             }
             break;
           }
@@ -3210,7 +3220,7 @@ export default api({
               lifetimeShielded: lifetimeDqShielded,
               windowMonths: lookback_months,
             });
-            pushSlide(r);
+            pushSlide(sid, r);
             break;
           }
 
@@ -3222,7 +3232,7 @@ export default api({
               totalPortfolioUnits: expTotalPortfolio,
               avgRent: latestMonth ? (latestMonth.rentPaid / Math.max(latestMonth.billsPaid, 1)) : 0,
             });
-            pushSlide(r);
+            pushSlide(sid, r);
             break;
           }
 
@@ -3242,7 +3252,7 @@ export default api({
               p50Nar: canonicalPeerNarP50 ?? expNarPerc?.p50,
               p75Nar: expNarPerc?.p75,
             });
-            pushSlide(r);
+            pushSlide(sid, r);
             break;
           }
 
@@ -3252,7 +3262,7 @@ export default api({
               testimonials: testimonials.map((t) => ({ name: t.name, property: t.propertyName, quote: t.quote, role: "Resident" })),
               trend: { csatByMonth: [], responseByMonth: [] },
             });
-            pushSlide(r);
+            pushSlide(sid, r);
             break;
           }
 
@@ -3271,7 +3281,7 @@ export default api({
               benchmarkNar: canonicalPeerNarP50 ?? segmentNarAvg ?? 0.085,
               trueRepeatRate,
             });
-            pushSlide(r);
+            pushSlide(sid, r);
             break;
           }
         }
@@ -3333,7 +3343,42 @@ export default api({
         extra_js: expJs,
       });
 
-      return { html, empty: false };
+      // --- Speaker notes ---
+      let expNotesHtml: string | undefined;
+      try {
+        let expMonthsSinceLaunch = 0;
+        if (earliestRollout && latestCompletedMonth) {
+          const [ey, em] = earliestRollout.split("-").map(Number);
+          const [ly, lm] = latestCompletedMonth.split("-").map(Number);
+          expMonthsSinceLaunch = (ly - ey) * 12 + (lm - em) + 1;
+        }
+        const expNotesKpis: SpeakerNotesKpis = {
+          pmcName: displayName,
+          reportingMonth: latestCompletedMonth,
+          monthsSinceLaunch: expMonthsSinceLaunch,
+          currentNar: latestMonth?.adoptionRate ?? 0,
+          currentBillsPaid: latestMonth?.billsPaid ?? 0,
+          currentNewSignups: latestMonth?.newSignups ?? 0,
+          targetNar: 0.15,
+          totalUnits: expTotalPortfolio,
+          currentResidents: latestMonth?.billsPaid ?? 0,
+          hasNiro: false,
+        };
+        const expNotesBenchmark: SpeakerNotesBenchmark = {
+          benchmarkNar: canonicalPeerNarP50 ?? segmentNarAvg ?? 0.085,
+          p50Nar: canonicalPeerNarP50 ?? expNarPerc?.p50 ?? null,
+          p75Nar: expNarPerc?.p75 ?? null,
+        };
+        const expNotesMonthly: SpeakerNotesMonthlyRow[] = monthlyTotals.map((m) => ({
+          month: m.month, billsPaid: m.billsPaid, units: m.units, rentPaid: m.rentPaid,
+          newSignups: m.newSignups, propertyCount: m.propertyCount,
+        }));
+        expNotesHtml = buildExpansionSpeakerNotesHtml(expRenderedKeys, expNotesKpis, expNotesMonthly, expNotesBenchmark);
+      } catch (e) {
+        console.warn(`[PMC Report] expansion speaker notes generation failed for ${pmc_name}: ${e instanceof Error ? e.message : String(e)}`);
+      }
+
+      return { html, empty: false, notes_html: expNotesHtml };
     }
 
     // ─────────────────────────────────────────────────────────────────────────

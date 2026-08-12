@@ -19,6 +19,17 @@ function Section({ title, children, defaultOpen = false }: { title: string; chil
   );
 }
 
+/** Always-visible section — same label styling as Section, no collapse. For fields used on
+ * most builds (Slides, Testimonials, What's New) that shouldn't be buried behind a click. */
+function StaticSection({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <div className="border-b border-gray-100 pb-3">
+      <span className="block text-xs font-semibold uppercase tracking-wider text-gray-500 py-1">{title}</span>
+      <div className="mt-2">{children}</div>
+    </div>
+  );
+}
+
 export interface QBRFormState {
   pmc_name: string;
   second_pmc: string;
@@ -145,16 +156,6 @@ export function QBRTab({ pmcNames, pmcLoading, generating, onGenerate }: QBRTabP
             </div>
           )}
 
-          {/* Report Name */}
-          <div>
-            <div className="flex items-baseline gap-2 mb-1.5">
-              <label className="block text-xs font-medium text-gray-600">Report Name</label>
-              <span className="text-[10px] text-gray-400">optional</span>
-            </div>
-            <input type="text" value={reportName} onChange={(e) => setReportName(e.target.value)} placeholder="Override the PMC name on the deck"
-              className={inputCls} />
-          </div>
-
           {/* Cross-PMC Properties (collapsed link) */}
           {!showCrossPMC ? (
             <button type="button" onClick={() => setShowCrossPMC(true)} className="text-xs text-[#6A3DB8] hover:underline">
@@ -187,28 +188,6 @@ export function QBRTab({ pmcNames, pmcLoading, generating, onGenerate }: QBRTabP
         </>
       )}
 
-      {/* Numeric Inputs */}
-      <div className="grid grid-cols-2 gap-3">
-        <div>
-          <div className="flex items-baseline gap-1 mb-1.5">
-            <label className="block text-xs font-medium text-gray-600">Total Company Units</label>
-            <span className="text-[10px] text-gray-400">opt</span>
-          </div>
-          <input type="number" min={0} value={totalCompanyUnits} onChange={(e) => setTotalCompanyUnits(e.target.value)} placeholder="—"
-            className={inputCls} />
-        </div>
-      </div>
-
-      {/* Partner Since Override */}
-      <div>
-        <div className="flex items-baseline gap-2 mb-1.5">
-          <label className="block text-xs font-medium text-gray-600">Partner Since Override</label>
-          <span className="text-[10px] text-gray-400">optional</span>
-        </div>
-        <input type="month" value={partnerSinceOverride} onChange={(e) => setPartnerSinceOverride(e.target.value)}
-          className={inputCls} />
-      </div>
-
       {/* Toggles */}
       <div className="space-y-3">
         <div className="flex items-center justify-between">
@@ -238,7 +217,7 @@ export function QBRTab({ pmcNames, pmcLoading, generating, onGenerate }: QBRTabP
       </div>
 
       {/* Slides Picker */}
-      <Section title="Slides" defaultOpen>
+      <StaticSection title="Slides">
         <SlidesPicker
           slides={QBR_SLIDES}
           selectedSlides={selectedSlides}
@@ -251,26 +230,58 @@ export function QBRTab({ pmcNames, pmcLoading, generating, onGenerate }: QBRTabP
             { label: "Delinquency", text: "off by default; framing is being reconsidered for partner sensitivity." },
           ]}
         />
-      </Section>
+      </StaticSection>
 
       {/* Customer Testimonials */}
-      <Section title="Customer Testimonials">
+      <StaticSection title="Customer Testimonials">
         <TestimonialsEditor
           testimonials={testimonials}
           onChange={setTestimonials}
           pmcName={reportBasis === "pmc" ? selectedPMC : ""}
           secondPmcName={reportBasis === "pmc" ? secondPMC : ""}
         />
-      </Section>
+      </StaticSection>
 
       {/* What's New at Flex */}
-      <Section title="What's New at Flex">
+      <StaticSection title="What's New at Flex">
         <textarea value={whatsNewText} onChange={(e) => setWhatsNewText(e.target.value)} placeholder="Rough bullets — AI polishes into partner-facing copy" rows={3}
           className="w-full px-3 py-2 text-sm border border-gray-200 rounded-[4px] focus:outline-none focus:ring-2 focus:ring-[#6A3DB8]/30 focus:border-[#6A3DB8] resize-y" />
         <label className="flex items-center gap-2 mt-2 px-3 py-2 text-xs text-[#6A3DB8] border border-[#6A3DB8]/30 rounded-[4px] cursor-pointer hover:bg-[#EEE2FC] transition-colors w-fit">
           Attach image
           <input type="file" accept="image/*" className="hidden" />
         </label>
+      </StaticSection>
+
+      {/* Overrides — edge-case fields most builds don't need */}
+      <Section title="Overrides">
+        <div className="space-y-3">
+          {reportBasis === "pmc" && (
+            <div>
+              <div className="flex items-baseline gap-2 mb-1.5">
+                <label className="block text-xs font-medium text-gray-600">Report Name</label>
+                <span className="text-[10px] text-gray-400">optional</span>
+              </div>
+              <input type="text" value={reportName} onChange={(e) => setReportName(e.target.value)} placeholder="Override the PMC name on the deck"
+                className={inputCls} />
+            </div>
+          )}
+          <div>
+            <div className="flex items-baseline gap-1 mb-1.5">
+              <label className="block text-xs font-medium text-gray-600">Total Company Units</label>
+              <span className="text-[10px] text-gray-400">optional</span>
+            </div>
+            <input type="number" min={0} value={totalCompanyUnits} onChange={(e) => setTotalCompanyUnits(e.target.value)} placeholder="—"
+              className={inputCls} />
+          </div>
+          <div>
+            <div className="flex items-baseline gap-2 mb-1.5">
+              <label className="block text-xs font-medium text-gray-600">Partner Since Override</label>
+              <span className="text-[10px] text-gray-400">optional</span>
+            </div>
+            <input type="month" value={partnerSinceOverride} onChange={(e) => setPartnerSinceOverride(e.target.value)}
+              className={inputCls} />
+          </div>
+        </div>
       </Section>
 
       {/* Generate */}

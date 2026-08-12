@@ -1,20 +1,18 @@
 import { useState, useCallback } from "react";
-import { Loader2, TrendingUp, ChevronDown, ChevronRight } from "lucide-react";
+import { Loader2, TrendingUp } from "lucide-react";
 import { ToggleGroup } from "./ToggleGroup.js";
 import { PMCSearch } from "./PMCSearch.js";
 import { OwnershipGroupProperties } from "./OwnershipGroupProperties.js";
 import { SlidesPicker, EXPANSION_SLIDES, BENCHMARK_METRICS, defaultSlideSet } from "./SlidesPicker.js";
 import { TestimonialsEditor, type Testimonial } from "./TestimonialsEditor.js";
 
-function Section({ title, children, defaultOpen = false }: { title: string; children: React.ReactNode; defaultOpen?: boolean }) {
-  const [open, setOpen] = useState(defaultOpen);
+/** Always-visible section — Slides and Testimonials are used on most builds and shouldn't be
+ * buried behind a click. */
+function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <div className="border-b border-gray-100 pb-3">
-      <button type="button" onClick={() => setOpen(!open)} className="flex items-center gap-1.5 w-full text-left py-1">
-        {open ? <ChevronDown className="h-3.5 w-3.5 text-gray-400" /> : <ChevronRight className="h-3.5 w-3.5 text-gray-400" />}
-        <span className="text-xs font-semibold uppercase tracking-wider text-gray-500">{title}</span>
-      </button>
-      {open && <div className="mt-2">{children}</div>}
+      <span className="block text-xs font-semibold uppercase tracking-wider text-gray-500 py-1">{title}</span>
+      <div className="mt-2">{children}</div>
     </div>
   );
 }
@@ -102,7 +100,7 @@ export function ExpansionTab({ pmcNames, pmcLoading, generating, onGenerate }: E
       )}
 
       {/* Slides */}
-      <Section title="Slides" defaultOpen>
+      <Section title="Slides">
         <SlidesPicker
           slides={EXPANSION_SLIDES}
           selectedSlides={selectedSlides}

@@ -54,7 +54,7 @@ const SEASONALITY_NOTE =
 export const SLIDE_TITLES: Record<number, string> = {
   1: "Cover", 2: "KPI Headline", 3: "How You Stack Up Against Peers",
   4: "Active Households Over Time", 5: "Revenue Trend", 6: "Adoption Rate Trend",
-  7: "New vs. Returning Households", 8: "Engagement Funnel",
+  8: "Engagement Funnel",
   9: "Top Properties by Active Households", 10: "Top & Bottom Performers",
   11: "Top 10 Performers", 12: "Adoption by State", 13: "Executive Summary",
   14: "Cohort Overview", 15: "Retention", 16: "Properties Over Time", 17: "Units Over Time",
@@ -66,7 +66,7 @@ export const SLIDE_TITLES: Record<number, string> = {
   50: "Research: What Flexible Rent Does", 47: "Closing — Wins & Next Steps",
   52: "Anniversary Milestone", 53: "Properties That Went Offline",
   54: "Residents, Units & Rent", 56: "Bills & Rent Since Inception",
-  57: "Customer Experience", 58: "Properties Worth Celebrating", 59: "Multiple Payments Update",
+  57: "Customer Experience", 58: "Properties Worth Celebrating",
 };
 
 export interface SpeakerNotesKpis {
@@ -242,20 +242,6 @@ function notesQbrClose(): string[] {
   ];
 }
 
-function notesNewVsRecurring(monthly: SpeakerNotesMonthlyRow[]): string[] {
-  const notes = [
-    "This shows the mix of new vs. returning households each month. 'Recurring' means any resident who has used Flex before — it's not their first payment.",
-    "A healthy portfolio shows a growing recurring base month-over-month. New signups are acquisition; recurring is retention.",
-  ];
-  if (monthly.length >= 2) {
-    const last = monthly[monthly.length - 1];
-    const recur = Math.max(0, last.billsPaid - last.newSignups);
-    if (last.billsPaid > 0) notes.push(`This month: ${pctStr(recur / last.billsPaid)} of paying households are returning — ${kStr(recur)} of ${kStr(last.billsPaid)} total.`);
-  }
-  notes.push("If recurring is declining: worth investigating whether specific properties have churn or if new signups are slowing.");
-  return notes;
-}
-
 function notesTopProperties(): string[] {
   return [
     "These are your top properties by active households this month.",
@@ -384,6 +370,77 @@ function notesOffboardedProperties(k: SpeakerNotesKpis): string[] {
   ];
 }
 
+function notesHighRentAdoption(): string[] {
+  return [
+    "Addresses the 'our residents can afford rent, they don't need this' objection head-on — shows Flex usage across every rent tier, not just lower-rent properties.",
+    "The point isn't that lower-rent residents use it more (though they often do) — it's that even at the top-quartile-rent properties, real usage still shows up. The timing problem (payday vs. rent due date) doesn't care how much rent costs.",
+    "If asked why higher-rent residents would need this at all: it's not about affordability, it's about cash-flow timing. A resident paid biweekly or on the 15th still has a gap before the 1st, regardless of income level.",
+    "Good slide to have ready if the room pushes back with 'our portfolio skews upscale, this product isn't for us.'",
+  ];
+}
+
+function notesStateBreakdown(): string[] {
+  return [
+    "This breaks down adoption rate by state — useful if the PMC operates across multiple markets.",
+    "Look for variance: states with significantly higher or lower adoption often reflect differences in property type, rollout timing, or how well Flex was marketed locally.",
+    "If one state is consistently high: 'What are you doing differently in [state] that we could replicate elsewhere?'",
+    "Bars compare each state against the portfolio average. The darker shade is the established-properties-only rate (3+ months on Flex), the lighter shade is all properties blended together — a same-month rollout mixed in with an older, better-performing property can drag the blended rate below the established one alone. Not a rendering issue if you see that.",
+  ];
+}
+
+function notesMultiBenchmark(k: SpeakerNotesKpis, b: SpeakerNotesBenchmark): string[] {
+  const criteria = b.criteria ?? "";
+  return [
+    `HOW TO READ THIS SLIDE: Each row shows one metric. The colored dot is where ${k.pmcName} sits. The purple shaded band is where the middle 50% of comparable PMCs fall (P25 to P75). Dot to the RIGHT of the band = outperforming most peers. Dot to the LEFT = room to improve.` +
+      (criteria ? ` PEER SET CONTEXT: peers were matched on '${criteria}' — read literally, that's the actual basis for this comparison.` : ""),
+    "ENGAGEMENT (per 100 units): How many NEW bill connections (residents linking their account to Flex for the first time) happened per 100 enrolled units in the trailing 12 months. HIGH engagement + LOW adoption = residents are discovering Flex but not completing payment (onboarding issue). LOW engagement = residents don't know Flex is available — marketing integration is the lever.",
+    "ADOPTION RATE: % of enrolled units with an active Flex payer this month. WHAT MOVES IT: Marketing integration (D2C) is the #1 driver. Tenure also matters — properties in their first 6 months are still ramping.",
+    "REPEAT USAGE RATE: Of last month's unique Flex payers, what % paid again this month. 90%+ is typical for established properties — once residents are on Flex it becomes habitual.",
+    "PORTFOLIO PENETRATION: Enrolled Flex units ÷ total portfolio units. LOW penetration (< 30%) = large untapped opportunity. HIGH penetration (> 70%) = focus shifts to maximizing adoption within enrolled properties.",
+    `COACHING PROMPT FOR THE ROOM: 'Looking at where ${k.pmcName} is on each of these, which one would you most want to move — and what do you think is getting in the way?' Then connect their answer to specific Flex levers: low engagement -> D2C marketing, low adoption -> property-level activation, low repeat usage -> resident communication cadence, low penetration -> portfolio expansion.`,
+  ];
+}
+
+function notesExpansionBottomLine(k: SpeakerNotesKpis, b: SpeakerNotesBenchmark): string[] {
+  const p50 = b.p50Nar ?? b.benchmarkNar ?? 0.085;
+  const above = k.currentNar >= p50;
+  return [
+    "Left panel: proof of what Flex has delivered. Lead with lifetime rent and adoption rate — these are the anchor numbers.",
+    "Right panel: the case for expanding. Points 1-3 are evidence. Point 4 is the ask.",
+    `Point 3 framing: ${k.pmcName} is ${above ? "above" : "below"} the peer median (${pctStr(p50)}). ` +
+      (above
+        ? "Use this as validation — they're already outperforming. The ask is: let's extend that to the full portfolio."
+        : "Don't dwell on being below median — pivot to 'here's what closing the gap looks like in dollars.'"),
+    "If the room pushes back on the expansion ask: 'We're not asking you to change what's working — we're asking you to apply it to more doors.'",
+  ];
+}
+
+function notesExpansionGap(): string[] {
+  return [
+    "The purple bars show ACTUAL historical monthly rent — this is what really happened as they enrolled each cohort. If you see bumps or dips, those reflect real onboarding events.",
+    "The two scenario lines show STEADY-STATE POTENTIAL for the gap (unenrolled) units — not a time-bound forecast. The red dashed line uses peer-median adoption (the conservative case). The purple dashed line uses this PMC's own current rate (the upside if they replicate what they've already proven).",
+    "KEY POINT FOR DATA-SKEPTICAL ROOMS: These lines do NOT assume the gap units instantly inherit today's adoption rate. New properties take 12-24 months to ramp. These lines show the destination, not the journey.",
+    "ENGAGEMENT (PER 100, T12) TABLE — HOW TO READ IT: new bill connections per 100 enrolled units over the trailing 12 months, normalized so you can compare a 50-unit building to a 300-unit one. If a property's observed engagement is below expected (peer P50), the issue is almost always awareness — Flex isn't visible in the resident portal or mentioned at move-in. The fix is cheap (turning on D2C marketing) and compounds.",
+  ];
+}
+
+function notesExpansionMetrosight(): string[] {
+  return [
+    "This slide is third-party validation, not a Flex pitch. MetroSight is an independent multifamily research firm — this data comes from a study of ~75,000 units across flexible rent programs.",
+    "The headline stat is resident behavior: a large share of renters are already splitting expenses and would split rent if they could. Flex meets that behavior where it exists — it doesn't create new demand.",
+    "Don't over-rotate on the stats. Pick one that resonates for their pain point (vacancy, collections, resident retention) and use that as the anchor.",
+  ];
+}
+
+function notesTestimonialsStandalone(): string[] {
+  return [
+    "These quotes come directly from residents and property managers. Let them do the talking.",
+    "Read one or two out loud — first person voice lands differently than a chart.",
+    "If a quote is from a property manager at one of their properties, call that out: 'This is from your team at [property].' It makes it real.",
+    "Good closing slide — ends the meeting on a human note, not a data note.",
+  ];
+}
+
 // ── dispatch table ───────────────────────────────────────────────────────────
 
 export function getNotesForSlide(
@@ -401,15 +458,17 @@ export function getNotesForSlide(
       case 4: return notesTrend("Active Households", "billsPaid", k, monthly);
       case 5: return notesTrend("Revenue", "rentPaid", k, monthly);
       case 6: return notesAdoptionTrend(k, monthly);
-      case 7: return notesNewVsRecurring(monthly);
       case 9: case 11: return notesTopProperties();
       case 10: return notesTopBottom();
       case 14: return notesCohortOverview(k);
       case 15: return notesRetention(monthly);
       case 16: return notesTrend("Active Properties", "propertyCount", k, monthly);
       case 17: return notesTrend("Unit Count", "units", k, monthly);
+      case 12: return notesStateBreakdown();
       case 21: return notesPortfolioProjection(k, benchmark);
       case 26: return notesDelinquency();
+      case 39: return notesHighRentAdoption();
+      case 44: return notesMultiBenchmark(k, benchmark);
       case 34: return notesAdoptionOpportunities(k);
       case 47: return notesQbrClose();
       case 52: return notesAnniversary();
@@ -423,6 +482,131 @@ export function getNotesForSlide(
   } catch {
     return [];
   }
+}
+
+// ── Expansion deck notes dispatch ────────────────────────────────────────────
+// Expansion's own slide keys (get-pmc-monthly-report.ts's EXPANSION_SLIDE_ORDER) are strings,
+// not the numeric Flask IDs above — and critically, several numeric IDs mean something
+// DIFFERENT in expansion mode than in QBR mode (e.g. Flask's own sid 47 is QBR Close in QBR
+// mode but MetroSight in expansion mode), so this can't safely share getNotesForSlide's numeric
+// switch. Separate string-keyed dispatch avoids reproducing that collision.
+
+const EXPANSION_SLIDE_TITLES: Record<string, string> = {
+  cover: "Cover",
+  exec_bottom_line: "Executive Summary & The Case for Expanding",
+  by_state: "Adoption by State",
+  residents_units: "Residents, Units & Rent",
+  adoption_trend: "Adoption Rate Trend",
+  cohort_overview: "Cohort Overview",
+  peer_benchmarks: "Performance Benchmarks",
+  retention: "Retention",
+  high_rent: "Flex Is for Everyone",
+  delinquency: "Delinquency",
+  expansion_metrosight: "Research: What Flexible Rent Does",
+  expansion_gap: "Portfolio Gap — Path to Full Portfolio",
+  testimonials: "Customer Testimonials",
+  expansion_case_close: "The Case for Expanding — Close",
+};
+
+export function getNotesForExpansionSlide(
+  key: string,
+  k: SpeakerNotesKpis,
+  monthly: SpeakerNotesMonthlyRow[],
+  benchmark: SpeakerNotesBenchmark,
+): string[] {
+  try {
+    switch (key) {
+      case "cover": return notesCover(k);
+      case "exec_bottom_line": return notesExpansionBottomLine(k, benchmark);
+      case "by_state": return notesStateBreakdown();
+      case "residents_units": return notesResidentsUnitsRent(monthly);
+      case "adoption_trend": return notesAdoptionTrend(k, monthly);
+      case "cohort_overview": return notesCohortOverview(k);
+      case "peer_benchmarks": return notesMultiBenchmark(k, benchmark);
+      case "retention": return notesRetention(monthly);
+      case "high_rent": return notesHighRentAdoption();
+      case "delinquency": return notesDelinquency();
+      case "expansion_metrosight": return notesExpansionMetrosight();
+      case "expansion_gap": return notesExpansionGap();
+      case "testimonials": return notesTestimonialsStandalone();
+      // No Flask reference notes exist for the mandatory close slide either (Flask's own
+      // dispatch table has no entry for render_expansion_case_close's slide id) — matching
+      // that rather than inventing content Flask itself doesn't have.
+      default: return [];
+    }
+  } catch {
+    return [];
+  }
+}
+
+export function buildExpansionSpeakerNotesHtml(
+  slideKeysInOrder: string[],
+  k: SpeakerNotesKpis,
+  monthly: SpeakerNotesMonthlyRow[],
+  benchmark: SpeakerNotesBenchmark,
+): string {
+  const pmc = _e(k.pmcName);
+  const reportMonth = monthStr(k.reportingMonth);
+  const stage = stageOf(k.monthsSinceLaunch);
+  const stageLabel = { new: "New Partner", growing: "Growing Partner", established: "Established Partner" }[stage];
+  const stageColor = { new: "#1a9e6a", growing: "#d97706", established: "#6A3DB8" }[stage];
+
+  const sections: string[] = [];
+  let slideCounter = 0;
+  for (const key of slideKeysInOrder) {
+    const title = EXPANSION_SLIDE_TITLES[key] ?? key.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+    const notes = getNotesForExpansionSlide(key, k, monthly, benchmark);
+    if (notes.length === 0) continue;
+    slideCounter++;
+    const bullets = notes.map((n) => `<li style="margin-bottom:10px;line-height:1.55;">${_e(n)}</li>`).join("");
+    sections.push(`
+    <div class="section" style="page-break-inside:avoid;margin-bottom:32px;padding-bottom:28px;border-bottom:1px solid #eceaf2;">
+      <div style="display:flex;align-items:baseline;gap:12px;margin-bottom:12px;">
+        <span style="font-size:11px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;
+                     color:#8d70ee;background:#f0edff;border-radius:99px;padding:3px 10px;flex-shrink:0;">
+          Slide ${slideCounter}
+        </span>
+        <span style="font-size:16px;font-weight:600;color:#1d1d1d;">${_e(title)}</span>
+      </div>
+      <ul style="margin:0;padding-left:20px;color:#2C194D;font-size:14px;">
+        ${bullets}
+      </ul>
+    </div>`);
+  }
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>${pmc} — Expansion Speaker Notes — ${reportMonth}</title>
+<style>
+  @page { size: letter; margin: 0.75in; }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'Helvetica Neue', Arial, sans-serif; color: #1d1d1d; font-size: 13px; line-height: 1.5; }
+  .header { border-bottom: 2px solid #8d70ee; padding-bottom: 16px; margin-bottom: 32px; }
+  .callout {
+    display: inline-block; padding: 3px 10px; border-radius: 99px; font-size: 11px; font-weight: 700;
+    letter-spacing: 0.08em; text-transform: uppercase; color: ${stageColor}; border: 1px solid ${stageColor};
+    margin-top: 6px;
+  }
+  @media print { .section { page-break-inside: avoid; } }
+</style>
+</head>
+<body>
+  <div class="header">
+    <div style="font-size:11px;font-weight:600;letter-spacing:0.15em;text-transform:uppercase;color:#8d70ee;margin-bottom:4px;">
+      Flex &middot; Expansion Speaker Notes
+    </div>
+    <div style="font-size:24px;font-weight:700;letter-spacing:-0.02em;color:#1d1d1d;">${pmc}</div>
+    <div style="font-size:14px;color:#524e5b;margin-top:4px;">${reportMonth} Business Review</div>
+    <div class="callout">${stageLabel} &middot; ${k.monthsSinceLaunch} months on Flex</div>
+    <div style="margin-top:12px;font-size:12px;color:#a09cb0;font-style:italic;">
+      Confidential &mdash; for internal use only. Print before the meeting or keep open on a second screen.
+    </div>
+  </div>
+  ${sections.join("\n")}
+</body>
+</html>`;
 }
 
 // ── HTML builder ─────────────────────────────────────────────────────────────
@@ -501,6 +685,167 @@ export function buildSpeakerNotesHtml(
     </div>
   </div>
   ${preMeetingHtml}
+  ${sections.join("\n")}
+</body>
+</html>`;
+}
+
+// ── Prospect / New Logo speaker notes ───────────────────────────────────────
+// Port of Flask's build_prospect_speaker_notes_html. Keyed by the prospect deck's real string
+// slide keys (cover/peer_perf/peer_retention/high_rent/ramp/metrosight/market_map/testimonials/
+// close — see get-prospect-deck.ts's `slides.push({ key: ... })` call sites), not the numeric
+// Flask IDs the QBR notes above use. Not ported: "embed" (render_embed_activation isn't called
+// anywhere in this TS port yet) and "projection" (no separate portfolio-projection slide in the
+// prospect deck here — projection content lives inside the ramp slide instead).
+
+export interface ProspectSpeakerNotesInput {
+  name: string;
+  poolSize: number;
+  medianNar: number;
+  matchLevel: string;
+  ownAvgRent: number | null;
+  medianAvgRent: number;
+}
+
+export function buildProspectSpeakerNotesHtml(
+  slideKeysInOrder: string[],
+  input: ProspectSpeakerNotesInput,
+): string {
+  const { name, poolSize, medianNar, ownAvgRent, medianAvgRent } = input;
+  const matchLevel = input.matchLevel || "portfolio size and average rent";
+
+  const rentSource = ownAvgRent
+    ? `the average rent you told us ($${ownAvgRent.toLocaleString(undefined, { maximumFractionDigits: 0 })}/mo)`
+    : `the peer group's median rent ($${medianAvgRent.toLocaleString(undefined, { maximumFractionDigits: 0 })}/mo, since none was provided)`;
+  const calcExplainer =
+    `HOW THE DOLLAR FIGURES ARE CALCULATED (say this if asked, don't lead with it): ` +
+    `peer adoption rate x ${rentSource} x ${name}'s total units. That's it — three inputs, no modeling. ` +
+    `Toggling Median/Average/Top 25% in the footer changes only the adoption-rate input; the rent and unit-count inputs stay fixed.`;
+
+  const marketRentSource = ownAvgRent
+    ? `your average rent input ($${ownAvgRent.toLocaleString(undefined, { maximumFractionDigits: 0 })}/mo) — the same number used everywhere else in this deck`
+    : "that specific market's own real average rent (rent paid/mo divided by active users there) — NOT the peer-group median used elsewhere in this deck, since you didn't give us your own rent";
+  const marketMapCalcExplainer =
+    `HOW THE GREEN GUARANTEE BULLET IS CALCULATED (say this if asked): your units in that specific market x ${marketRentSource} x that market's own real adoption rate, annualized.`;
+
+  const NOTES: Record<string, string[]> = {
+    cover: [
+      "Open with the headline number — that's your hook. Don't explain it yet, just let it land.",
+      "This is a data story. Everything comes from comparable PMCs. You're not making promises, you're showing what's already happening.",
+      "Ask: 'Does this number surprise you?' Let them respond before you move on.",
+      calcExplainer,
+    ],
+    peer_perf: [
+      `These are ${poolSize} PMCs matched to ${name} — real criteria: ${matchLevel}. PMS and asset type are NOT matching criteria (this pool is PMS-agnostic); don't claim otherwise if asked. All identifiers are redacted.`,
+      `Median adoption is ${(medianNar * 100).toFixed(1)}% — roughly 1 in ${Math.max(1, Math.round(1 / Math.max(medianNar, 0.01)))} units. Walk through one row to make it concrete.`,
+      "The delinquency protection column shows rent that was guaranteed even when a resident missed a payment. That's a value prop most PMCs haven't thought about.",
+      "If they ask 'how long does it take to get there?' — point to the Live column. Median is 65 months. These companies have been doing this for years.",
+    ],
+    peer_retention: [
+      "This is for the skeptic who says residents will try it once and stop. The answer is in this slide.",
+      "94% of residents who paid through Flex in one month paid through it again the next month. That's not a trial product.",
+      "The bar chart shows 6 consecutive months of stability. It's a habit, not an experiment.",
+      "The new sign-ups number (+2/property/month) means the user base is growing on top of a stable base. Compounding.",
+    ],
+    high_rent: [
+      "Address the 'our residents can afford rent, they don't need this' objection head-on.",
+      "The chart shows Flex usage across all rent levels. Lower-rent residents use it more — the timing problem is more acute when budgets are tighter.",
+      "But even at $2,000+/month rent, 8% of units have active Flex residents. That's not a product for struggling renters.",
+      "The real driver is timing: payday falls on the 15th, rent is due on the 1st. That gap exists at every income level. It's structural, not financial.",
+    ],
+    ramp: [
+      "This is the ramp curve from comparable rollouts. It tells the prospect what their first year actually looks like.",
+      "Month 3 is around 4% adoption. Month 12 is around 6%. Top performers are in the 10-14% range.",
+      "Walk through one milestone card. 'At month 6, comparable PMCs of your size are guaranteeing $5M/month in rent.' Make it specific.",
+      "Don't promise top-quartile. Promise the median. The upside is theirs to earn.",
+      calcExplainer.replace("HOW THE DOLLAR FIGURES ARE CALCULATED", "METHODOLOGY NOTE (for the detail-oriented person in the room)") +
+        (ownAvgRent
+          ? " If they want an even more tailored number, you already have their real rent — no follow-up needed."
+          : " If they want a more precise projection, invite them to share their portfolio's avg rent: 'If you send us your average rent by property, we can run a tailored projection in 24 hours.' That's a great follow-up ask."),
+      "RESULTS VARY: These are peer medians, not guarantees. Individual results depend on marketing activation, resident communication, and property mix. The curve shows what's typical — what they actually achieve is largely up to them.",
+    ],
+    metrosight: [
+      "MetroSight is an independent research firm — this is not Flex's own data. That matters when someone pushes back on the numbers.",
+      "The three findings on this slide are the high-confidence ones: on-time payments (+3.0pp), vacancy reduction (2.1 fewer per 100), and longer resident tenure (+3.7 months). Don't cite NOI — the confidence interval is too wide to defend.",
+      "The tenure math, if they ask: residents with Flex average 27.9 months before moving vs. 24.2 months baseline — a +3.7 month difference. Annual turnover rate drops from ~49.6% per unit (1 ÷ 24.2mo × 12) to ~43.0% (1 ÷ 27.9mo × 12). That 6.6pp gap, applied across their full portfolio, is where the 'fewer turns' number comes from.",
+      "Frame it as: 'These are peer outcomes, not projections. This is what's already happening at PMCs that look like yours.'",
+    ],
+    market_map: [
+      "Transition from the ramp curve: 'So where do we start? These are the markets with your biggest opportunity.' Only shown once, here on the first market map slide — the same talking points apply to every market slide that follows, no need to repeat this per market.",
+      "Markets are ordered by projected $ opportunity, highest first — this first market slide IS the biggest number, not buried later in the deck.",
+      "The stats on the right (properties, active residents, adoption rate, rent guaranteed) describe Flex's ENTIRE real network in that market — a real, uncapped count from our data, not just what's plotted on the map.",
+      "The map itself only plots up to 300 representative pins for readability — it is NOT every property in the market. The map's own legend caption says exactly how many aren't pictured; don't imply the dots are a literal count if asked.",
+      "PULL ON THE FOMO ANGLE HERE — this is the strongest emotional beat in the whole deck. Point at the map: 'Look at all these properties around you already on Flex.' Then the 'New to Flex this year' bullet is your proof it's accelerating, not old news. The density on the map is the argument; let them look at it for a second before you talk over it.",
+      marketMapCalcExplainer,
+      "If this is a national portfolio with more than 5 qualifying markets, only the top 5 by $ opportunity are visible by default — the rest are further back in the deck, just hidden. Unhide any of them before the meeting if you want to show more than the top 5.",
+    ],
+    testimonials: [
+      "These quotes come directly from residents and property managers. Let them do the talking.",
+      "Read one or two out loud — first person voice lands differently than a chart.",
+      "Good closing-adjacent slide — ends the meeting on a human note, not a data note.",
+    ],
+    close: [
+      "This is a closing slide, not a data slide. Slow down. Let the room breathe.",
+      "It's deliberately just the four-step path to go live (FSA → intake forms → team training → live) — the MetroSight outcomes and peer-adoption numbers were already covered on their own dedicated slides earlier, so this slide doesn't repeat them.",
+      "Stress that the go-live timeline is fast: 24–48 hours after setup is complete. The FSA is the only required document to kick things off.",
+      "If they ask 'how did you get to the numbers earlier' at this point, refer back to the Peer Proof/Ramp slides rather than re-deriving anything here.",
+      "Ideal close: 'The FSA is two pages. We can send it today. What would you need to see to feel comfortable moving forward?'",
+    ],
+  };
+
+  const titleMap: Record<string, string> = {
+    cover: "Cover",
+    peer_perf: "What PMCs Like Yours Are Pulling Through Flex",
+    peer_retention: "Once Residents Try Flex, They Keep Using It",
+    high_rent: "Flex Users Span Every Rent Level",
+    ramp: "The Ramp — What Your First Year Looks Like",
+    testimonials: "Testimonials",
+    metrosight: "Applied to Your Portfolio — MetroSight Research",
+    market_map: "Market Map — Your Biggest Opportunities",
+    close: "What's Next — Closing Slide",
+  };
+
+  const sections: string[] = [];
+  let marketMapNotesShown = false;
+  slideKeysInOrder.forEach((key, i) => {
+    if (key === "market_map") {
+      if (marketMapNotesShown) return;
+      marketMapNotesShown = true;
+    }
+    const notes = NOTES[key];
+    if (!notes) return;
+    const title = titleMap[key] ?? key.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+    const bullets = notes.map((n) => `<li style="margin-bottom:12px;line-height:1.65;">${_e(n)}</li>`).join("");
+    sections.push(`
+    <div style="page-break-inside:avoid;margin-bottom:32px;padding-bottom:28px;border-bottom:1px solid #eceaf2;">
+      <div style="display:flex;align-items:baseline;gap:12px;margin-bottom:12px;">
+        <span style="font-size:11px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:#8d70ee;background:#f0edff;border-radius:99px;padding:3px 10px;flex-shrink:0;">
+          Slide ${i + 1}
+        </span>
+        <span style="font-size:16px;font-weight:600;color:#1d1d1d;">${_e(title)}</span>
+      </div>
+      <ul style="margin:0;padding-left:20px;color:#2C194D;font-size:14px;">${bullets}</ul>
+    </div>`);
+  });
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8">
+<title>${_e(name)} — Speaker Notes</title>
+<style>
+  @page { size: letter; margin: 0.75in; }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'Helvetica Neue', Arial, sans-serif; color: #1d1d1d; font-size: 13px; line-height: 1.5; }
+  .header { border-bottom: 2px solid #8d70ee; padding-bottom: 16px; margin-bottom: 32px; }
+  @media print { div { page-break-inside: avoid; } }
+</style>
+</head>
+<body>
+  <div class="header">
+    <div style="font-size:11px;font-weight:600;letter-spacing:0.15em;text-transform:uppercase;color:#8d70ee;margin-bottom:4px;">Flex &middot; New Logo Speaker Notes</div>
+    <div style="font-size:24px;font-weight:700;color:#1d1d1d;">${_e(name)}</div>
+    <div style="margin-top:10px;font-size:12px;color:#a09cb0;font-style:italic;">Confidential &mdash; for internal use only. Print before the meeting or keep open on a second screen.</div>
+  </div>
   ${sections.join("\n")}
 </body>
 </html>`;

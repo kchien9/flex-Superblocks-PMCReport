@@ -1,5 +1,5 @@
 import { useState, useCallback, useRef } from "react";
-import { Loader2, Rocket, ChevronDown, ChevronRight, Upload, X } from "lucide-react";
+import { Loader2, Rocket, Upload, X } from "lucide-react";
 import * as XLSX from "xlsx";
 import { ToggleGroup } from "./ToggleGroup.js";
 import { SlidesPicker, NEW_LOGO_SLIDES, defaultSlideSet } from "./SlidesPicker.js";
@@ -84,15 +84,13 @@ function excelToCsv(buffer: ArrayBuffer): string {
   return csvLines.join("\n");
 }
 
-function Section({ title, children, defaultOpen = false }: { title: string; children: React.ReactNode; defaultOpen?: boolean }) {
-  const [open, setOpen] = useState(defaultOpen);
+/** Always-visible section — Slides and Testimonials are used on most builds and shouldn't be
+ * buried behind a click. */
+function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <div className="border-b border-gray-100 pb-3">
-      <button type="button" onClick={() => setOpen(!open)} className="flex items-center gap-1.5 w-full text-left py-1">
-        {open ? <ChevronDown className="h-3.5 w-3.5 text-gray-400" /> : <ChevronRight className="h-3.5 w-3.5 text-gray-400" />}
-        <span className="text-xs font-semibold uppercase tracking-wider text-gray-500">{title}</span>
-      </button>
-      {open && <div className="mt-2">{children}</div>}
+      <span className="block text-xs font-semibold uppercase tracking-wider text-gray-500 py-1">{title}</span>
+      <div className="mt-2">{children}</div>
     </div>
   );
 }
@@ -324,7 +322,7 @@ export function NewLogoTab({ generating, onGenerate }: NewLogoTabProps) {
       </Section>
 
       {/* Slides */}
-      <Section title="Slides" defaultOpen>
+      <Section title="Slides">
         <SlidesPicker slides={NEW_LOGO_SLIDES} selectedSlides={selectedSlides} onSlidesChange={setSelectedSlides} />
       </Section>
 

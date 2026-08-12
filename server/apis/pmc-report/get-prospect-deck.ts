@@ -41,6 +41,7 @@ import {
   type NetworkPin,
 } from "./market-map-data.js";
 import { renderMarketMap } from "./market-map-slides.js";
+import { buildProspectSpeakerNotesHtml } from "./speaker-notes.js";
 
 const SNOWFLAKE_ID = "d38ee94a-4e93-46f5-ab44-c65a99b3aea5";
 const TBL = "PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS";
@@ -165,6 +166,9 @@ export default api({
     })).nullable(),
     property_list_csv: z.string().nullable(),
     property_list_filename: z.string().nullable(),
+    // Empty/omitted = all slides (matches Flask's prospect_slides_filter default)
+    prospect_slides: z.array(z.string()).nullable().optional(),
+    presenting_mode: z.boolean().optional().default(false),
   }),
 
   output: z.object({
@@ -173,6 +177,7 @@ export default api({
       html: z.string(),
       js: z.string(),
     })),
+    notes_html: z.string().optional(),
     benchmarks: z.object({
       median_nar: z.number(),
       avg_nar: z.number(),
@@ -209,7 +214,10 @@ export default api({
       testimonials,
       property_list_csv,
       property_list_filename,
+      prospect_slides,
+      presenting_mode,
     } = input;
+    const prospectSlidesFilter = prospect_slides && prospect_slides.length > 0 ? new Set(prospect_slides) : null;
 
     // ─── Market Map: Parse + Geocode early (before peer matching) ─────────
     let geocodedProperties: GeocodedProperty[] = [];
@@ -886,11 +894,15 @@ export default api({
     };
 
     // ─── Step 3: Pull supporting data ────────────────────────────────────────
+    // These 4 queries are independent of each other (each only needs peerPmcNames/cutoff/
+    // rentFilter/isSfr, none reads another's result) but were previously awaited one at a
+    // time — fire them all together instead of paying for 4 serial Snowflake round-trips.
 
     // 3a. Peer monthly metrics (trend + retention)
     let trendRows: TrendRow[] = [];
     let peerMetrics: PeerMetrics = { median_bills_paid: 0, median_new_signups: 0, median_rent_paid: 0, median_retention: null, property_count: 0 };
 
+    const pullPeerMonthlyMetrics = async () => {
     if (peerPmcNames.length > 0) {
       const pmcPlaceholders = peerPmcNames.map(() => "?").join(",");
       const trendSql = `
@@ -952,9 +964,11 @@ export default api({
         ctx.log.warn("pull_peer_monthly_metrics failed", { error: e.message });
       }
     }
+    };
 
     // 3b. Peer cohort (retention loyalty tiers)
     let cohortRows: CohortRow[] = [];
+    const pullPeerCohort = async () => {
     if (peerPmcNames.length > 0) {
       const pmcPlaceholders = peerPmcNames.map(() => "?").join(",");
       const cohortSql = `
@@ -994,9 +1008,11 @@ export default api({
         ctx.log.warn("pull_peer_cohort failed", { error: e.message });
       }
     }
+    };
 
     // 3c. Ramp curve
     let rampRows: RampRow[] = [];
+    const pullRampCurve = async () => {
     if (peerPmcNames.length > 0) {
       const pmcPlaceholders = peerPmcNames.map(() => "?").join(",");
       const sfrExclusion = isSfr ? "" : "AND t.PROPERTY_UNIT_COUNT >= 5";
@@ -1066,9 +1082,11 @@ export default api({
         ctx.log.warn("pull_ramp_curve failed", { error: e.message });
       }
     }
+    };
 
     // 3d. Per-peer adoption trend (sparklines)
     const trendMap: Record<string, number[]> = {};
+    const pullPeerAdoptionTrend = async () => {
     if (peerPmcNames.length > 0) {
       const pmcPlaceholders = peerPmcNames.map(() => "?").join(",");
       const trendSql2 = `
@@ -1098,6 +1116,14 @@ export default api({
         ctx.log.warn("pull_peer_adoption_trend failed", { error: e.message });
       }
     }
+    };
+
+    await Promise.all([
+      pullPeerMonthlyMetrics(),
+      pullPeerCohort(),
+      pullRampCurve(),
+      pullPeerAdoptionTrend(),
+    ]);
 
     // ─── Step 4: Build pool for renderers ────────────────────────────────────
     const poolForRender: PeerRow[] = pool.map((r: any) => ({
@@ -1563,6 +1589,15 @@ export default api({
     const peerLine = `Comparable PMCs average ${(pnar * 100).toFixed(1)}% adoption — at that rate on ${units.toLocaleString()} units, that's ${moStr}/mo in guaranteed rent.`;
     const emailDraft = `Hi [First Name],\n\nAttaching a data-driven overview of what Flex looks like at ${prospect_name}'s scale — built from ${ppool} comparable PMCs on the platform today.\n\n• ${peerLine}\n• Median PMC has been on Flex 65 months — this isn't new or unproven.\n• Retention: 94% of residents who used Flex one month paid through it again the next.\n\nHappy to walk through it — takes 20 minutes. Let me know.\n\n[Your name]`;
 
+    // ─── Slide picker filter ────────────────────────────────────────────────
+    // Empty/omitted prospectSlidesFilter = all slides (matches Flask's prospect_slides_filter
+    // default). Applied before renumbering below so positions are computed from the final,
+    // filtered set — not from the full unfiltered one.
+    if (prospectSlidesFilter) {
+      const filtered = slides.filter((s) => prospectSlidesFilter.has(s.key));
+      slides.splice(0, slides.length, ...filtered);
+    }
+
     // ─── Renumber slideIds sequentially by document position ─────────────────
     // `slideId` advances via `slideId++` on every slide attempt, even when that slide returns
     // empty html and never gets pushed (e.g. the affordable/high_rent branch, or a metro/ramp
@@ -1599,8 +1634,26 @@ export default api({
       }
     }
 
+    // ─── Speaker notes (presenting mode only, matching Flask) ────────────────
+    let prospectNotesHtml: string | undefined;
+    if (presenting_mode) {
+      try {
+        prospectNotesHtml = buildProspectSpeakerNotesHtml(slides.map((s) => s.key), {
+          name: prospect_name,
+          poolSize: benchmarks.pool_size,
+          medianNar: benchmarks.median_nar,
+          matchLevel: benchmarks.match_level,
+          ownAvgRent: avgRentInput || null,
+          medianAvgRent: benchmarks.median_avg_rent,
+        });
+      } catch (e) {
+        ctx.log.warn("prospect speaker notes generation failed", { error: e instanceof Error ? e.message : String(e) });
+      }
+    }
+
     return {
       slides,
+      notes_html: prospectNotesHtml,
       benchmarks: {
         median_nar: benchmarks.median_nar,
         avg_nar: benchmarks.avg_nar,

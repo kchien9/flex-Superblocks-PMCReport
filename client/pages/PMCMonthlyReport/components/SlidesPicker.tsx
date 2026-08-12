@@ -27,22 +27,20 @@ export const QBR_SLIDES: SlideOption[] = [
   { id: "customer_experience", label: "Customer Experience", defaultOn: false },
   { id: "adoption_ceiling", label: "Adoption Ceiling", defaultOn: false },
   { id: "cohort_overview", label: "Cohort Overview", defaultOn: true },
-  { id: "new_vs_recurring", label: "New vs Recurring", defaultOn: false },
   { id: "full_property_table", label: "Full Property Table", defaultOn: true },
   { id: "since_inception", label: "Bills & Rent Since Inception", defaultOn: false },
-  { id: "multiple_payments", label: "Multiple Payments Update", defaultOn: false },
 ];
 
 export const NEW_LOGO_SLIDES: SlideOption[] = [
   { id: "cover", label: "Cover", defaultOn: true },
-  { id: "launch_snapshot", label: "Launch Snapshot", defaultOn: true },
+  { id: "peer_perf", label: "Peer Proof / Benchmarks", defaultOn: true },
+  { id: "peer_retention", label: "Peer Retention", defaultOn: true },
   { id: "high_rent", label: "Flex For Everyone", defaultOn: true },
-  { id: "peer_benchmarks", label: "Peer Benchmarks", defaultOn: true },
-  { id: "portfolio_projection", label: "Portfolio Projection", defaultOn: true },
   { id: "metrosight", label: "MetroSight Research", defaultOn: true },
+  { id: "ramp", label: "Ramp Curve", defaultOn: true },
   { id: "market_map", label: "Market Map", defaultOn: true },
   { id: "testimonials", label: "Testimonials", defaultOn: true },
-  { id: "case_close", label: "Closing Slide", defaultOn: true },
+  { id: "close", label: "Closing Slide", defaultOn: true },
 ];
 
 export const EXPANSION_SLIDES: SlideOption[] = [
@@ -59,7 +57,6 @@ export const EXPANSION_SLIDES: SlideOption[] = [
   { id: "expansion_metrosight", label: "MetroSight", defaultOn: true },
   { id: "expansion_gap", label: "Portfolio Gap", defaultOn: true },
   { id: "testimonials", label: "Testimonials", defaultOn: true },
-  { id: "multiple_payments", label: "Multiple Payments", defaultOn: true },
   { id: "expansion_case_close", label: "Case for Expanding", defaultOn: true },
 ];
 

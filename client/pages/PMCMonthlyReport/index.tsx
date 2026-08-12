@@ -77,6 +77,8 @@ export default function PMCMonthlyReportPage() {
         : null,
       property_list_csv: state.property_list_csv || null,
       property_list_filename: state.property_list_filename || null,
+      prospect_slides: [...state.selected_slides],
+      presenting_mode: state.delivery === "presenting",
     };
     lastProspectArgsRef.current = args;
     try {
@@ -144,7 +146,7 @@ export default function PMCMonthlyReportPage() {
       defaultHiddenSlides: prospectData.default_hidden_slides || [],
       pdfFilename: prospectData.slides.length > 0 ? "prospect_deck" : undefined,
     });
-    return { html, empty: false, emailDraft: prospectData.email_draft || undefined };
+    return { html, empty: false, emailDraft: prospectData.email_draft || undefined, notes_html: prospectData.notes_html || undefined };
   }, [prospectData]);
 
   // Pick the right data/error/generating state based on active tab
