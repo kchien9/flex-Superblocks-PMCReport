@@ -2224,7 +2224,13 @@ export default api({
             -- Flask's snapshot excludes (a customer with a broken/incomplete history from a
             -- property leaving mid-window can't hit "Perfect," but can inflate every other
             -- bucket and drag the eligible-population denominator up).
-            SELECT PROPERTY_PUBLIC_ID
+            -- Flask's real match key is (PROPERTY_NAME, PMC_NAME) pairs, NOT PROPERTY_PUBLIC_ID
+            -- -- matching that exactly (rather than the arguably-more-correct stable-ID version
+            -- tried first) in case any of this PMC's properties were renamed within the window,
+            -- which would make Flask's own name-based pairs silently exclude that property's
+            -- pre-rename history as if it were a "different" property. Testing whether this
+            -- explains the small residual gap remaining after the first active-properties fix.
+            SELECT PROPERTY_NAME
             FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS
             WHERE PMC_NAME = ?
               AND BP_MONTH = ?::DATE
@@ -2233,7 +2239,8 @@ export default api({
          scoped_props AS (
             SELECT PROPERTY_PUBLIC_ID, BP_MONTH
             FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS
-            WHERE PROPERTY_PUBLIC_ID IN (SELECT PROPERTY_PUBLIC_ID FROM active_properties)
+            WHERE PMC_NAME = ?
+              AND PROPERTY_NAME IN (SELECT PROPERTY_NAME FROM active_properties)
               AND IS_IN_NETWORK = TRUE
               AND BP_MONTH >= DATEADD('month', -?, ?::DATE)
               AND BP_MONTH < ?
@@ -2290,8 +2297,10 @@ export default api({
         RetentionCohortSchema,
         // Flask: max(3, lookback_months) (app.py:730) — floor so a very short override can't
         // starve the cohort window entirely. First two params (pmc_name, reportingMonthStr)
-        // resolve active_properties' latest-month snapshot before the rest of the window params.
-        [pmc_name, reportingMonthStr, Math.max(3, lookback_months), cutoffStr, cutoffStr, reportingMonthStr, reportingMonthStr],
+        // resolve active_properties' latest-month snapshot; third (pmc_name again) is
+        // scoped_props' own PMC_NAME filter, needed now that the join key is PROPERTY_NAME
+        // (not unique across the whole network) instead of PROPERTY_PUBLIC_ID.
+        [pmc_name, reportingMonthStr, pmc_name, Math.max(3, lookback_months), cutoffStr, cutoffStr, reportingMonthStr, reportingMonthStr],
         { label: "Compute loyalty buckets & true repeat rate from customer cohort" }
       ).catch(() => [] as { LOYALTY_BUCKET: string; BUCKET_COUNT: number; TOTAL_CUSTOMERS: number; TRUE_REPEAT_RATE: number | null }[]),
       ctx.integrations.snowflake_sso.query(
@@ -2301,7 +2310,10 @@ export default api({
             -- property that departed the network mid-window still contributes customers here,
             -- whose payment history simply stops when the property leaves, looking exactly like
             -- churn in the MoM set-intersection below.
-            SELECT PROPERTY_PUBLIC_ID
+            -- Flask's real match key is (PROPERTY_NAME, PMC_NAME), not PROPERTY_PUBLIC_ID --
+            -- see the retention-cohort query's own comment for why this is being tested as the
+            -- source of the small residual gap remaining after the first active-properties fix.
+            SELECT PROPERTY_NAME
             FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS
             WHERE PMC_NAME = ?
               AND BP_MONTH = ?::DATE
@@ -2313,7 +2325,8 @@ export default api({
          FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS p
          JOIN PRODUCTION.ANALYTICS.NAR_CHARGED_USERS n
             ON n.PROPERTY_PUBLIC_ID = p.PROPERTY_PUBLIC_ID AND n.BP_MONTH = p.BP_MONTH
-         WHERE p.PROPERTY_PUBLIC_ID IN (SELECT PROPERTY_PUBLIC_ID FROM active_properties)
+         WHERE p.PMC_NAME = ?
+           AND p.PROPERTY_NAME IN (SELECT PROPERTY_NAME FROM active_properties)
            AND p.IS_IN_NETWORK = TRUE
            AND p.BP_MONTH >= DATEADD('month', -?, ?::DATE)
            AND p.BP_MONTH < ?
@@ -2321,7 +2334,7 @@ export default api({
         CustomerMonthSchema,
         // Same window as the retention-cohort query above (Flask: pull_retention_cohort's
         // lookback_months) — this feeds the same cohort_df the MoM chart is built from.
-        [pmc_name, reportingMonthStr, Math.max(3, lookback_months), cutoffStr, cutoffStr],
+        [pmc_name, reportingMonthStr, pmc_name, Math.max(3, lookback_months), cutoffStr, cutoffStr],
         { label: "Fetch raw (customer, month) pairs for MoM retention set-intersection" }
       ).catch(() => [] as { CUSTOMER_PUBLIC_ID: string; BP_MONTH: string }[]),
     ]);

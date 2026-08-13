@@ -650,7 +650,22 @@ export function renderPeerBenchmarks(input: {
       `btn.classList.toggle("is-hidden",!h);};}`;
   }
 
-  const html = `<div class="slide" id="slide-${slideId}" style="background:#fff;">
+  // Collapsed by default (click to expand) — same pattern as the retention slide's own debug
+  // panel. This shows regardless of whether metrics is empty, unlike the blank-slide debug box
+  // above: a slide that renders FINE but with a wrong NUMBER needs its own diagnostic surfaced
+  // too, and the blank-slide branch above never runs once metrics has real content.
+  const bmDebugPanel = debugInfo ? `
+    <div style="position:absolute;bottom:8px;left:8px;right:8px;z-index:10;
+                font-family:monospace;font-size:10px;color:#1D1D1D;">
+      <div onclick="this.nextElementSibling.style.display = this.nextElementSibling.style.display === 'none' ? 'block' : 'none';"
+           style="display:inline-block;background:#fff3cd;border:1px solid #ffe69c;border-radius:6px;
+                  padding:2px 8px;cursor:pointer;font-weight:700;">DEBUG (temporary) — click to expand</div>
+      <div style="display:none;max-height:220px;overflow-y:auto;line-height:1.5;
+                  background:#fff3cd;border:1px solid #ffe69c;border-radius:6px;padding:8px 10px;
+                  white-space:pre-wrap;margin-top:2px;">${_e(debugInfo)}</div>
+    </div>` : "";
+
+  const html = `<div class="slide" id="slide-${slideId}" style="background:#fff;position:relative;">
     <div class="slide-header" style="margin-bottom:8px;flex-shrink:0;">
       <div class="slide-label">PERFORMANCE BENCHMARKS</div>
       <div class="slide-title" style="font-size:28px;">How ${pmc} stacks up.</div>
@@ -671,6 +686,7 @@ export function renderPeerBenchmarks(input: {
       </div>
     </div>
     ${bmCtrlHtml}
+    ${bmDebugPanel}
   </div>`;
 
   return { html, js: bmCtrlJs };
