@@ -34,7 +34,7 @@ import {
 const SNOWFLAKE_SSO = "d38ee94a-4e93-46f5-ab44-c65a99b3aea5";
 
 // ─── Module-level cache: network pool (same for all PMCs in a given cutoff month) ───
-type NetworkPoolRow = { PMC_NAME: string; PROPERTY_NAME: string; PROPERTY_STATE: string | null; PROPERTY_UNIT_COUNT: number; RENT_PAID_AMOUNT: number | null; BILLS_PAID_COUNT: number; ROLLOUT_MONTH: string | null; T12_CONNECTIONS: number; MEDIAN_RENTER_INCOME: number | null };
+type NetworkPoolRow = { PMC_NAME: string; PROPERTY_NAME: string; PROPERTY_STATE: string | null; PROPERTY_UNIT_COUNT: number; RENT_PAID_AMOUNT: number | null; BILLS_PAID_COUNT: number | null; ROLLOUT_MONTH: string | null; T12_CONNECTIONS: number | null; MEDIAN_RENTER_INCOME: number | null };
 let _networkPoolCache: { cutoff: string; data: NetworkPoolRow[]; fetchedAt: number } | null = null;
 const _NETWORK_POOL_TTL_MS = 10 * 60 * 1000; // 10 minutes — unused while caching is disabled, see below
 
@@ -1755,15 +1755,22 @@ export default api({
       BP_MONTH: z.string(),
     });
 
+    // BILLS_PAID_COUNT and T12_CONNECTIONS were declared non-nullable here, but the query
+    // computes BILLS_PAID_COUNT via MAX(CASE WHEN BP_MONTH = latest THEN BILLS_PAID_COUNT END) —
+    // NULL for any property where that column itself is null even in its "latest" row (a real,
+    // observed case, not hypothetical: live-verified this exact query returns 78,224 real rows
+    // directly against Snowflake, but the app's own networkPool ended up with 0 — the only
+    // place that many real rows can vanish silently is schema validation rejecting the whole
+    // array over a single non-matching row, caught by this query's outer .catch(() => []).
     const NetworkPoolSchema = z.object({
       PMC_NAME: z.string(),
       PROPERTY_NAME: z.string(),
       PROPERTY_STATE: z.string().nullable(),
       PROPERTY_UNIT_COUNT: z.number(),
       RENT_PAID_AMOUNT: z.number().nullable(),
-      BILLS_PAID_COUNT: z.number(),
+      BILLS_PAID_COUNT: z.number().nullable(),
       ROLLOUT_MONTH: z.string().nullable(),
-      T12_CONNECTIONS: z.number(),
+      T12_CONNECTIONS: z.number().nullable(),
       MEDIAN_RENTER_INCOME: z.number().nullable(),
     });
 
@@ -2548,9 +2555,11 @@ export default api({
         const rollout = new Date(r.ROLLOUT_MONTH!);
         const mLive = (reportingMonthDate.getFullYear() - rollout.getFullYear()) * 12
                       + (reportingMonthDate.getMonth() - rollout.getMonth());
-        const avgRent = r.BILLS_PAID_COUNT > 0 ? (r.RENT_PAID_AMOUNT ?? 0) / r.BILLS_PAID_COUNT : 0;
-        const nar = r.PROPERTY_UNIT_COUNT > 0 ? r.BILLS_PAID_COUNT / r.PROPERTY_UNIT_COUNT : 0;
-        const t12EngPer100 = r.PROPERTY_UNIT_COUNT > 0 ? r.T12_CONNECTIONS / r.PROPERTY_UNIT_COUNT * 100 : 0;
+        const billsPaid = r.BILLS_PAID_COUNT ?? 0;
+        const t12Conn = r.T12_CONNECTIONS ?? 0;
+        const avgRent = billsPaid > 0 ? (r.RENT_PAID_AMOUNT ?? 0) / billsPaid : 0;
+        const nar = r.PROPERTY_UNIT_COUNT > 0 ? billsPaid / r.PROPERTY_UNIT_COUNT : 0;
+        const t12EngPer100 = r.PROPERTY_UNIT_COUNT > 0 ? t12Conn / r.PROPERTY_UNIT_COUNT * 100 : 0;
         return {
           pmcName: r.PMC_NAME,
           propertyName: r.PROPERTY_NAME,
