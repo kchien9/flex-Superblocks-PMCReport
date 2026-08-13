@@ -2398,6 +2398,31 @@ export default api({
       return [{ LAUNCH_MONTH: null }] as { LAUNCH_MONTH: string | null }[];
     });
 
+    // Flask (generator/data.py:2367-2413, compute_benchmark): Portfolio Penetration's
+    // denominator is deliberately NOT HUBSPOT_DEAL_TOTAL_COMPANY_UNITS for the SUBJECT PMC -
+    // that field is a per-deal snapshot that varies wildly row-to-row (explicit comment in
+    // Flask source warns against it). Instead it queries the Salesforce accounts table
+    // directly via PMC_ID, same join pattern as partnerSincePromise above. NOTE: this is
+    // intentionally asymmetric with the PEER side (below, in the PENETRATION percentile CTE),
+    // which DOES use HUBSPOT_DEAL_TOTAL_COMPANY_UNITS - Flask does the same (peer_penetration
+    // CTE, data.py:2035-2043) because peers only feed a percentile position, not a displayed
+    // headline number, so the noisier field is tolerated there but not for the subject's own
+    // value.
+    const SubjectPortfolioTotalSchema = z.object({ TOTAL_COMPANY_UNITS: z.coerce.number().nullable() });
+    let subjectPortfolioTotalError: string | null = null;
+    const subjectPortfolioTotalPromise = ctx.integrations.snowflake_sso.query(
+      `SELECT acc.ACCOUNT_TOTAL_COMPANY_UNITS AS TOTAL_COMPANY_UNITS
+       FROM PRODUCTION.SALES.DIM_SALES_ACCOUNTS acc
+       JOIN (SELECT DISTINCT PMC_ID FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS WHERE PMC_NAME = ? LIMIT 1) p
+            ON acc.PMC_ID = p.PMC_ID`,
+      SubjectPortfolioTotalSchema,
+      [pmc_name],
+      { label: "Subject PMC's true total company units from Salesforce accounts (for Portfolio Penetration denominator)" }
+    ).catch((err) => {
+      subjectPortfolioTotalError = err instanceof Error ? err.message : String(err);
+      return [] as { TOTAL_COMPANY_UNITS: number | null }[];
+    });
+
     // --- Network property pool was moved earlier (fired before the batch) ---
     let regionDetail: { PROPERTY_STATE: string; PROPERTY_REGION: string; PROPERTIES: number; TOTAL_UNITS: number; BILLS_PAID: number }[] = [];
     // Subject PMC's own properties' median renter income, keyed by property name — feeds the
@@ -3520,8 +3545,18 @@ export default api({
         return monthsList.length > 0 ? monthsList.reduce((s, v) => s + v, 0) / monthsList.length : null;
       })();
       // Flask: pmc_penetration = min(enrolled_units / total_company_units, 1.0) — capped so a
-      // stale/undersized HubSpot total-company-units figure can't produce an impossible >100%.
-      const subjectTotalCompanyUnits = inNetwork.reduce((max, r) => Math.max(max, r.HUBSPOT_DEAL_TOTAL_COMPANY_UNITS ?? 0), 0);
+      // stale/undersized total-company-units figure can't produce an impossible >100%.
+      // total_company_units comes from the Salesforce-accounts query above, NOT
+      // HUBSPOT_DEAL_TOTAL_COMPANY_UNITS (that field is a noisy per-deal snapshot Flask
+      // explicitly avoids for this calc — see the query's comment above). If the Salesforce
+      // query fails or the PMC has no matching account, Flask leaves pmc_penetration as None
+      // rather than falling back to a different, less-trustworthy denominator — matched here
+      // by leaving subjectPenetrationValue null instead of using the HubSpot field as a fallback.
+      const [subjectPortfolioRow] = await subjectPortfolioTotalPromise;
+      if (subjectPortfolioTotalError) {
+        console.warn(`[PMC Report] subject portfolio-total Salesforce query failed for ${pmc_name}: ${subjectPortfolioTotalError}`);
+      }
+      const subjectTotalCompanyUnits = subjectPortfolioRow?.TOTAL_COMPANY_UNITS ?? 0;
       const subjectPenetrationValue = subjectTotalCompanyUnits > 0
         ? Math.min((latestMonth?.units ?? 0) / subjectTotalCompanyUnits, 1.0)
         : null;
@@ -3946,12 +3981,16 @@ export default api({
 
       // Shared computations
       const enrolledUnits = latestMonth?.units ?? 0;
-      // Auto-populate total_portfolio_units from Snowflake data (HUBSPOT_DEAL_TOTAL_COMPANY_UNITS)
+      // Auto-populate total_portfolio_units from Salesforce accounts (ACCOUNT_TOTAL_COMPANY_UNITS)
       // if the caller didn't provide one — mirrors Flask's list_expansion_candidates SFDC lookup
+      // (generator/data.py:343, PRODUCTION.SALES.DIM_SALES_ACCOUNTS). NOT
+      // HUBSPOT_DEAL_TOTAL_COMPANY_UNITS — same noisy-field reasoning as the QBR Portfolio
+      // Penetration fix above; reuses the same already-fired query rather than a second one.
       let expTotalPortfolio = total_portfolio_units;
       if (!expTotalPortfolio) {
-        const hubspotUnits = inNetwork.reduce((max, r) => Math.max(max, r.HUBSPOT_DEAL_TOTAL_COMPANY_UNITS ?? 0), 0);
-        expTotalPortfolio = hubspotUnits > 0 ? hubspotUnits : enrolledUnits;
+        const [expPortfolioRow] = await subjectPortfolioTotalPromise;
+        const acctUnits = expPortfolioRow?.TOTAL_COMPANY_UNITS ?? 0;
+        expTotalPortfolio = acctUnits > 0 ? acctUnits : enrolledUnits;
       }
       const expNarPerc = segmentPercentiles.find((s) => s.metric === "NAR");
 
@@ -4030,6 +4069,7 @@ export default api({
               pmcName: pmcDisplayName,
               segment: lockedPeersCriteria,
               metrics: expBenchMetrics,
+              peerCount: lockedPeers.length,
             });
             pushSlide(sid, r);
             break;
@@ -4369,6 +4409,10 @@ export default api({
       pmcName: pmcDisplayName,
       segment: lockedPeersCriteria,
       metrics: benchmarkMetrics,
+      // Flask's subtitle is "Benchmarked against N comparable PMCs (<criteria>)" — the count
+      // prefix was missing here, so the renderer's existing peerCount-gated subtitle logic
+      // (slide-renderers.ts, subtitlePeers) fell through to the bare criteria string instead.
+      peerCount: lockedPeers.length,
       // TEMPORARY diagnostic — remove once the empty-metrics root cause is confirmed and fixed.
       debugInfo: [
         `pmc_name (query param): ${pmc_name}`,
