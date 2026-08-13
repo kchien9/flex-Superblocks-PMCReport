@@ -2098,19 +2098,30 @@ export default api({
                 WHERE IS_INTEGRATED_TOTAL = TRUE
                   AND ROLLOUT_MONTH IS NOT NULL
                 GROUP BY PMC_NAME, PROPERTY_NAME
+             ),
+             candidates AS (
+                -- Filter + cap to 15000 BEFORE the census-income UDF ever runs. It used to run
+                -- once per network property with a rollout month (100k+ rows, unfiltered) before
+                -- the LIMIT below applied to the OUTER select — a likely cause of the integration
+                -- timeout that was silently returning 0 rows for the whole network pool. Now the
+                -- UDF only runs on the <=15000 rows that actually survive the real filters.
+                SELECT PMC_NAME, PROPERTY_NAME, PROPERTY_STATE, PROPERTY_UNIT_COUNT,
+                       RENT_PAID_AMOUNT, BILLS_PAID_COUNT, ROLLOUT_MONTH, T12_CONNECTIONS,
+                       PROPERTY_PUBLIC_ID
+                FROM agg
+                WHERE PROPERTY_UNIT_COUNT >= 10
+                  AND PROPERTY_STATE IS NOT NULL AND PROPERTY_STATE != ''
+                LIMIT 15000
              )
-             SELECT a.PMC_NAME, a.PROPERTY_NAME, a.PROPERTY_STATE, a.PROPERTY_UNIT_COUNT,
-                    a.RENT_PAID_AMOUNT, a.BILLS_PAID_COUNT, a.ROLLOUT_MONTH, a.T12_CONNECTIONS,
+             SELECT c.PMC_NAME, c.PROPERTY_NAME, c.PROPERTY_STATE, c.PROPERTY_UNIT_COUNT,
+                    c.RENT_PAID_AMOUNT, c.BILLS_PAID_COUNT, c.ROLLOUT_MONTH, c.T12_CONNECTIONS,
                     PRODUCTION.ANALYTICS.FIPS_TO_CENSUS_DATA(
                         PRODUCTION.ANALYTICS.ZIP_TO_FIPS(LEFT(p.PROPERTY_ZIP, 5)),
                         'median_renter_household_income'
                     ) AS MEDIAN_RENTER_INCOME
-             FROM agg a
+             FROM candidates c
              LEFT JOIN prop_zip p
-               ON p.PROPERTY_PUBLIC_ID = a.PROPERTY_PUBLIC_ID AND p.rn = 1
-             WHERE a.PROPERTY_UNIT_COUNT >= 10
-               AND a.PROPERTY_STATE IS NOT NULL AND a.PROPERTY_STATE != ''
-             LIMIT 15000`,
+               ON p.PROPERTY_PUBLIC_ID = c.PROPERTY_PUBLIC_ID AND p.rn = 1`,
             NetworkPoolSchema,
             [cutoffStr],
             { label: "Pull network property pool for peer matching (incl. median renter income for RTI tier)" }
