@@ -3460,15 +3460,26 @@ export default api({
       // doesn't). This was ALSO reading from networkPoolProps — the shared/filtered pool built
       // for peer-matching (months_live >= 7, avg rent $700-2500 band) — which silently excluded
       // some of the subject's OWN properties that don't happen to meet those PEER-comparability
-      // filters. The subject's own engagement needs their full, unfiltered portfolio: inNetwork,
-      // already fetched, no second query needed.
+      // filters.
+      //
+      // Second bug, found from the actual debug numbers (1319 connects / 2809.75 avg units =
+      // 46.9, arithmetically correct but still the wrong INPUTS): Flask's df here comes from
+      // pull_pmc_data (generator/data.py:170-228), whose SQL has NO IS_IN_NETWORK filter AT ALL
+      // -- it pulls every property-month row for the PMC in the window regardless of network
+      // status. inNetwork (this file's own filtered view) excludes OON/not-yet-integrated
+      // property-months -- which Flask's calc does NOT exclude. Those OON months still add their
+      // full unit count to the denominator while contributing near-zero bill connections,
+      // diluting Flask's ratio downward relative to a version that properly excludes them (this
+      // is why removing the filter moves the number DOWN toward Flask's, not up). allRows (the
+      // unfiltered fetch inNetwork itself is filtered FROM) is the right source here, not
+      // inNetwork -- no second query needed, already fetched.
       const engWindowStart = (() => {
         const [cy, cm] = cutoffStr.split("-").map(Number);
         return new Date(cy, cm - 1 - 12, 1).toISOString().slice(0, 10);
       })();
       const engUnitsByMonth = new Map<string, number>();
       let engTotalConnects = 0;
-      for (const r of inNetwork) {
+      for (const r of allRows) {
         if (r.BP_MONTH < engWindowStart || r.BP_MONTH >= cutoffStr) continue;
         engUnitsByMonth.set(r.BP_MONTH, (engUnitsByMonth.get(r.BP_MONTH) ?? 0) + r.PROPERTY_UNIT_COUNT);
         engTotalConnects += r.NEW_BILL_CONNECTIONS ?? 0;
@@ -4380,6 +4391,7 @@ export default api({
         `_engDebugTotalConnects: ${_engDebugTotalConnects}`,
         `_engDebugAvgUnits: ${_engDebugAvgUnits}`,
         `inNetwork.length (total rows, all time): ${inNetwork.length}`,
+        `allRows.length (unfiltered, what the engagement calc now uses): ${allRows.length}`,
       ].join("\n"),
     });
 
