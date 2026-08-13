@@ -1762,16 +1762,25 @@ export default api({
     // directly against Snowflake, but the app's own networkPool ended up with 0 — the only
     // place that many real rows can vanish silently is schema validation rejecting the whole
     // array over a single non-matching row, caught by this query's outer .catch(() => []).
+    // z.coerce.number() rather than z.number() on every numeric field below — the previous
+    // fix (making BILLS_PAID_COUNT/T12_CONNECTIONS nullable) did NOT resolve networkPool
+    // silently coming back empty despite the exact same query, live-verified, returning
+    // 78,224 real rows with no error. That means the actual mismatch is a TYPE issue, not
+    // (only) a nullability one — most likely FIPS_TO_CENSUS_DATA (a UDF returning a
+    // semi-structured/VARIANT value) coming back as a string-shaped number rather than a
+    // strict JS number, which z.number() rejects outright. z.coerce.number() accepts either.
+    // (.nullable() still short-circuits real SQL NULLs before coercion ever runs, so this
+    // doesn't change null-handling — only accepts non-null values in more shapes.)
     const NetworkPoolSchema = z.object({
       PMC_NAME: z.string(),
       PROPERTY_NAME: z.string(),
       PROPERTY_STATE: z.string().nullable(),
-      PROPERTY_UNIT_COUNT: z.number(),
-      RENT_PAID_AMOUNT: z.number().nullable(),
-      BILLS_PAID_COUNT: z.number().nullable(),
+      PROPERTY_UNIT_COUNT: z.coerce.number(),
+      RENT_PAID_AMOUNT: z.coerce.number().nullable(),
+      BILLS_PAID_COUNT: z.coerce.number().nullable(),
       ROLLOUT_MONTH: z.string().nullable(),
-      T12_CONNECTIONS: z.number().nullable(),
-      MEDIAN_RENTER_INCOME: z.number().nullable(),
+      T12_CONNECTIONS: z.coerce.number().nullable(),
+      MEDIAN_RENTER_INCOME: z.coerce.number().nullable(),
     });
 
     const RegionDetailSchema = z.object({
@@ -2032,6 +2041,8 @@ export default api({
     // --- Network property pool (cached, same for all PMCs in a given cutoff) ---
     // Only needed for QBR mode (15,000 row query for peer matching)
     let networkPool: NetworkPoolRow[] = [];
+    // TEMPORARY diagnostic — captures the real error instead of silently swallowing it.
+    let networkPoolError: string | null = null;
     let regionDetail: { PROPERTY_STATE: string; PROPERTY_REGION: string; PROPERTIES: number; TOTAL_UNITS: number; BILLS_PAID: number }[] = [];
     // Subject PMC's own properties' median renter income, keyed by property name — feeds the
     // RTI (rent-to-income) peer-matching tier in peer-matching.ts's resolvePropertyPeerMetric.
@@ -2107,7 +2118,10 @@ export default api({
             // Cache the result for future runs
             _networkPoolCache = { cutoff: cutoffStr, data: rows, fetchedAt: Date.now() };
             return rows;
-          }).catch(() => [] as NetworkPoolRow[]);
+          }).catch((err) => {
+            networkPoolError = err instanceof Error ? err.message : String(err);
+            return [] as NetworkPoolRow[];
+          });
 
       // Fire region detail in parallel with network pool
       const regionDetailPromise = ctx.integrations.snowflake_sso.query(
@@ -2149,7 +2163,9 @@ export default api({
       // rent-to-income instead of raw rent for this PMC's properties.
       const SubjectIncomeSchema = z.object({
         PROPERTY_NAME: z.string(),
-        MEDIAN_RENTER_INCOME: z.number().nullable(),
+        // z.coerce — same FIPS_TO_CENSUS_DATA UDF as NetworkPoolSchema above; see that
+        // comment for why z.number() alone can silently reject the whole result.
+        MEDIAN_RENTER_INCOME: z.coerce.number().nullable(),
       });
       const subjectIncomePromise = ctx.integrations.snowflake_sso.query(
           `WITH prop_zip AS (
@@ -3808,6 +3824,7 @@ export default api({
         `cutoffStr: ${cutoffStr}`,
         `_msl (months since launch): ${_msl}`,
         `networkPool.length (raw SQL rows): ${networkPool.length}`,
+        `networkPoolError: ${networkPoolError}`,
         `networkPoolProps.length (post-filter): ${networkPoolProps.length}`,
         `lockedPeers.length: ${lockedPeers.length}`,
         `lockedPeersCriteria: ${lockedPeersCriteria}`,
