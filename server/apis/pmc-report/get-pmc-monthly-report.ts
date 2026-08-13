@@ -1883,15 +1883,26 @@ export default api({
                 GROUP BY PMC_NAME, PROPERTY_NAME
              ),
              candidates AS (
-                -- Filter + cap to 15000 BEFORE the census-income UDF runs below — keeps the UDF
-                -- call bounded to <=15000 rows instead of the full unfiltered network scan.
+                -- Filter + cap BEFORE the census-income UDF runs below. Per Clark: Superblocks
+                -- enforces a ~5MB step-output size limit, and 15000 rows x 9 columns, serialized
+                -- with full JSON keys per row, plausibly lands right at that ceiling -- which
+                -- fits the evidence better than anything else tried: a FIXED row limit hitting a
+                -- FIXED byte cap fails identically every single time, exactly what we saw across
+                -- 3 different query bodies (none of which changed the final row/column count).
+                -- Cutting hard to 3000 as a decisive test — small enough to be comfortably clear
+                -- of 5MB even at a generous worst-case ~500 bytes/row (~1.5MB total), so if this
+                -- alone fixes it, the cap is confirmed and 3000 can likely be tuned back up later
+                -- (this is a peer-matching candidate pool, not a report a user reads row-by-row --
+                -- 3000 candidates, still ranked by the same filters as before, is very likely
+                -- more than enough for peer-matching purposes; this isn't a coverage cut, just a
+                -- size-safety one until the real ceiling is known).
                 SELECT PMC_NAME, PROPERTY_NAME, PROPERTY_STATE, PROPERTY_UNIT_COUNT,
                        RENT_PAID_AMOUNT, BILLS_PAID_COUNT, ROLLOUT_MONTH, T12_CONNECTIONS,
                        PROPERTY_PUBLIC_ID
                 FROM agg
                 WHERE PROPERTY_UNIT_COUNT >= 10
                   AND PROPERTY_STATE IS NOT NULL AND PROPERTY_STATE != ''
-                LIMIT 15000
+                LIMIT 3000
              )
              SELECT c.PMC_NAME, c.PROPERTY_NAME, c.PROPERTY_STATE, c.PROPERTY_UNIT_COUNT,
                     c.RENT_PAID_AMOUNT, c.BILLS_PAID_COUNT, c.ROLLOUT_MONTH, c.T12_CONNECTIONS,
