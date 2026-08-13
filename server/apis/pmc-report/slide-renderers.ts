@@ -469,6 +469,11 @@ const METRIC_META: Record<string, MetricMeta> = {
     definition: "Avg months from property rollout to that property's first resident payment",
     format: (v) => `${v.toFixed(1)} mo`,
   },
+  ON_TIME: {
+    label: "On-Time Payment Rate",
+    definition: "% of residents who never fell behind on a scheduled payment – trailing 12 months",
+    format: (v) => `${Math.round(v * 100)}%`,
+  },
 };
 
 export function renderPeerBenchmarks(input: {

@@ -38,6 +38,19 @@ type NetworkPoolRow = { PMC_NAME: string; PROPERTY_NAME: string; PROPERTY_STATE:
 let _networkPoolCache: { cutoff: string; data: NetworkPoolRow[]; fetchedAt: number } | null = null;
 const _NETWORK_POOL_TTL_MS = 10 * 60 * 1000; // 10 minutes — unused while caching is disabled, see below
 
+/** Linear-interpolation percentile, matching Snowflake's PERCENTILE_CONT semantics exactly —
+ * used where a value has to be computed application-side instead of in SQL (e.g. on-time rate,
+ * pulled from a Snowflake semantic view whose AGG() syntax hasn't been proven to compose with
+ * PERCENTILE_CONT in the same query, so percentiles are computed here instead of risking that
+ * combination untested). `sortedAsc` must already be sorted ascending; `p` is 0-100. */
+function percentileCont(sortedAsc: number[], p: number): number {
+  if (sortedAsc.length === 0) return 0;
+  const idx = (p / 100) * (sortedAsc.length - 1);
+  const lo = Math.floor(idx);
+  const hi = Math.ceil(idx);
+  return lo === hi ? sortedAsc[lo] : sortedAsc[lo] + (sortedAsc[hi] - sortedAsc[lo]) * (idx - lo);
+}
+
 // ─── Peer-matching geo helpers (faithful port of Flask's generator/data.py:1047-1440) ───
 // Ported because the peer-median/Peer Benchmarks cohort was found to diverge from Flask's:
 // the tier ladder further down was missing the multi-state overlap tier AND the region tier
@@ -3314,8 +3327,57 @@ export default api({
       ).catch((err) => { console.error("[ROLLING QUERY FAILED]", String(err)); return [] as z.infer<typeof RollingPeerSchema>[]; })
       : Promise.resolve([] as z.infer<typeof RollingPeerSchema>[]);
 
-    // Fire both independent round-trips together instead of one at a time
-    const [percRows, rollingRows] = await Promise.all([segPercPromise, rollingPromise]);
+    // On-Time Payment Rate: "% of customers who did NOT go delinquent" via CPT_OUTCOMES_
+    // SEMANTIC_VIEW's dq_rate (1 - dq_rate). This is a proxy, not the exact MetroSight
+    // methodology (that study's real ledger due-date logic lives in raw tables this codebase
+    // has no documented access to) -- close enough conceptually (avoiding delinquency is a
+    // real signal of paying reliably) to be worth showing, not close enough to claim as the
+    // literal validated MetroSight number.
+    //
+    // This is the FIRST query anywhere in this file against a Snowflake SEMANTIC VIEW rather
+    // than a plain table -- genuinely untested territory for this pipeline (untested syntax
+    // support through Superblocks' integration, unverified permissions on this specific view).
+    // Fully isolated and non-fatal by design: its own promise, its own full error capture, its
+    // own catch -- if this one query fails for a permissions or syntax reason unique to
+    // semantic views, nothing else on the report is affected, and the real error surfaces in
+    // onTimeError instead of vanishing into a generic catch.
+    const OnTimeSchema = z.object({
+      PMC_NAME: z.string(),
+      INITIATED: z.coerce.number().nullable(),
+      DQ_COUNT: z.coerce.number().nullable(),
+    });
+    let onTimeError: string | null = null;
+    const onTimeSubjectPmcs = second_pmc ? [pmc_name, second_pmc] : [pmc_name];
+    const onTimePromise = (lockedPeers.length >= 3 && latestCompletedMonth)
+      ? ctx.integrations.snowflake_sso.query(
+          `SELECT pmc_name AS PMC_NAME,
+                  AGG(initiated_customers) AS INITIATED,
+                  AGG(dq_customer_count) AS DQ_COUNT
+           FROM PRODUCTION.ANALYTICS.CPT_OUTCOMES_SEMANTIC_VIEW
+           WHERE pmc_name IN (${[...lockedPeers, ...onTimeSubjectPmcs].map(() => "?").join(", ")})
+             AND bp_month BETWEEN DATEADD('month', -11, ?::DATE) AND ?
+           GROUP BY pmc_name`,
+          OnTimeSchema,
+          [...lockedPeers, ...onTimeSubjectPmcs, latestCompletedMonth, latestCompletedMonth],
+          { label: "On-time payment rate via CPT_OUTCOMES_SEMANTIC_VIEW dq_rate (semantic view -- first use in this pipeline)" }
+        ).catch((err) => {
+          const base = err instanceof Error ? err.message : String(err);
+          let extra = "";
+          try {
+            const props = err && typeof err === "object" ? Object.getOwnPropertyNames(err) : [];
+            const dump: Record<string, unknown> = {};
+            for (const p of props) if (p !== "message" && p !== "stack") dump[p] = (err as Record<string, unknown>)[p];
+            if (Object.keys(dump).length > 0) extra = " | extra: " + JSON.stringify(dump).slice(0, 2000);
+          } catch {
+            // ignore — best-effort diagnostic only
+          }
+          onTimeError = base + extra;
+          return [] as z.infer<typeof OnTimeSchema>[];
+        })
+      : Promise.resolve([] as z.infer<typeof OnTimeSchema>[]);
+
+    // Fire all three independent round-trips together instead of one at a time
+    const [percRows, rollingRows, onTimeRows] = await Promise.all([segPercPromise, rollingPromise, onTimePromise]);
 
     // PMC_VALUE is always NULL from the query above (the subject is excluded from lockedPeers,
     // so it can't appear in its own peer-percentile query) — filled in from values already
@@ -3388,6 +3450,53 @@ export default api({
         if (m.metric === "PENETRATION") return { ...m, pmcValue: subjectPenetrationValue };
         return m;
       });
+    }
+
+    // On-Time Payment Rate: percentiles computed here in JS (not SQL) — see onTimePromise's own
+    // comment for why AGG()-on-a-semantic-view isn't being combined with PERCENTILE_CONT in the
+    // same untested query. Per-PMC rows below <20 initiated_customers are dropped per CPT's own
+    // documented low-denominator caveat (a rate over a tiny sample is statistically unreliable,
+    // not a real signal).
+    {
+      const ON_TIME_MIN_INITIATED = 20;
+      const onTimeRateByPmc = new Map<string, number>();
+      for (const r of onTimeRows) {
+        const initiated = r.INITIATED ?? 0;
+        if (initiated < ON_TIME_MIN_INITIATED) continue;
+        onTimeRateByPmc.set(r.PMC_NAME, 1 - (r.DQ_COUNT ?? 0) / initiated);
+      }
+      const onTimePeerValues = lockedPeers
+        .map((nm) => onTimeRateByPmc.get(nm))
+        .filter((v): v is number => v != null)
+        .sort((a, b) => a - b);
+      if (onTimePeerValues.length >= 3) {
+        const p25 = percentileCont(onTimePeerValues, 25);
+        const p50 = percentileCont(onTimePeerValues, 50);
+        const p75 = percentileCont(onTimePeerValues, 75);
+        // Sum the subject's own raw initiated/dq counts across both PMCs (combined-PMC reports)
+        // rather than averaging two already-computed rates -- matches how every other combined
+        // metric in this file weights by real underlying volume, not a naive per-PMC average.
+        let subjectInitiated = 0;
+        let subjectDq = 0;
+        for (const r of onTimeRows) {
+          if (onTimeSubjectPmcs.includes(r.PMC_NAME)) {
+            subjectInitiated += r.INITIATED ?? 0;
+            subjectDq += r.DQ_COUNT ?? 0;
+          }
+        }
+        const subjectOnTimeValue = subjectInitiated >= ON_TIME_MIN_INITIATED ? 1 - subjectDq / subjectInitiated : null;
+        segmentPercentiles.push({
+          metric: "ON_TIME",
+          p25, p50, p75,
+          // Bounded 0-1 rate, unlike NAR/engagement -- p75*1.2/*1.4 (this file's usual P90/P99
+          // extrapolation) could exceed 100%, which is meaningless for a rate. Clamped instead.
+          p90: Math.min(p75 * 1.1, 1),
+          p99: Math.min(p75 * 1.2, 1),
+          pmcValue: subjectOnTimeValue,
+        });
+      } else if (onTimeError) {
+        console.error("[ON_TIME QUERY FAILED]", onTimeError);
+      }
     }
 
     for (const row of rollingRows) {
