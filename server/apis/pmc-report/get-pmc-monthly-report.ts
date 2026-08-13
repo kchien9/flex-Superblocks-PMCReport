@@ -2977,7 +2977,7 @@ export default api({
     // queries together.
     // CRITICAL: Exclude the named PMC(s) from the peer pool to avoid self-contamination.
     // On a 2-PMC combined report, the second PMC's NAR would otherwise inflate the P50.
-    let segmentPercentiles: { metric: string; p25: number; p50: number; p75: number; p90: number; p99: number; pmcValue: number }[] = [];
+    let segmentPercentiles: { metric: string; p25: number; p50: number; p75: number; p90: number; p99: number; pmcValue: number | null; lowerIsBetter?: boolean }[] = [];
     let canonicalPeerNarP50: number | null = null;
     let rollingPeerMedianMap: Record<string, { p50: number }> = {};
     // Compute months since launch for benchmark resolution (used by peer median + adoption trend)
@@ -3180,6 +3180,29 @@ export default api({
            WHERE t.BP_MONTH BETWEEN DATEADD('month', -11, ?::DATE) AND ?
              AND t.PREVIOUS_MONTH_CHARGED_USERS_COUNT > 0
            GROUP BY t.PMC_NAME
+         ),
+         -- Time to First Sign-Up: avg months from a property's rollout to its first paid month.
+         -- "First sign-up" = first payment (BILLS_PAID_COUNT > 0), not a separate enrollment
+         -- event -- there's no ledger-level "enrolled but hasn't paid yet" timestamp anywhere in
+         -- this schema, and this codebase's existing "new signups" concept (pull_customer_
+         -- monthly_signups) is already defined the same way (earliest month with a real
+         -- payment). Independent of peer_current/peer_repeat above (doesn't need the subject's
+         -- units), so it's its own CTE chain rather than joining into theirs.
+         signup_timing AS (
+            SELECT PMC_NAME, PROPERTY_NAME, ROLLOUT_MONTH,
+                   MIN(CASE WHEN BILLS_PAID_COUNT > 0 THEN BP_MONTH END) AS FIRST_PAID_MONTH
+            FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS
+            WHERE PMC_NAME IN (${lockedPeers.map(() => "?").join(", ")})
+              AND ROLLOUT_MONTH IS NOT NULL
+              AND BP_MONTH >= ROLLOUT_MONTH
+              AND BP_MONTH < ?
+            GROUP BY PMC_NAME, PROPERTY_NAME, ROLLOUT_MONTH
+         ),
+         signup_timing_pmc AS (
+            SELECT PMC_NAME, AVG(DATEDIFF('month', ROLLOUT_MONTH, FIRST_PAID_MONTH)) AS AVG_MONTHS_TO_SIGNUP
+            FROM signup_timing
+            WHERE FIRST_PAID_MONTH IS NOT NULL
+            GROUP BY PMC_NAME
          )
          SELECT 'NAR' AS METRIC,
                 PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY CHARGED_USERS / NULLIF(UNITS, 0)) AS P25,
@@ -3202,9 +3225,19 @@ export default api({
                 PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY ENG_PER_100) AS P75,
                 NULL AS P90, NULL AS P99, NULL AS PMC_VALUE
          FROM peer_engagement
-         WHERE ENG_PER_100 IS NOT NULL`,
+         WHERE ENG_PER_100 IS NOT NULL
+         UNION ALL
+         SELECT 'SIGNUP_TIMING' AS METRIC,
+                PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY AVG_MONTHS_TO_SIGNUP) AS P25,
+                PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY AVG_MONTHS_TO_SIGNUP) AS P50,
+                PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY AVG_MONTHS_TO_SIGNUP) AS P75,
+                NULL AS P90, NULL AS P99, NULL AS PMC_VALUE
+         FROM signup_timing_pmc`,
         SegmentPercentilesSchema,
-        [...lockedPeers, latestCompletedMonth, latestCompletedMonth, latestCompletedMonth, latestCompletedMonth, latestCompletedMonth],
+        [
+          ...lockedPeers, latestCompletedMonth, latestCompletedMonth, latestCompletedMonth, latestCompletedMonth, latestCompletedMonth,
+          ...lockedPeers, cutoffStr,
+        ],
         { label: "Compute peer-cohort P25/P50/P75 for multi-benchmark (real cohort, not a segment table)" }
       ).catch((err) => { console.error("[PERC QUERY FAILED]", String(err)); return [] as z.infer<typeof SegmentPercentilesSchema>[]; })
       : Promise.resolve([] as z.infer<typeof SegmentPercentilesSchema>[]);
@@ -3269,7 +3302,8 @@ export default api({
     // Fill in the subject's own value per metric from real, already-computed data (not a
     // second/divergent calculation): NAR from the subject's latest-month adoption rate;
     // engagement from the subject's own trailing-12mo per-property T12_CONNECTIONS, matching
-    // the peer query's units-weighted formula exactly.
+    // the peer query's units-weighted formula exactly; signup timing from trendRawRows (already
+    // fetched for the property trend badges — reused here rather than a second query).
     {
       const subjectNarValue = latestMonth?.adoptionRate ?? null;
       const subjectPoolProps = networkPoolProps.filter((p) => p.pmcName === pmc_name || (second_pmc && p.pmcName === second_pmc));
@@ -3277,9 +3311,36 @@ export default api({
       const subjectEngValue = subjectEngUnits > 0
         ? subjectPoolProps.reduce((s, p) => s + p.t12EngPer100 * p.propertyUnitCount, 0) / subjectEngUnits
         : null;
+      // Same "first payment" definition as the peer query's signup_timing CTE: per property,
+      // earliest BP_MONTH (at or after rollout) with BILLS_PAID_COUNT > 0.
+      const subjectSignupTimingValue = (() => {
+        const byProp = new Map<string, { rollout: string | null; firstPaid: string | null }>();
+        for (const r of trendRawRows) {
+          const entry = byProp.get(r.PROPERTY_NAME) ?? { rollout: r.ROLLOUT_MONTH, firstPaid: null };
+          if (!entry.rollout) entry.rollout = r.ROLLOUT_MONTH;
+          if ((r.BILLS_PAID_COUNT ?? 0) > 0 && r.ROLLOUT_MONTH && r.BP_MONTH >= r.ROLLOUT_MONTH) {
+            if (!entry.firstPaid || r.BP_MONTH < entry.firstPaid) entry.firstPaid = r.BP_MONTH;
+          }
+          byProp.set(r.PROPERTY_NAME, entry);
+        }
+        const monthsList: number[] = [];
+        for (const { rollout, firstPaid } of byProp.values()) {
+          if (!rollout || !firstPaid) continue;
+          const [ry, rm] = rollout.split("-").map(Number);
+          const [py, pm] = firstPaid.split("-").map(Number);
+          monthsList.push((py - ry) * 12 + (pm - rm));
+        }
+        return monthsList.length > 0 ? monthsList.reduce((s, v) => s + v, 0) / monthsList.length : null;
+      })();
       segmentPercentiles = segmentPercentiles.map((m) => {
         if (m.metric === "NAR" && subjectNarValue != null) return { ...m, pmcValue: subjectNarValue };
         if (m.metric === "NEW_CONNECTIONS" && subjectEngValue != null) return { ...m, pmcValue: subjectEngValue };
+        // lowerIsBetter: faster (fewer months) is the better outcome — see BenchmarkMetric's
+        // own comment for why this has to be flagged explicitly on the metric object. pmcValue
+        // stays null (not defaulted to 0) when there's no real trendRawRows data — the renderer
+        // already hides a row whose pmcValue is null, and a 0-month fallback would display as
+        // "instant," which is a misleading placeholder, not a real result.
+        if (m.metric === "SIGNUP_TIMING") return { ...m, pmcValue: subjectSignupTimingValue, lowerIsBetter: true };
         return m;
       });
     }

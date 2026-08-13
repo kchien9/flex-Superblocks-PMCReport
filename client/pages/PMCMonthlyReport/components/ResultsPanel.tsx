@@ -1,6 +1,24 @@
 import { Loader2, FileBarChart, Download, FileSpreadsheet, FileText, AlertTriangle, Copy, Check, RefreshCw, XCircle } from "lucide-react";
 import { useState, useCallback, useEffect, useRef } from "react";
 
+// Blob + object-URL download instead of a `data:` URI href. A data: URI encodes the ENTIRE
+// file content into the URL itself — for a full 21-slide deck (now the default selection) or a
+// large speaker-notes doc, that URL gets long enough to trip a "414 URI Too Large" error.
+// Object URLs are just an opaque reference (a few dozen bytes) regardless of the underlying
+// content size, so there's no length ceiling to hit. Revoked right after the click so the blob
+// doesn't leak memory for the life of the page.
+function downloadHtml(content: string, filename: string) {
+  const blob = new Blob([content], { type: "text/html;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
 interface ResultsPanelProps {
   generating: boolean;
   reportData: { html?: string; empty?: boolean; flags?: string[]; emailDraft?: string; notes_html?: string } | null;
@@ -107,14 +125,14 @@ export function ResultsPanel({ generating, reportData, delivery, deckLabel, erro
       <div className="px-4 py-3 border-b border-gray-200 space-y-3">
         {/* Downloads row */}
         <div className="flex items-center gap-3 flex-wrap">
-          <a
-            href={`data:text/html;charset=utf-8,${encodeURIComponent(reportData.html || "")}`}
-            download="slide-deck.html"
+          <button
+            type="button"
+            onClick={() => downloadHtml(reportData.html || "", "slide-deck.html")}
             className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-[#6A3DB8] border border-[#6A3DB8]/30 rounded-[4px] hover:bg-[#EEE2FC] transition-colors"
           >
             <Download className="h-3.5 w-3.5" />
             Slide Deck
-          </a>
+          </button>
           <button
             className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-gray-600 border border-gray-200 rounded-[4px] hover:bg-gray-50 transition-colors"
             title="Data Workbook (Excel) — coming soon"
@@ -125,14 +143,14 @@ export function ResultsPanel({ generating, reportData, delivery, deckLabel, erro
           </button>
           {delivery === "presenting" && (
             reportData.notes_html ? (
-              <a
-                href={`data:text/html;charset=utf-8,${encodeURIComponent(reportData.notes_html)}`}
-                download="speaker-notes.html"
+              <button
+                type="button"
+                onClick={() => downloadHtml(reportData.notes_html || "", "speaker-notes.html")}
                 className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-[#6A3DB8] border border-[#6A3DB8]/30 rounded-[4px] hover:bg-[#EEE2FC] transition-colors"
               >
                 <FileText className="h-3.5 w-3.5" />
                 Speaker Notes
-              </a>
+              </button>
             ) : (
               <button
                 className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-gray-600 border border-gray-200 rounded-[4px] hover:bg-gray-50 transition-colors"

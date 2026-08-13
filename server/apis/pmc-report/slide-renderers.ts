@@ -418,11 +418,18 @@ export interface BenchmarkMetric {
   p25: number;
   p50: number;
   p75: number;
-  pmcValue: number;
+  /** null when there's no real subject value to show (e.g. no trendRawRows data for signup
+   * timing) — sliderRow already hides a row whose pmcValue is null; don't default to 0, which
+   * would render as a real (misleading) result rather than "no data." */
+  pmcValue: number | null;
   /** Optional human label override for the PMC value (e.g. "12" instead of auto-format) */
   pmcLabel?: string;
   /** If absolute value >= this, soften "Bottom quartile" to "Below peers" */
   highAbsThreshold?: number;
+  /** True for metrics where a SMALLER number is the better outcome (e.g. time-to-first-signup,
+   * lower = faster). Flips which quartile comparison counts as "Top"/"Bottom" — without this,
+   * a metric like time-to-signup would show its fastest (best) PMCs as "Bottom quartile" in red. */
+  lowerIsBetter?: boolean;
 }
 
 interface MetricMeta {
@@ -456,6 +463,11 @@ const METRIC_META: Record<string, MetricMeta> = {
     label: "Portfolio Penetration",
     definition: "Enrolled units \u00f7 total portfolio units",
     format: (v) => `${Math.round(v * 100)}%`,
+  },
+  SIGNUP_TIMING: {
+    label: "Time to First Sign-Up",
+    definition: "Avg months from property rollout to that property's first resident payment",
+    format: (v) => `${v.toFixed(1)} mo`,
   },
 };
 
@@ -541,16 +553,17 @@ export function renderPeerBenchmarks(input: {
     // within 0.5pp of each other) must never fall into "Above median"/"Top quartile" by a
     // rounding hair, matching Flask's exact branch order.
     const AT_MEDIAN_TOL = 0.005; // ±0.5pp
+    const lowerIsBetter = m.lowerIsBetter === true;
     let perfLbl: string;
     let lblColor: string;
     let dotColor: string;
     if (Math.abs(m.pmcValue - m.p50) <= AT_MEDIAN_TOL) {
       perfLbl = "At median"; lblColor = "#1a9e6a"; dotColor = "#1a9e6a";
-    } else if (m.pmcValue >= m.p75) {
+    } else if (lowerIsBetter ? m.pmcValue <= m.p25 : m.pmcValue >= m.p75) {
       perfLbl = "★ Top quartile"; lblColor = "#d4af37"; dotColor = "#d4af37";
-    } else if (m.pmcValue >= m.p50) {
+    } else if (lowerIsBetter ? m.pmcValue <= m.p50 : m.pmcValue >= m.p50) {
       perfLbl = "★ Above median"; lblColor = "#d4af37"; dotColor = "#d4af37";
-    } else if (m.pmcValue >= m.p25) {
+    } else if (lowerIsBetter ? m.pmcValue <= m.p75 : m.pmcValue >= m.p25) {
       perfLbl = "Below median"; lblColor = "#d97706"; dotColor = "#d97706";
     } else {
       perfLbl = "Bottom quartile"; lblColor = "#dc5050"; dotColor = "#dc5050";
