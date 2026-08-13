@@ -1882,27 +1882,56 @@ export default api({
                   AND BP_MONTH <= (SELECT bp_month FROM latest)
                 GROUP BY PMC_NAME, PROPERTY_NAME
              ),
-             candidates AS (
-                -- Filter + cap BEFORE the census-income UDF runs below. Per Clark: Superblocks
-                -- enforces a ~5MB step-output size limit, and 15000 rows x 9 columns, serialized
-                -- with full JSON keys per row, plausibly lands right at that ceiling -- which
-                -- fits the evidence better than anything else tried: a FIXED row limit hitting a
-                -- FIXED byte cap fails identically every single time, exactly what we saw across
-                -- 3 different query bodies (none of which changed the final row/column count).
-                -- Cutting hard to 3000 as a decisive test — small enough to be comfortably clear
-                -- of 5MB even at a generous worst-case ~500 bytes/row (~1.5MB total), so if this
-                -- alone fixes it, the cap is confirmed and 3000 can likely be tuned back up later
-                -- (this is a peer-matching candidate pool, not a report a user reads row-by-row --
-                -- 3000 candidates, still ranked by the same filters as before, is very likely
-                -- more than enough for peer-matching purposes; this isn't a coverage cut, just a
-                -- size-safety one until the real ceiling is known).
+             subject_rows AS (
+                -- ALWAYS include the subject PMC's (and second_pmc's, if any) own properties,
+                -- unconditionally, regardless of the peer-sampling cap below. A single PMC never
+                -- has anywhere near enough properties to threaten the byte-size cap, but without
+                -- this, an unordered LIMIT over the full network can arbitrarily exclude the very
+                -- PMC this report is being generated for -- which is exactly what zeroed out the
+                -- subject's own "Engagement (per 100 units)" stat (subjectPoolProps below reads
+                -- this same network pool filtered to the subject's PMC name -- if the subject's
+                -- rows didn't survive the cap, that filter comes back empty).
                 SELECT PMC_NAME, PROPERTY_NAME, PROPERTY_STATE, PROPERTY_UNIT_COUNT,
                        RENT_PAID_AMOUNT, BILLS_PAID_COUNT, ROLLOUT_MONTH, T12_CONNECTIONS,
                        PROPERTY_PUBLIC_ID
                 FROM agg
-                WHERE PROPERTY_UNIT_COUNT >= 10
-                  AND PROPERTY_STATE IS NOT NULL AND PROPERTY_STATE != ''
+                WHERE PMC_NAME IN (?, ?)
+             ),
+             peer_candidates AS (
+                -- Peer sample: filtered + capped, but spread across PMCs (top 20 properties per
+                -- PMC by unit count) instead of an arbitrary unordered slice of the whole network.
+                -- An unordered LIMIT lets Snowflake return whatever 3000 rows it happens to scan
+                -- first, which can be dominated by one or two large PMCs and starve the rest --
+                -- this is almost certainly why the peer-median line came back flatter than the
+                -- real (unbounded) calculation. Spreading per-PMC keeps the sample representative
+                -- across the network instead of a lottery draw.
+                SELECT PMC_NAME, PROPERTY_NAME, PROPERTY_STATE, PROPERTY_UNIT_COUNT,
+                       RENT_PAID_AMOUNT, BILLS_PAID_COUNT, ROLLOUT_MONTH, T12_CONNECTIONS,
+                       PROPERTY_PUBLIC_ID
+                FROM (
+                   SELECT PMC_NAME, PROPERTY_NAME, PROPERTY_STATE, PROPERTY_UNIT_COUNT,
+                          RENT_PAID_AMOUNT, BILLS_PAID_COUNT, ROLLOUT_MONTH, T12_CONNECTIONS,
+                          PROPERTY_PUBLIC_ID,
+                          ROW_NUMBER() OVER (PARTITION BY PMC_NAME ORDER BY PROPERTY_UNIT_COUNT DESC) AS rn
+                   FROM agg
+                   WHERE PROPERTY_UNIT_COUNT >= 10
+                     AND PROPERTY_STATE IS NOT NULL AND PROPERTY_STATE != ''
+                     AND PMC_NAME NOT IN (?, ?)
+                )
+                WHERE rn <= 20
+                -- Per Clark: Superblocks enforces a ~5MB step-output size limit, and 15000 rows
+                -- x 9 columns, serialized with full JSON keys per row, plausibly lands right at
+                -- that ceiling -- a FIXED row limit hitting a FIXED byte cap fails identically
+                -- every single time, exactly what was observed across 3 different query bodies.
+                -- Cut hard to 3000 as a decisive test, comfortably clear of 5MB even at a
+                -- generous worst-case ~500 bytes/row (~1.5MB total); can be tuned back up now
+                -- that the cap is confirmed.
                 LIMIT 3000
+             ),
+             candidates AS (
+                SELECT * FROM subject_rows
+                UNION ALL
+                SELECT * FROM peer_candidates
              )
              SELECT c.PMC_NAME, c.PROPERTY_NAME, c.PROPERTY_STATE, c.PROPERTY_UNIT_COUNT,
                     c.RENT_PAID_AMOUNT, c.BILLS_PAID_COUNT, c.ROLLOUT_MONTH, c.T12_CONNECTIONS,
@@ -1922,10 +1951,15 @@ export default api({
           let lastErr: unknown = null;
           for (let attempt = 1; attempt <= maxAttempts; attempt++) {
             try {
+              // second_pmc defaults to "" (never undefined, per the input schema) when not
+              // provided -- duplicating pmc_name in its place is a harmless no-op for both the
+              // IN and NOT IN clauses (a repeated value changes nothing), and keeps exactly 2
+              // placeholders in each clause regardless of whether a second PMC was passed.
+              const subjectPmcsForPool = [pmc_name, second_pmc || pmc_name];
               const netRows = await ctx.integrations.snowflake_sso.query(
                 NETWORK_POOL_SQL,
                 NetworkPoolSchema,
-                [cutoffStr],
+                [cutoffStr, ...subjectPmcsForPool, ...subjectPmcsForPool],
                 { label: "Pull network property pool for peer matching (incl. median renter income for RTI tier)" }
               );
               _networkPoolCache = { cutoff: cutoffStr, data: netRows, fetchedAt: Date.now() };
