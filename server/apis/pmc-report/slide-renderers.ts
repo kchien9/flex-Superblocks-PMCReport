@@ -2295,7 +2295,7 @@ export function renderHighRentAdoption(input: RentBucketInput): { html: string; 
   // Period toggle HTML (only when all-time data exists)
   const periodToggleHtml = hasAlltime ? `
       <div class="presenter-control" style="display:flex;gap:16px;align-items:center;margin-bottom:8px;flex-shrink:0;">
-        <div style="display:flex;gap:4px;align-items:center;">
+        <div id="hr-period-btns-${slideId}" style="display:flex;gap:4px;align-items:center;">
           <span style="text-transform:uppercase;letter-spacing:0.05em;font-size:9px;color:#9ca3af;">Period</span>
           <button class="spark-ctrl-btn is-active" data-hr-period="last" onclick="flexRentBucket(${slideId},'last')">Last Month</button>
           <button class="spark-ctrl-btn" data-hr-period="all" onclick="flexRentBucket(${slideId},'all')">All-Time</button>
@@ -2478,11 +2478,14 @@ function flexRentBucket(sid, period) {
     var maxRent = Math.max.apply(null, bucketed.rentRaw.concat([1]));
     chart.options.scales.y2.max = Math.ceil(maxRent * 1.3 / 25000) * 25000;
     chart.update();
-    // Toggle button active states
-    var slideEl = document.getElementById('slide-' + sid);
-    var btnState = 'slideEl not found';
-    if (slideEl) {
-      var btns = slideEl.querySelectorAll('[data-hr-period]');
+    // Toggle button active states. Scoped to a dedicated id (hr-period-btns-{sid}) instead of
+    // slide-{sid} -- slide-{sid} apparently resolves to a different/duplicate DOM node (same
+    // class of id-collision bug already found elsewhere this session), which is why the button
+    // highlight never moved even though this code ran and reported SUCCESS.
+    var btnCtrl = document.getElementById('hr-period-btns-' + sid);
+    var btnState = 'hr-period-btns-' + sid + ' not found';
+    if (btnCtrl) {
+      var btns = btnCtrl.querySelectorAll('[data-hr-period]');
       btns.forEach(function(b) { b.classList.toggle('is-active', b.dataset.hrPeriod === st.period); });
       btnState = Array.prototype.map.call(btns, function(b) { return b.dataset.hrPeriod + '=[' + b.className + ']'; }).join(', ');
     }
