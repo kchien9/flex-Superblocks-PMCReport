@@ -466,7 +466,7 @@ const METRIC_META: Record<string, MetricMeta> = {
   },
   SIGNUP_TIMING: {
     label: "Time to First Sign-Up",
-    definition: "Avg months from property rollout to that property's first resident payment",
+    definition: "Avg months from property rollout to first resident bill connection – trailing 12 months",
     format: (v) => `${v.toFixed(1)} mo`,
   },
 };
@@ -1739,6 +1739,11 @@ export interface AdoptionTrendKpis {
   months_since_launch?: number;
   stage_benchmarks?: Record<number, StageBenchmarkRow>;
   rolling_peer_median?: Record<string, { p50: number } | number | null>;
+  /** The SAME criteria string the Peer Benchmarks slide shows (e.g. "Southeast region,
+   * comparable size & avg rent") — both slides read from the same lockedPeers cohort, so their
+   * criteria descriptions should always agree. Without this, the label below defaulted to a
+   * generic hardcoded string that never reflected which tier actually matched. */
+  locked_peers_criteria?: string;
 }
 
 export interface MonthlySplitEntry {
@@ -1808,7 +1813,9 @@ export function renderAdoptionTrend(input: {
       }
       if (newBvals.some((v) => v != null)) {
         benchmarkVals = newBvals;
-        benchmarkLabel = "Peer Median \u00b7 similar PMCs \u00b7 same calendar months";
+        benchmarkLabel = kpis.locked_peers_criteria
+          ? `Peer Median \u00b7 ${kpis.locked_peers_criteria}`
+          : "Peer Median \u00b7 similar PMCs \u00b7 same calendar months";
       }
     }
   }
@@ -2321,7 +2328,6 @@ export function renderHighRentAdoption(input: RentBucketInput): { html: string; 
           <button class="spark-ctrl-btn is-active" data-hr-period="last" onclick="flexRentBucket(${slideId},'last')">Last Month</button>
           <button class="spark-ctrl-btn" data-hr-period="all" onclick="flexRentBucket(${slideId},'all')">All-Time</button>
         </div>
-        <div id="hr-debug-${slideId}" style="display:none;font-family:monospace;font-size:9px;color:#b45309;background:#fff3cd;border:1px solid #ffe69c;border-radius:4px;padding:2px 6px;"></div>
       </div>` : "";
 
   const html = `
@@ -2457,22 +2463,18 @@ function flexRentGradient(n) {
   }
   return colors;
 }
-function flexRentDebug(sid, msg) {
-  var el = document.getElementById('hr-debug-' + sid);
-  if (el) { el.style.display = 'block'; el.textContent = 'TOGGLE DEBUG: ' + msg; }
-}
 function flexRentBucket(sid, period) {
   var st = window['hrState' + sid];
   var chart = window['hrChart' + sid];
-  if (!st || !chart) { flexRentDebug(sid, 'called(sid=' + sid + ', period=' + period + ') but st=' + !!st + ' chart=' + !!chart + ' -- EARLY RETURN, window keys not found'); return; }
+  if (!st || !chart) return;
   st.period = period;
   var ds = st.data[st.period];
-  if (!ds) { flexRentDebug(sid, 'period=' + period + ' but st.data[period] is missing -- EARLY RETURN'); return; }
+  if (!ds) return;
   var posRents = ds.rents.filter(function(r) { return r > 0; });
-  if (posRents.length < 4) { flexRentDebug(sid, 'period=' + period + ' but only ' + posRents.length + ' positive rents (need >=4) -- EARLY RETURN'); return; }
+  if (posRents.length < 4) return;
   var breaks = flexRentBreaks(posRents);
   var bucketed = flexRentBucketData(ds, breaks);
-  if (!bucketed.labels.length) { flexRentDebug(sid, 'period=' + period + ' but bucketing produced 0 labels -- EARLY RETURN'); return; }
+  if (!bucketed.labels.length) return;
   chart.data.labels = bucketed.labels;
   chart.data.datasets[0].data = bucketed.userShare;
   // Re-derive the purple gradient for the new bucket count — re-toggling between periods can
@@ -2481,38 +2483,25 @@ function flexRentBucket(sid, period) {
   // with the new data (this is the "shading doesn't update" bug).
   chart.data.datasets[0].backgroundColor = flexRentGradient(bucketed.labels.length);
   chart.data.datasets[1].data = bucketed.rentRaw;
-  // TEMPORARY diagnostic — everything from here down used to run silently after the debug
-  // write above, so if any of it threw, the debug panel would still say "SUCCESS" while the
-  // button highlight (and axis rescale) never actually happened. Wrapped so a real exception
-  // surfaces instead of hiding behind the earlier SUCCESS message. Remove this try/catch (but
-  // KEEP the code inside it) once the toggle is confirmed working end-to-end.
-  try {
-    // Update legend: "Rent Paid / mo" vs "Total Rent Paid" depending on period
-    var rentLabel = st.period === 'all' ? 'Total Rent Paid' : 'Rent Paid / mo';
-    chart.data.datasets[1].label = rentLabel;
-    var legendEl = document.getElementById('hr-rent-legend-' + sid);
-    if (legendEl) legendEl.textContent = rentLabel;
-    // Rescale Y-axis (% of users) to fit new data
-    var maxV = Math.max.apply(null, bucketed.userShare.concat([10]));
-    chart.options.scales.y.max = Math.ceil((maxV + 5) / 10) * 10;
-    // Rescale Y2-axis (rent) with 30% headroom
-    var maxRent = Math.max.apply(null, bucketed.rentRaw.concat([1]));
-    chart.options.scales.y2.max = Math.ceil(maxRent * 1.3 / 25000) * 25000;
-    chart.update();
-    // Toggle button active states. Scoped to a dedicated id (hr-period-btns-{sid}) instead of
-    // slide-{sid} -- slide-{sid} apparently resolves to a different/duplicate DOM node (same
-    // class of id-collision bug already found elsewhere this session), which is why the button
-    // highlight never moved even though this code ran and reported SUCCESS.
-    var btnCtrl = document.getElementById('hr-period-btns-' + sid);
-    var btnState = 'hr-period-btns-' + sid + ' not found';
-    if (btnCtrl) {
-      var btns = btnCtrl.querySelectorAll('[data-hr-period]');
-      btns.forEach(function(b) { b.classList.toggle('is-active', b.dataset.hrPeriod === st.period); });
-      btnState = Array.prototype.map.call(btns, function(b) { return b.dataset.hrPeriod + '=[' + b.className + ']'; }).join(', ');
-    }
-    flexRentDebug(sid, 'SUCCESS period=' + period + ' buckets=' + bucketed.labels.length + ' labels=[' + bucketed.labels.join('|') + '] | buttons after toggle: ' + btnState);
-  } catch (e) {
-    flexRentDebug(sid, 'THREW after bucketing (period=' + period + ', buckets=' + bucketed.labels.length + '): ' + (e && e.message ? e.message : e));
+  // Update legend: "Rent Paid / mo" vs "Total Rent Paid" depending on period
+  var rentLabel = st.period === 'all' ? 'Total Rent Paid' : 'Rent Paid / mo';
+  chart.data.datasets[1].label = rentLabel;
+  var legendEl = document.getElementById('hr-rent-legend-' + sid);
+  if (legendEl) legendEl.textContent = rentLabel;
+  // Rescale Y-axis (% of users) to fit new data
+  var maxV = Math.max.apply(null, bucketed.userShare.concat([10]));
+  chart.options.scales.y.max = Math.ceil((maxV + 5) / 10) * 10;
+  // Rescale Y2-axis (rent) with 30% headroom
+  var maxRent = Math.max.apply(null, bucketed.rentRaw.concat([1]));
+  chart.options.scales.y2.max = Math.ceil(maxRent * 1.3 / 25000) * 25000;
+  chart.update();
+  // Toggle button active states. Scoped to a dedicated id (hr-period-btns-{sid}) instead of
+  // slide-{sid} -- slide-{sid} can resolve to a different/duplicate DOM node (same class of
+  // id-collision bug found elsewhere this session).
+  var btnCtrl = document.getElementById('hr-period-btns-' + sid);
+  if (btnCtrl) {
+    var btns = btnCtrl.querySelectorAll('[data-hr-period]');
+    btns.forEach(function(b) { b.classList.toggle('is-active', b.dataset.hrPeriod === st.period); });
   }
 }`;
 

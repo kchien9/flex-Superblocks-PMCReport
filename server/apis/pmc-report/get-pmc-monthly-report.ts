@@ -1860,6 +1860,11 @@ export default api({
       BILLS_PAID_COUNT: z.number().nullable(),
       PROPERTY_UNIT_COUNT: z.number().nullable(),
       ROLLOUT_MONTH: z.string().nullable(),
+      // Signup timing uses THIS, not BILLS_PAID_COUNT — "first payment" is gated by the BP
+      // cycle (a property rolling out on the 2nd of a month can still make that month's bill
+      // run; one rolling out on the 28th can't, purely by calendar luck, nothing to do with
+      // marketing/ops), while a bill CONNECTION isn't tied to a monthly cutoff the same way.
+      NEW_BILL_CONNECTIONS_PROPERTY: z.number().nullable(),
     });
 
     const RetentionCohortSchema = z.object({
@@ -2190,7 +2195,8 @@ export default api({
                     TO_VARCHAR(BP_MONTH, 'YYYY-MM-DD') AS BP_MONTH,
                     BILLS_PAID_COUNT,
                     PROPERTY_UNIT_COUNT,
-                    TO_VARCHAR(ROLLOUT_MONTH, 'YYYY-MM-DD') AS ROLLOUT_MONTH
+                    TO_VARCHAR(ROLLOUT_MONTH, 'YYYY-MM-DD') AS ROLLOUT_MONTH,
+                    NEW_BILL_CONNECTIONS_PROPERTY
              FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS
              WHERE PMC_NAME = ?
                AND IS_IN_NETWORK = TRUE
@@ -3016,27 +3022,66 @@ export default api({
     // real ladder tier-for-tier, in the same order, with the same thresholds.
     let lockedPeers: string[] = [];
     let lockedPeersCriteria = "comparable PMCs";
-    if (networkPoolProps.length > 0) {
-      // Step 1: Aggregate networkPool to PMC level for peer matching. avgRent is bills-weighted
-      // (sum of each property's avgRent*billsPaid, divided by summed billsPaid) — matching
-      // Flask's per_pmc_totals (generator/data.py:4118-4121) exactly. This used to just take the
-      // FIRST property's avgRent per PMC and never update it, which is not a weighted average at
-      // all for any multi-property PMC.
+    // Peer-candidate profile for GEO-TIER matching — a SEPARATE, dedicated query at (PMC, STATE)
+    // grain, deliberately NOT built from networkPoolProps. networkPoolProps is capped (top-20-
+    // properties-per-PMC, 3000 rows total) to survive Superblocks' 5MB step-output limit — fine
+    // for the property-level things it's built for (income lookups, T12 engagement), but fatal
+    // for geo-matching specifically: if a candidate PMC's smaller in-state properties get sampled
+    // out in favor of its bigger properties elsewhere, it looks state-absent here when it isn't,
+    // and a real multi-state overlap match (which Flask found for this exact PMC — "true 1:1
+    // match in NC, SC" — while this port fell through to the region tier instead) never gets a
+    // chance to match. Matches Flask's own pull_rolling_peer_median Step A (generator/data.py:
+    // 4088-4104) exactly: aggregated to (PMC_NAME, PROPERTY_STATE) grain in SQL, not fetched as
+    // raw property rows — a PMC operates in a handful of states, not thousands of properties, so
+    // this is naturally tiny and needs no row cap at all.
+    const PeerCandidateProfileSchema = z.object({
+      PMC_NAME: z.string(),
+      PROPERTY_STATE: z.string(),
+      UNITS: z.coerce.number().nullable(),
+      RENT: z.coerce.number().nullable(),
+      BILLS: z.coerce.number().nullable(),
+    });
+    const peerCandidateSubjectPmcs = second_pmc ? [pmc_name, second_pmc] : [pmc_name];
+    const peerCandidateRows = await ctx.integrations.snowflake_sso.query(
+      `SELECT PMC_NAME, PROPERTY_STATE,
+              SUM(PROPERTY_UNIT_COUNT) AS UNITS,
+              SUM(RENT_PAID_AMOUNT) AS RENT,
+              SUM(BILLS_PAID_COUNT) AS BILLS
+       FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS
+       WHERE IS_INTEGRATED_TOTAL = TRUE
+         AND ROLLOUT_MONTH IS NOT NULL
+         AND PROPERTY_STATE IS NOT NULL AND PROPERTY_STATE != ''
+         AND PMC_NAME NOT IN (${peerCandidateSubjectPmcs.map(() => "?").join(", ")})
+         AND BP_MONTH = (
+            SELECT MAX(BP_MONTH) FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS
+            WHERE BP_MONTH < ? AND IS_INTEGRATED_TOTAL = TRUE
+         )
+       GROUP BY PMC_NAME, PROPERTY_STATE`,
+      PeerCandidateProfileSchema,
+      [...peerCandidateSubjectPmcs, cutoffStr],
+      { label: "Peer-candidate geo profile for tier matching (PMC x state grain, unsampled)" }
+    ).catch(() => [] as z.infer<typeof PeerCandidateProfileSchema>[]);
+
+    if (peerCandidateRows.length > 0) {
+      // Step 1: Aggregate to PMC level for peer matching. avgRent is bills-weighted (summed
+      // rent / summed bills) — matching Flask's per_pmc_totals (generator/data.py:4118-4121)
+      // exactly.
       const pmcAgg = new Map<string, { totalUnits: number; totalRent: number; totalBills: number; stateCount: number }>();
       const pmcStateUnits = new Map<string, Map<string, number>>();
-      for (const p of networkPoolProps) {
-        if (p.pmcName === pmc_name || (second_pmc && p.pmcName === second_pmc)) continue;
-        const rent = p.avgRent * p.billsPaid; // reconstruct raw rent for correct weighting
-        const existing = pmcAgg.get(p.pmcName);
+      for (const r of peerCandidateRows) {
+        const units = r.UNITS ?? 0;
+        const rent = r.RENT ?? 0;
+        const bills = r.BILLS ?? 0;
+        const existing = pmcAgg.get(r.PMC_NAME);
         if (!existing) {
-          pmcAgg.set(p.pmcName, { totalUnits: p.propertyUnitCount, totalRent: rent, totalBills: p.billsPaid, stateCount: 1 });
-          pmcStateUnits.set(p.pmcName, new Map([[p.propertyState, p.propertyUnitCount]]));
+          pmcAgg.set(r.PMC_NAME, { totalUnits: units, totalRent: rent, totalBills: bills, stateCount: 1 });
+          pmcStateUnits.set(r.PMC_NAME, new Map([[r.PROPERTY_STATE, units]]));
         } else {
-          existing.totalUnits += p.propertyUnitCount;
+          existing.totalUnits += units;
           existing.totalRent += rent;
-          existing.totalBills += p.billsPaid;
-          const su = pmcStateUnits.get(p.pmcName)!;
-          su.set(p.propertyState, (su.get(p.propertyState) ?? 0) + p.propertyUnitCount);
+          existing.totalBills += bills;
+          const su = pmcStateUnits.get(r.PMC_NAME)!;
+          su.set(r.PROPERTY_STATE, (su.get(r.PROPERTY_STATE) ?? 0) + units);
         }
       }
       for (const [nm, su] of pmcStateUnits.entries()) {
@@ -3199,13 +3244,15 @@ export default api({
              AND t.PREVIOUS_MONTH_CHARGED_USERS_COUNT > 0
            GROUP BY t.PMC_NAME
          ),
-         -- Time to First Sign-Up: avg months from a property's rollout to its first paid month.
-         -- "First sign-up" = first payment (BILLS_PAID_COUNT > 0), not a separate enrollment
-         -- event -- there's no ledger-level "enrolled but hasn't paid yet" timestamp anywhere in
-         -- this schema, and this codebase's existing "new signups" concept (pull_customer_
-         -- monthly_signups) is already defined the same way (earliest month with a real
-         -- payment). Independent of peer_current/peer_repeat above (doesn't need the subject's
-         -- units), so it's its own CTE chain rather than joining into theirs.
+         -- Time to First Sign-Up: avg months from a property's rollout to its first NEW BILL
+         -- CONNECTION (not first payment). A bill connection is the "expressed interest /
+         -- opted in" event -- a real signal distinct from payment, and NOT gated by the BP
+         -- billing cycle the way payment is: a property rolling out on the 2nd of a month can
+         -- still make that month's bill run, one rolling out on the 28th can't, purely by
+         -- calendar luck that has nothing to do with marketing/ops quality. First-payment
+         -- inherits that noise; first-bill-connection doesn't. Independent of peer_current/
+         -- peer_repeat above (doesn't need the subject's units), so it's its own CTE chain
+         -- rather than joining into theirs.
          signup_timing AS (
             -- Scoped to properties rolled out in the trailing 12 months, not a PMC's entire
             -- history -- Wellington joined 5 years ago, so a lifetime average would be
@@ -3214,7 +3261,7 @@ export default api({
             -- other metric on this slide (Engagement, Repeat Rate) already uses, for the same
             -- "how do things look now" reason.
             SELECT PMC_NAME, PROPERTY_NAME, ROLLOUT_MONTH,
-                   MIN(CASE WHEN BILLS_PAID_COUNT > 0 THEN BP_MONTH END) AS FIRST_PAID_MONTH
+                   MIN(CASE WHEN NEW_BILL_CONNECTIONS_PROPERTY > 0 THEN BP_MONTH END) AS FIRST_CONNECTED_MONTH
             FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS
             WHERE PMC_NAME IN (${lockedPeers.map(() => "?").join(", ")})
               AND ROLLOUT_MONTH IS NOT NULL
@@ -3224,9 +3271,9 @@ export default api({
             GROUP BY PMC_NAME, PROPERTY_NAME, ROLLOUT_MONTH
          ),
          signup_timing_pmc AS (
-            SELECT PMC_NAME, AVG(DATEDIFF('month', ROLLOUT_MONTH, FIRST_PAID_MONTH)) AS AVG_MONTHS_TO_SIGNUP
+            SELECT PMC_NAME, AVG(DATEDIFF('month', ROLLOUT_MONTH, FIRST_CONNECTED_MONTH)) AS AVG_MONTHS_TO_SIGNUP
             FROM signup_timing
-            WHERE FIRST_PAID_MONTH IS NOT NULL
+            WHERE FIRST_CONNECTED_MONTH IS NOT NULL
             GROUP BY PMC_NAME
          )
          SELECT 'NAR' AS METRIC,
@@ -3354,29 +3401,30 @@ export default api({
       const subjectEngValue = subjectEngUnits > 0
         ? subjectPoolProps.reduce((s, p) => s + p.t12EngPer100 * p.propertyUnitCount, 0) / subjectEngUnits
         : null;
-      // Same "first payment" definition as the peer query's signup_timing CTE, and the same
-      // trailing-12mo-rollout scope: Wellington joined 5 years ago, so an all-time average
-      // would be dominated by ancient rollouts and say nothing about how fast NEW properties
-      // get live today. Per property: earliest BP_MONTH (at or after rollout) with
-      // BILLS_PAID_COUNT > 0, but only for properties that rolled out in the last 12 months.
+      // Same "first bill connection" definition as the peer query's signup_timing CTE (not
+      // first payment — a bill connection isn't gated by the monthly BP cycle the way a
+      // payment is, so it isolates real marketing/ops speed from calendar-alignment luck), and
+      // the same trailing-12mo-rollout scope: Wellington joined 5 years ago, so an all-time
+      // average would be dominated by ancient rollouts and say nothing about how fast NEW
+      // properties get live today.
       const subjectSignupTimingValue = (() => {
         const [cy, cm] = cutoffStr.split("-").map(Number);
         const rolloutCutoff12mo = new Date(cy, cm - 1 - 12, 1).toISOString().slice(0, 10);
-        const byProp = new Map<string, { rollout: string | null; firstPaid: string | null }>();
+        const byProp = new Map<string, { rollout: string | null; firstConnected: string | null }>();
         for (const r of trendRawRows) {
-          const entry = byProp.get(r.PROPERTY_NAME) ?? { rollout: r.ROLLOUT_MONTH, firstPaid: null };
+          const entry = byProp.get(r.PROPERTY_NAME) ?? { rollout: r.ROLLOUT_MONTH, firstConnected: null };
           if (!entry.rollout) entry.rollout = r.ROLLOUT_MONTH;
-          if ((r.BILLS_PAID_COUNT ?? 0) > 0 && r.ROLLOUT_MONTH && r.BP_MONTH >= r.ROLLOUT_MONTH) {
-            if (!entry.firstPaid || r.BP_MONTH < entry.firstPaid) entry.firstPaid = r.BP_MONTH;
+          if ((r.NEW_BILL_CONNECTIONS_PROPERTY ?? 0) > 0 && r.ROLLOUT_MONTH && r.BP_MONTH >= r.ROLLOUT_MONTH) {
+            if (!entry.firstConnected || r.BP_MONTH < entry.firstConnected) entry.firstConnected = r.BP_MONTH;
           }
           byProp.set(r.PROPERTY_NAME, entry);
         }
         const monthsList: number[] = [];
-        for (const { rollout, firstPaid } of byProp.values()) {
-          if (!rollout || !firstPaid || rollout < rolloutCutoff12mo) continue;
+        for (const { rollout, firstConnected } of byProp.values()) {
+          if (!rollout || !firstConnected || rollout < rolloutCutoff12mo) continue;
           const [ry, rm] = rollout.split("-").map(Number);
-          const [py, pm] = firstPaid.split("-").map(Number);
-          monthsList.push((py - ry) * 12 + (pm - rm));
+          const [cyy, cmm] = firstConnected.split("-").map(Number);
+          monthsList.push((cyy - ry) * 12 + (cmm - rm));
         }
         return monthsList.length > 0 ? monthsList.reduce((s, v) => s + v, 0) / monthsList.length : null;
       })();
@@ -4162,6 +4210,9 @@ export default api({
       rolling_peer_median: Object.keys(rollingPeerMedianMap).length > 0
         ? rollingPeerMedianMap
         : {},
+      // Same criteria the Peer Benchmarks slide shows — both read from the same lockedPeers
+      // cohort, so their descriptions must agree instead of one being a generic hardcoded string.
+      locked_peers_criteria: lockedPeersCriteria,
     };
     const adoptionTrendResult = renderAdoptionTrend({ slideId: 5, monthly: monthlyTotals, kpis: adoptionTrendKpis });
     const adoptionTrendHtml = adoptionTrendResult.html;
@@ -4207,15 +4258,21 @@ export default api({
     // The REPEAT_RATE row's own dot is the subject's true repeat rate (subjectRepeatValue,
     // computed above — matching Flask's kpis.get("true_repeat_rate") or
     // kpis.get("avg_retention") fallback, slides.py:328).
-    const benchmarkMetrics = segmentPercentiles.map((m) => {
-      if (m.metric === "NAR" && canonicalPeerNarP50 != null) {
-        return { ...m, p50: canonicalPeerNarP50 };
-      }
-      if (m.metric === "REPEAT_RATE" && subjectRepeatValue != null) {
-        return { ...m, pmcValue: subjectRepeatValue };
-      }
-      return m;
-    });
+    // Display order: Engagement, Time to First Sign-Up, Adoption Rate, Resident Retention,
+    // Portfolio Penetration. segmentPercentiles' own order isn't reliable for this — its rows
+    // come from a UNION ALL with no ORDER BY, which Snowflake doesn't guarantee a row order for.
+    const BENCHMARK_DISPLAY_ORDER = ["NEW_CONNECTIONS", "SIGNUP_TIMING", "NAR", "REPEAT_RATE", "PENETRATION"];
+    const benchmarkMetrics = segmentPercentiles
+      .map((m) => {
+        if (m.metric === "NAR" && canonicalPeerNarP50 != null) {
+          return { ...m, p50: canonicalPeerNarP50 };
+        }
+        if (m.metric === "REPEAT_RATE" && subjectRepeatValue != null) {
+          return { ...m, pmcValue: subjectRepeatValue };
+        }
+        return m;
+      })
+      .sort((a, b) => BENCHMARK_DISPLAY_ORDER.indexOf(a.metric) - BENCHMARK_DISPLAY_ORDER.indexOf(b.metric));
     const peerBenchResult = renderPeerBenchmarks({
       slideId: 9,
       pmcName: pmcDisplayName,
