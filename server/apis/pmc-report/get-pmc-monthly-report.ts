@@ -2209,10 +2209,31 @@ export default api({
           )
         : Promise.resolve([] as z.infer<typeof PropertyTrendSchema>[]),
       ctx.integrations.snowflake_sso.query(
-        `WITH scoped_props AS (
-            SELECT PROPERTY_PUBLIC_ID, BP_MONTH
+        `WITH active_properties AS (
+            -- Flask (generator/data.py:405-427, _active_property_pmc_pairs): scopes retention
+            -- to properties IS_IN_NETWORK as of the LATEST COMPLETED MONTH specifically, not
+            -- per-row across the whole window -- "keeps retention rates honest by not counting
+            -- departed-property residents as churn." A property that transferred away or
+            -- deactivated PARTWAY through the 12-month window used to still contribute its
+            -- earlier in-network months, and once it drops out of the data its residents look
+            -- exactly like churn -- they left because their PROPERTY left the network, not
+            -- because they personally stopped using Flex. This is the real cause of the true-
+            -- repeat-rate gap: the "Perfect" bucket count was IDENTICAL between Flask and this
+            -- port (267 both) while every OTHER bucket, and the total population, ran higher
+            -- here -- those extra customers were exactly the departed-property residents
+            -- Flask's snapshot excludes (a customer with a broken/incomplete history from a
+            -- property leaving mid-window can't hit "Perfect," but can inflate every other
+            -- bucket and drag the eligible-population denominator up).
+            SELECT PROPERTY_PUBLIC_ID
             FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS
             WHERE PMC_NAME = ?
+              AND BP_MONTH = ?::DATE
+              AND IS_IN_NETWORK = TRUE
+         ),
+         scoped_props AS (
+            SELECT PROPERTY_PUBLIC_ID, BP_MONTH
+            FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS
+            WHERE PROPERTY_PUBLIC_ID IN (SELECT PROPERTY_PUBLIC_ID FROM active_properties)
               AND IS_IN_NETWORK = TRUE
               AND BP_MONTH >= DATEADD('month', -?, ?::DATE)
               AND BP_MONTH < ?
@@ -2268,18 +2289,31 @@ export default api({
          GROUP BY b.LOYALTY_BUCKET, t.cnt, r.cnt, e.cnt`,
         RetentionCohortSchema,
         // Flask: max(3, lookback_months) (app.py:730) — floor so a very short override can't
-        // starve the cohort window entirely.
-        [pmc_name, Math.max(3, lookback_months), cutoffStr, cutoffStr, reportingMonthStr, reportingMonthStr],
+        // starve the cohort window entirely. First two params (pmc_name, reportingMonthStr)
+        // resolve active_properties' latest-month snapshot before the rest of the window params.
+        [pmc_name, reportingMonthStr, Math.max(3, lookback_months), cutoffStr, cutoffStr, reportingMonthStr, reportingMonthStr],
         { label: "Compute loyalty buckets & true repeat rate from customer cohort" }
       ).catch(() => [] as { LOYALTY_BUCKET: string; BUCKET_COUNT: number; TOTAL_CUSTOMERS: number; TRUE_REPEAT_RATE: number | null }[]),
       ctx.integrations.snowflake_sso.query(
-        `SELECT
+        `WITH active_properties AS (
+            -- Same "active as of latest month" scoping as the retention-cohort query above
+            -- (Flask: _active_property_pmc_pairs, generator/data.py:405-427) -- without it, a
+            -- property that departed the network mid-window still contributes customers here,
+            -- whose payment history simply stops when the property leaves, looking exactly like
+            -- churn in the MoM set-intersection below.
+            SELECT PROPERTY_PUBLIC_ID
+            FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS
+            WHERE PMC_NAME = ?
+              AND BP_MONTH = ?::DATE
+              AND IS_IN_NETWORK = TRUE
+         )
+         SELECT
             n.CUSTOMER_PUBLIC_ID,
             TO_VARCHAR(n.BP_MONTH, 'YYYY-MM-DD') AS BP_MONTH
          FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS p
          JOIN PRODUCTION.ANALYTICS.NAR_CHARGED_USERS n
             ON n.PROPERTY_PUBLIC_ID = p.PROPERTY_PUBLIC_ID AND n.BP_MONTH = p.BP_MONTH
-         WHERE p.PMC_NAME = ?
+         WHERE p.PROPERTY_PUBLIC_ID IN (SELECT PROPERTY_PUBLIC_ID FROM active_properties)
            AND p.IS_IN_NETWORK = TRUE
            AND p.BP_MONTH >= DATEADD('month', -?, ?::DATE)
            AND p.BP_MONTH < ?
@@ -2287,7 +2321,7 @@ export default api({
         CustomerMonthSchema,
         // Same window as the retention-cohort query above (Flask: pull_retention_cohort's
         // lookback_months) — this feeds the same cohort_df the MoM chart is built from.
-        [pmc_name, Math.max(3, lookback_months), cutoffStr, cutoffStr],
+        [pmc_name, reportingMonthStr, Math.max(3, lookback_months), cutoffStr, cutoffStr],
         { label: "Fetch raw (customer, month) pairs for MoM retention set-intersection" }
       ).catch(() => [] as { CUSTOMER_PUBLIC_ID: string; BP_MONTH: string }[]),
     ]);
@@ -3389,6 +3423,15 @@ export default api({
         pmcValue: r.PMC_VALUE ?? 0,
       }));
 
+    // TEMPORARY diagnostic — the engagement fix moved the number (42 -> 47) but in the wrong
+    // direction relative to Flask's 33, meaning something in this new formula still doesn't
+    // match. Hoisted so the debug panel below can show the actual intermediate values instead
+    // of guessing again from the final result alone.
+    let _engDebugTotalConnects: number | null = null;
+    let _engDebugAvgUnits: number | null = null;
+    let _engDebugMonthsFound: string[] = [];
+    let _engDebugWindowStart = "";
+
     // Fill in the subject's own value per metric from real, already-computed data (not a
     // second/divergent calculation): NAR from the subject's latest-month adoption rate;
     // engagement from the subject's own trailing-12mo per-property T12_CONNECTIONS, matching
@@ -3421,6 +3464,10 @@ export default api({
         ? [...engUnitsByMonth.values()].reduce((s, v) => s + v, 0) / engUnitsByMonth.size
         : 0;
       const subjectEngValue = engAvgUnitsRecent > 0 ? engTotalConnects / engAvgUnitsRecent * 100 : null;
+      _engDebugTotalConnects = engTotalConnects;
+      _engDebugAvgUnits = engAvgUnitsRecent;
+      _engDebugMonthsFound = [...engUnitsByMonth.keys()].sort();
+      _engDebugWindowStart = engWindowStart;
       // Same "first bill connection" definition as the peer query's signup_timing CTE (not
       // first payment — a bill connection isn't gated by the monthly BP cycle the way a
       // payment is, so it isolates real marketing/ops speed from calendar-alignment luck), and
@@ -4314,6 +4361,12 @@ export default api({
         `segmentPercentiles: ${JSON.stringify(segmentPercentiles)}`,
         `canonicalPeerNarP50: ${canonicalPeerNarP50}`,
         `rollingPeerMedianMap keys: ${Object.keys(rollingPeerMedianMap).length}`,
+        `-- Subject engagement calc (TEMPORARY) --`,
+        `_engDebugWindowStart: ${_engDebugWindowStart}`,
+        `_engDebugMonthsFound (${_engDebugMonthsFound.length}): ${_engDebugMonthsFound.join(", ")}`,
+        `_engDebugTotalConnects: ${_engDebugTotalConnects}`,
+        `_engDebugAvgUnits: ${_engDebugAvgUnits}`,
+        `inNetwork.length (total rows, all time): ${inNetwork.length}`,
       ].join("\n"),
     });
 
