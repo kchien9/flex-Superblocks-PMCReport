@@ -2165,28 +2165,30 @@ export default api({
     // (rent band 700-2500, bypassed when bills_paid_count < 3) stays a JS post-filter below,
     // matching the existing pattern; it's a much smaller row-count lever than months_live and
     // doesn't need to move.
-    // CORRECTION (verified live against real Snowflake data, same day as the first version of
-    // this query shipped): "no cap needed" was wrong. The real unsampled population is 55,901
-    // rows network-wide — at ~500 bytes/row (same 10-column, UDF-chain shape as networkPool's
-    // query) that's 25-30MB, far past Superblocks' ~5MB step-output limit. It didn't fail
-    // outright the way networkPool's original uncapped version did; Kevin's live screenshots
-    // showed real (non-empty) per-property peer data, but SAME-STATE tiers were coming up short
-    // of min_peers=8 even for a state (NC) that has 2,184 real qualifying rows and 965 in the
-    // exact size band - meaning something in the pipeline was silently truncating this response
-    // to an unordered, non-representative subset, the exact same non-determinism failure mode
-    // fixed once already this session for networkPool's own query (see peer_candidates' ORDER
-    // BY comment above) - it just showed up here as "some tiers mysteriously come up short"
-    // instead of a visible crash.
-    // Fix: an explicit, DETERMINISTIC, UNBIASED sample - ORDER BY HASH(PMC_NAME, PROPERTY_NAME)
-    // LIMIT 8000, computed on the cheap agg CTE BEFORE the FIPS_TO_CENSUS_DATA UDF join (so the
-    // expensive UDF chain runs 8,000 times, not 55,901). HASH() on a stable per-row key spreads
-    // the sample uniformly across every state/age-bucket/size combination with no correlation to
-    // any of them - deliberately NOT ORDER BY PMC_NAME or property size, which is exactly the
-    // kind of bias that broke networkPool's OWN pool for its original purpose. Verified live:
-    // an 8,000-row hash-ordered sample of this same population retains 51 real NC candidates in
-    // Osprey Cove South's exact tier (37+mo age bucket, 136-320 units) - comfortably clear of
-    // min_peers=8, and small states/buckets that end up thin will legitimately widen tiers, the
-    // same as Flask's real behavior, rather than silently coming up short from a biased sample.
+    // CORRECTION #2 (verified live against real Snowflake data — measured actual JSON payload
+    // bytes, not estimated): the flat 8,000-row hash-ordered sample from the previous version of
+    // this comment was itself the bug, just a different one than "no cap needed." A flat random
+    // sample applies the SAME retention rate (8,000/55,901 ≈ 14.3%) to every (state, age_bucket)
+    // cell regardless of that cell's real size — fine for a large cell (NC's 37+mo bucket has
+    // 2,184 real rows, retains ~310), but for a genuinely small cell a 14.3% sample can land
+    // right at or below min_peers=8 by pure chance. Confirmed live: Congaree Villas (SC, 9mo -
+    // the "7-12mo" bucket) has only 69 real qualifying candidates network-wide in its exact
+    // state+size band; the flat sample retained exactly 8 (barely enough for the loosest
+    // no-rent tier, nowhere near enough after an RTI/rent filter), while Flask's unsampled data
+    // found 40 passing its rent-adjusted tier. Every other metric's peer bands had already
+    // reconciled almost exactly by this point, so this was the last real gap.
+    // Fix: STRATIFY the cap per (state, age_bucket) cell instead of sampling flat -
+    // ROW_NUMBER() OVER (PARTITION BY PROPERTY_STATE, age_bucket ORDER BY HASH(...)) capped at
+    // 80. Any cell at or under 80 real rows (the overwhelming majority - Congaree's 69 included)
+    // keeps ALL of them, zero sampling loss; only cells bigger than 80 (which have plenty of
+    // margin above any min_peers threshold even after capping) get trimmed. Measured the real
+    // wire payload directly (not the ~500 bytes/row guess from the first version of this query):
+    // actual is ~278 bytes/row for this exact 9-column shape, so a ~16,000-row result under this
+    // scheme is ~4.5MB - comfortably under Superblocks' ~5MB limit with real margin, not a guess.
+    // age_bucket here matches _property_age_bucket exactly (generator/data.py:4886, and this
+    // file's own propertyAgeBucket) - only 7-12mo..37+mo are ever reachable since months_live>=7
+    // is already enforced above, but the full scheme is kept for the same "consistency with the
+    // rest of this file" reason Flask's own docstring gives.
     const PROPERTY_POOL_SQL = `WITH prop_zip AS (
                 SELECT PROPERTY_PUBLIC_ID, PROPERTY_ZIP,
                        ROW_NUMBER() OVER (PARTITION BY PROPERTY_PUBLIC_ID ORDER BY CREATED_AT_UTC DESC) AS rn
@@ -2222,10 +2224,25 @@ export default api({
                    AND MAX(CASE WHEN BP_MONTH = (SELECT bp_month FROM latest) THEN PROPERTY_STATE END) != ''
                    AND DATEDIFF('month', MAX(ROLLOUT_MONTH), (SELECT bp_month FROM latest)) >= 7
              ),
+             ranked AS (
+                SELECT *,
+                       ROW_NUMBER() OVER (
+                         PARTITION BY PROPERTY_STATE,
+                           CASE
+                             WHEN DATEDIFF('month', ROLLOUT_MONTH, (SELECT bp_month FROM latest)) <= 3  THEN '1-3mo'
+                             WHEN DATEDIFF('month', ROLLOUT_MONTH, (SELECT bp_month FROM latest)) <= 6  THEN '4-6mo'
+                             WHEN DATEDIFF('month', ROLLOUT_MONTH, (SELECT bp_month FROM latest)) <= 12 THEN '7-12mo'
+                             WHEN DATEDIFF('month', ROLLOUT_MONTH, (SELECT bp_month FROM latest)) <= 18 THEN '13-18mo'
+                             WHEN DATEDIFF('month', ROLLOUT_MONTH, (SELECT bp_month FROM latest)) <= 24 THEN '19-24mo'
+                             WHEN DATEDIFF('month', ROLLOUT_MONTH, (SELECT bp_month FROM latest)) <= 36 THEN '25-36mo'
+                             ELSE '37+mo'
+                           END
+                         ORDER BY HASH(PMC_NAME, PROPERTY_NAME)
+                       ) AS rn
+                FROM agg
+             ),
              sampled AS (
-                SELECT * FROM agg
-                ORDER BY HASH(PMC_NAME, PROPERTY_NAME)
-                LIMIT 8000
+                SELECT * FROM ranked WHERE rn <= 80
              )
              SELECT s.PMC_NAME, s.PROPERTY_NAME, s.PROPERTY_STATE, s.PROPERTY_UNIT_COUNT,
                     s.RENT_PAID_AMOUNT, s.BILLS_PAID_COUNT, s.ROLLOUT_MONTH, s.T12_CONNECTIONS,
@@ -2242,7 +2259,7 @@ export default api({
           PROPERTY_POOL_SQL,
           NetworkPoolSchema,
           [cutoffStr],
-          { label: "Pull unsampled network-wide property pool for per-property peer matching (Property Deep Dive)" }
+          { label: "Pull network-wide property pool for per-property peer matching, stratified per state x age-bucket cell (Property Deep Dive)" }
         ).catch((err) => {
           propertyPoolError = err instanceof Error ? err.message : String(err);
           return [] as NetworkPoolRow[];
