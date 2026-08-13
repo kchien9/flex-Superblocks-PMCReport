@@ -2460,23 +2460,35 @@ function flexRentBucket(sid, period) {
   // with the new data (this is the "shading doesn't update" bug).
   chart.data.datasets[0].backgroundColor = flexRentGradient(bucketed.labels.length);
   chart.data.datasets[1].data = bucketed.rentRaw;
-  flexRentDebug(sid, 'SUCCESS period=' + period + ' buckets=' + bucketed.labels.length + ' labels=[' + bucketed.labels.join('|') + ']');
-  // Update legend: "Rent Paid / mo" vs "Total Rent Paid" depending on period
-  var rentLabel = st.period === 'all' ? 'Total Rent Paid' : 'Rent Paid / mo';
-  chart.data.datasets[1].label = rentLabel;
-  var legendEl = document.getElementById('hr-rent-legend-' + sid);
-  if (legendEl) legendEl.textContent = rentLabel;
-  // Rescale Y-axis (% of users) to fit new data
-  var maxV = Math.max.apply(null, bucketed.userShare.concat([10]));
-  chart.options.scales.y.max = Math.ceil((maxV + 5) / 10) * 10;
-  // Rescale Y2-axis (rent) with 30% headroom
-  var maxRent = Math.max.apply(null, bucketed.rentRaw.concat([1]));
-  chart.options.scales.y2.max = Math.ceil(maxRent * 1.3 / 25000) * 25000;
-  chart.update();
-  // Toggle button active states
-  var slideEl = document.getElementById('slide-' + sid);
-  if (slideEl) {
-    slideEl.querySelectorAll('[data-hr-period]').forEach(function(b) { b.classList.toggle('is-active', b.dataset.hrPeriod === st.period); });
+  // TEMPORARY diagnostic — everything from here down used to run silently after the debug
+  // write above, so if any of it threw, the debug panel would still say "SUCCESS" while the
+  // button highlight (and axis rescale) never actually happened. Wrapped so a real exception
+  // surfaces instead of hiding behind the earlier SUCCESS message. Remove this try/catch (but
+  // KEEP the code inside it) once the toggle is confirmed working end-to-end.
+  try {
+    // Update legend: "Rent Paid / mo" vs "Total Rent Paid" depending on period
+    var rentLabel = st.period === 'all' ? 'Total Rent Paid' : 'Rent Paid / mo';
+    chart.data.datasets[1].label = rentLabel;
+    var legendEl = document.getElementById('hr-rent-legend-' + sid);
+    if (legendEl) legendEl.textContent = rentLabel;
+    // Rescale Y-axis (% of users) to fit new data
+    var maxV = Math.max.apply(null, bucketed.userShare.concat([10]));
+    chart.options.scales.y.max = Math.ceil((maxV + 5) / 10) * 10;
+    // Rescale Y2-axis (rent) with 30% headroom
+    var maxRent = Math.max.apply(null, bucketed.rentRaw.concat([1]));
+    chart.options.scales.y2.max = Math.ceil(maxRent * 1.3 / 25000) * 25000;
+    chart.update();
+    // Toggle button active states
+    var slideEl = document.getElementById('slide-' + sid);
+    var btnState = 'slideEl not found';
+    if (slideEl) {
+      var btns = slideEl.querySelectorAll('[data-hr-period]');
+      btns.forEach(function(b) { b.classList.toggle('is-active', b.dataset.hrPeriod === st.period); });
+      btnState = Array.prototype.map.call(btns, function(b) { return b.dataset.hrPeriod + '=[' + b.className + ']'; }).join(', ');
+    }
+    flexRentDebug(sid, 'SUCCESS period=' + period + ' buckets=' + bucketed.labels.length + ' labels=[' + bucketed.labels.join('|') + '] | buttons after toggle: ' + btnState);
+  } catch (e) {
+    flexRentDebug(sid, 'THREW after bucketing (period=' + period + ', buckets=' + bucketed.labels.length + '): ' + (e && e.message ? e.message : e));
   }
 }`;
 
