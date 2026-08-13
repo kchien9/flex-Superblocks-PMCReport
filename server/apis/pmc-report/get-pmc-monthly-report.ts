@@ -2064,10 +2064,7 @@ export default api({
       // this pipeline is under active repair; worth reinstating once things are verified stable.
       const cacheValid = false;
 
-      const networkPoolPromise = cacheValid
-        ? Promise.resolve(_networkPoolCache!.data)
-        : ctx.integrations.snowflake_sso.query(
-            `WITH prop_zip AS (
+      const NETWORK_POOL_SQL = `WITH prop_zip AS (
                 SELECT PROPERTY_PUBLIC_ID, PROPERTY_ZIP,
                        ROW_NUMBER() OVER (PARTITION BY PROPERTY_PUBLIC_ID ORDER BY CREATED_AT_UTC DESC) AS rn
                 FROM PRODUCTION.ANALYTICS.DIM_PROPERTIES_PMCS
@@ -2100,8 +2097,8 @@ export default api({
                 GROUP BY PMC_NAME, PROPERTY_NAME
              ),
              candidates AS (
-                -- Filter + cap to 15000 before any downstream join — cheaper regardless of the
-                -- UDF isolation below, since it bounds everything that follows to <=15000 rows.
+                -- Filter + cap to 15000 BEFORE the census-income UDF runs below — keeps the UDF
+                -- call bounded to <=15000 rows instead of the full unfiltered network scan.
                 SELECT PMC_NAME, PROPERTY_NAME, PROPERTY_STATE, PROPERTY_UNIT_COUNT,
                        RENT_PAID_AMOUNT, BILLS_PAID_COUNT, ROLLOUT_MONTH, T12_CONNECTIONS,
                        PROPERTY_PUBLIC_ID
@@ -2110,44 +2107,52 @@ export default api({
                   AND PROPERTY_STATE IS NOT NULL AND PROPERTY_STATE != ''
                 LIMIT 15000
              )
-             -- TEMPORARY isolation test: the identical "Integration ... failed" error survived a
-             -- major restructure of this query (deferring the UDF to run on <=15000 rows instead
-             -- of the full network scan), which rules out a timeout — the failure is deterministic
-             -- regardless of query shape/cost. The one thing held constant across every failing
-             -- attempt is the FIPS_TO_CENSUS_DATA(ZIP_TO_FIPS(...)) UDF chain, also used by
-             -- regionDetailPromise and subjectIncomePromise elsewhere in this file (neither has a
-             -- debug panel, so if this UDF is the actual trigger, both are likely failing the same
-             -- way silently). Hardcoding MEDIAN_RENTER_INCOME to NULL here to test that in
-             -- isolation -- if networkPool.length is non-zero on the next run, the UDF is
-             -- confirmed as the cause and prop_zip/the LEFT JOIN below can be restored once that's
-             -- resolved (permissions? external-function availability under this integration's
-             -- credential?). Restore by replacing this NULL with the original
-             -- PRODUCTION.ANALYTICS.FIPS_TO_CENSUS_DATA(PRODUCTION.ANALYTICS.ZIP_TO_FIPS(LEFT(p.PROPERTY_ZIP, 5)), 'median_renter_household_income')
-             -- expression and re-adding "LEFT JOIN prop_zip p ON p.PROPERTY_PUBLIC_ID = c.PROPERTY_PUBLIC_ID AND p.rn = 1".
              SELECT c.PMC_NAME, c.PROPERTY_NAME, c.PROPERTY_STATE, c.PROPERTY_UNIT_COUNT,
                     c.RENT_PAID_AMOUNT, c.BILLS_PAID_COUNT, c.ROLLOUT_MONTH, c.T12_CONNECTIONS,
-                    NULL AS MEDIAN_RENTER_INCOME
-             FROM candidates c`,
-            NetworkPoolSchema,
-            [cutoffStr],
-            // TEMPORARY: changed label text as a cache-key isolation test — the identical error
-            // object survived 3 structurally different query bodies (original, UDF deferred to
-            // <=15000 rows, UDF removed entirely), all under this same label string. If changing
-            // ONLY the label makes the error disappear or change, Superblocks is memoizing this
-            // call by label/fingerprint rather than actual query content. Restore to the original
-            // label ("Pull network property pool for peer matching (incl. median renter income
-            // for RTI tier)") once this test's result is known either way.
-            { label: "QBR network pool v2 - retry " + cutoffStr }
-          ).then((rows) => {
-            // Cache the result for future runs
-            _networkPoolCache = { cutoff: cutoffStr, data: rows, fetchedAt: Date.now() };
-            return rows;
-          }).catch((err) => {
+                    PRODUCTION.ANALYTICS.FIPS_TO_CENSUS_DATA(
+                        PRODUCTION.ANALYTICS.ZIP_TO_FIPS(LEFT(p.PROPERTY_ZIP, 5)),
+                        'median_renter_household_income'
+                    ) AS MEDIAN_RENTER_INCOME
+             FROM candidates c
+             LEFT JOIN prop_zip p
+               ON p.PROPERTY_PUBLIC_ID = c.PROPERTY_PUBLIC_ID AND p.rn = 1`;
+
+      // 3 independent isolation tests this session (query body x3, label) all produced the exact
+      // same deterministic "Integration ... failed" error, which is Superblocks platform/
+      // integration-config territory, not a code bug — not something we can see or fix from here.
+      // This retry-with-backoff is resilience insurance, not a confirmed fix: if it's a soft/
+      // transient resource limit (e.g. connection pool momentarily saturated by the other 5
+      // queries in the Promise.all this feeds into), a short pause before retrying is cheap and
+      // might clear it; if it's a hard config/permissions issue, this just fails 3x fast and we're
+      // no worse off than before.
+      const networkPoolPromise = cacheValid
+        ? Promise.resolve(_networkPoolCache!.data)
+        : (async (): Promise<NetworkPoolRow[]> => {
+            const maxAttempts = 3;
+            let lastErr: unknown = null;
+            for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+              try {
+                const rows = await ctx.integrations.snowflake_sso.query(
+                  NETWORK_POOL_SQL,
+                  NetworkPoolSchema,
+                  [cutoffStr],
+                  { label: "Pull network property pool for peer matching (incl. median renter income for RTI tier)" }
+                );
+                _networkPoolCache = { cutoff: cutoffStr, data: rows, fetchedAt: Date.now() };
+                return rows;
+              } catch (err) {
+                lastErr = err;
+                if (attempt < maxAttempts) {
+                  await new Promise((resolve) => setTimeout(resolve, 750 * attempt));
+                }
+              }
+            }
             // TEMPORARY diagnostic — err.message alone was just a generic Superblocks wrapper
-            // ("Integration ... failed during 'query'") with no real Snowflake-side detail.
-            // Walk every own-enumerable property (err.cause, err.response, err.details, etc. —
-            // whatever this particular integration error shape actually carries) so the debug
-            // panel surfaces the real underlying failure instead of the wrapper text alone.
+            // ("Integration ... failed during 'query'") with no real Snowflake-side detail. Walk
+            // every own-enumerable property (err.cause, err.response, err.details, etc. —
+            // whatever this integration error shape actually carries) so the debug panel surfaces
+            // the real underlying failure instead of the wrapper text alone.
+            const err = lastErr;
             const base = err instanceof Error ? err.message : String(err);
             let extra = "";
             try {
@@ -2161,9 +2166,9 @@ export default api({
             } catch {
               // ignore — best-effort diagnostic only
             }
-            networkPoolError = base + extra;
+            networkPoolError = `${base}${extra} (failed after ${maxAttempts} attempts)`;
             return [] as NetworkPoolRow[];
-          });
+          })();
 
       // Fire region detail in parallel with network pool
       const regionDetailPromise = ctx.integrations.snowflake_sso.query(
