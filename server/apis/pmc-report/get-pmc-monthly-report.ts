@@ -3211,6 +3211,21 @@ export default api({
       RENT: z.coerce.number().nullable(),
       BILLS: z.coerce.number().nullable(),
     });
+    // Excluding the subject PMC(s) from the candidate pool HERE, before resolveGeoTier ever
+    // runs, is deliberate and is a KNOWN, CONFIRMED deviation from Flask - do not "fix" this to
+    // match Flask's behavior. Flask's own candidate pool (pmc_state_totals in
+    // _run_benchmark_query, generator/data.py:1530-1587) never excludes the subject before
+    // calling _resolve_geo_tier - the subject trivially matches its own true-1:1-match tier
+    // (100% concentration in its own states, by definition), so it lands in Flask's
+    // overlap_names/geo_names list as one of the "matched" candidates. Only the FINAL SQL query
+    // that computes peer percentiles adds `PMC_NAME != subject` (generator/data.py:1740) to
+    // exclude it - which means Flask's reported peer_count always undercounts the true number
+    // of matching OTHER PMCs by exactly one. Confirmed live for Wellington: Flask showed "7
+    // comparable PMCs", this pool correctly finds 8 real distinct other PMCs matching the same
+    // "true 1:1 match in NC, SC" criteria - the missing 8th is Wellington counting itself, then
+    // subtracting itself back out. Kevin's call (2026-08-13): keep this side correct rather than
+    // reproducing Flask's undercount; Flask should get the equivalent fix (exclude subject
+    // before the candidate pool is built) instead.
     const peerCandidateSubjectPmcs = second_pmc ? [pmc_name, second_pmc] : [pmc_name];
     const peerCandidateRows = await ctx.integrations.snowflake_sso.query(
       `SELECT PMC_NAME, PROPERTY_STATE,
