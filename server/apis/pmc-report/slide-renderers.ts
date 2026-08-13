@@ -1687,13 +1687,17 @@ export function renderRetention(input: {
     ? `<div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;height:100%;min-height:0;overflow:hidden;">${cohortSection}${retentionSection}</div>`
     : `<div style="display:grid;grid-template-columns:1fr;gap:14px;height:100%;min-height:0;overflow:hidden;">${retentionSection}</div>`;
 
+  // Collapsed by default (was covering the bottom ~220px of the slide -- Regular/Episodic
+  // buckets and several MoM bars were hidden behind it every time). Click to expand.
   const debugPanel = debugInfo ? `
-    <div style="position:absolute;bottom:8px;left:8px;right:8px;max-height:220px;overflow-y:auto;
-                font-family:monospace;font-size:10px;line-height:1.5;color:#1D1D1D;
-                background:#fff3cd;border:1px solid #ffe69c;border-radius:6px;padding:8px 10px;
-                white-space:pre-wrap;z-index:10;">
-      <div style="font-weight:700;margin-bottom:4px;">DEBUG (temporary)</div>
-      ${_e(debugInfo)}
+    <div style="position:absolute;bottom:8px;left:8px;right:8px;z-index:10;
+                font-family:monospace;font-size:10px;color:#1D1D1D;">
+      <div onclick="this.nextElementSibling.style.display = this.nextElementSibling.style.display === 'none' ? 'block' : 'none';"
+           style="display:inline-block;background:#fff3cd;border:1px solid #ffe69c;border-radius:6px;
+                  padding:2px 8px;cursor:pointer;font-weight:700;">DEBUG (temporary) — click to expand</div>
+      <div style="display:none;max-height:220px;overflow-y:auto;line-height:1.5;
+                  background:#fff3cd;border:1px solid #ffe69c;border-radius:6px;padding:8px 10px;
+                  white-space:pre-wrap;margin-top:2px;">${_e(debugInfo)}</div>
     </div>` : "";
 
   const html = `
@@ -1862,8 +1866,12 @@ export function renderAdoptionTrend(input: {
     ...(showEstablished ? estValsList.filter((v): v is number => v != null) : []),
     ...(showBenchmark ? benchmarkVals.filter((v): v is number => v != null) : []),
   ];
+  // Flask's documented rule (this repo's CLAUDE.md, "Chart: Adoption Trend"):
+  // suggestedMin = floor(min data) - 1, suggestedMax = floor(max data) + 1. This was using
+  // ceil(max) + 2 -- two separate deviations that both push the axis higher than Flask's,
+  // which is why the chart kept extending to 22% with real data nowhere near it.
   const yMin = allPts.length > 0 ? Math.max(0, Math.floor(Math.min(...allPts)) - 1) : 0;
-  const yMax = allPts.length > 0 ? Math.ceil(Math.max(...allPts)) + 2 : 15;
+  const yMax = allPts.length > 0 ? Math.floor(Math.max(...allPts)) + 1 : 15;
 
   // ─── Expansion note ─────────────────────────────────────────────────────
   let expansionNote = "";
@@ -2726,10 +2734,14 @@ export interface SinceInceptionInput {
   reportingMonth: string; // YYYY-MM-DD
   yearlyData: YearlyData[]; // full history from unbounded query
   monthlyTotals: MonthlyTotal[]; // recent monthly for projection run-rate
+  /** Same canonical value the Cover slide uses (earliest of Salesforce closed-won or first
+   * rollout, or a manual override) — see the firstYear comment below for why this must be
+   * threaded through rather than re-derived from yearlyData. */
+  partnerSince?: string | null;
 }
 
 export function renderSinceInception(input: SinceInceptionInput): SlideResult {
-  const { slideId, pmcName, reportingMonth, yearlyData, monthlyTotals } = input;
+  const { slideId, pmcName, reportingMonth, yearlyData, monthlyTotals, partnerSince } = input;
   if (yearlyData.length === 0) return { html: "", js: "" };
 
   const years = yearlyData.map(y => y.year);
@@ -2738,7 +2750,14 @@ export function renderSinceInception(input: SinceInceptionInput): SlideResult {
   const monthsActive = yearlyData.map(y => y.monthsActive);
 
   const labels = years.map(y => String(y));
-  const firstYear = years[0];
+  // "Joined Flex in {year}" must respect partnerSince — the same Cover-slide value (Salesforce
+  // closed-won date or first rollout, or a manual override) — matching Flask's fix (generator/
+  // slides.py render_since_inception): this used to always use years[0], the raw earliest year
+  // with billing data in PROPERTY_BP_MONTH_STATS, which ignores a manual override and the
+  // documented case where a transferred property's rollout_month is inherited from its PRIOR,
+  // unrelated owner. That's exactly why this slide could disagree with the Cover slide on the
+  // partner-since year. Falls back to years[0] only when partnerSince isn't available at all.
+  const firstYear = partnerSince ? new Date(partnerSince + "T00:00:00Z").getUTCFullYear() : years[0];
   const totalRentAll = rentRaw.reduce((s, v) => s + v, 0);
   const totalBillsAll = billsPaid.reduce((s, v) => s + v, 0);
   const currentYear = parseInt(reportingMonth.slice(0, 4), 10);

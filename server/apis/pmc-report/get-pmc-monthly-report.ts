@@ -3826,6 +3826,7 @@ export default api({
       reportingMonth: latestCompletedMonth,
       yearlyData,
       monthlyTotals,
+      partnerSince,
     });
 
     const residentsUnitsResult = renderResidentsUnitsCombo({
