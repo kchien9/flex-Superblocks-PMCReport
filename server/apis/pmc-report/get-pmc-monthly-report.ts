@@ -2100,11 +2100,8 @@ export default api({
                 GROUP BY PMC_NAME, PROPERTY_NAME
              ),
              candidates AS (
-                -- Filter + cap to 15000 BEFORE the census-income UDF ever runs. It used to run
-                -- once per network property with a rollout month (100k+ rows, unfiltered) before
-                -- the LIMIT below applied to the OUTER select — a likely cause of the integration
-                -- timeout that was silently returning 0 rows for the whole network pool. Now the
-                -- UDF only runs on the <=15000 rows that actually survive the real filters.
+                -- Filter + cap to 15000 before any downstream join — cheaper regardless of the
+                -- UDF isolation below, since it bounds everything that follows to <=15000 rows.
                 SELECT PMC_NAME, PROPERTY_NAME, PROPERTY_STATE, PROPERTY_UNIT_COUNT,
                        RENT_PAID_AMOUNT, BILLS_PAID_COUNT, ROLLOUT_MONTH, T12_CONNECTIONS,
                        PROPERTY_PUBLIC_ID
@@ -2113,15 +2110,24 @@ export default api({
                   AND PROPERTY_STATE IS NOT NULL AND PROPERTY_STATE != ''
                 LIMIT 15000
              )
+             -- TEMPORARY isolation test: the identical "Integration ... failed" error survived a
+             -- major restructure of this query (deferring the UDF to run on <=15000 rows instead
+             -- of the full network scan), which rules out a timeout — the failure is deterministic
+             -- regardless of query shape/cost. The one thing held constant across every failing
+             -- attempt is the FIPS_TO_CENSUS_DATA(ZIP_TO_FIPS(...)) UDF chain, also used by
+             -- regionDetailPromise and subjectIncomePromise elsewhere in this file (neither has a
+             -- debug panel, so if this UDF is the actual trigger, both are likely failing the same
+             -- way silently). Hardcoding MEDIAN_RENTER_INCOME to NULL here to test that in
+             -- isolation -- if networkPool.length is non-zero on the next run, the UDF is
+             -- confirmed as the cause and prop_zip/the LEFT JOIN below can be restored once that's
+             -- resolved (permissions? external-function availability under this integration's
+             -- credential?). Restore by replacing this NULL with the original
+             -- PRODUCTION.ANALYTICS.FIPS_TO_CENSUS_DATA(PRODUCTION.ANALYTICS.ZIP_TO_FIPS(LEFT(p.PROPERTY_ZIP, 5)), 'median_renter_household_income')
+             -- expression and re-adding "LEFT JOIN prop_zip p ON p.PROPERTY_PUBLIC_ID = c.PROPERTY_PUBLIC_ID AND p.rn = 1".
              SELECT c.PMC_NAME, c.PROPERTY_NAME, c.PROPERTY_STATE, c.PROPERTY_UNIT_COUNT,
                     c.RENT_PAID_AMOUNT, c.BILLS_PAID_COUNT, c.ROLLOUT_MONTH, c.T12_CONNECTIONS,
-                    PRODUCTION.ANALYTICS.FIPS_TO_CENSUS_DATA(
-                        PRODUCTION.ANALYTICS.ZIP_TO_FIPS(LEFT(p.PROPERTY_ZIP, 5)),
-                        'median_renter_household_income'
-                    ) AS MEDIAN_RENTER_INCOME
-             FROM candidates c
-             LEFT JOIN prop_zip p
-               ON p.PROPERTY_PUBLIC_ID = c.PROPERTY_PUBLIC_ID AND p.rn = 1`,
+                    NULL AS MEDIAN_RENTER_INCOME
+             FROM candidates c`,
             NetworkPoolSchema,
             [cutoffStr],
             { label: "Pull network property pool for peer matching (incl. median renter income for RTI tier)" }
