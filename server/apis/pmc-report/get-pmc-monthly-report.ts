@@ -3396,11 +3396,31 @@ export default api({
     // fetched for the property trend badges — reused here rather than a second query).
     {
       const subjectNarValue = latestMonth?.adoptionRate ?? null;
-      const subjectPoolProps = networkPoolProps.filter((p) => p.pmcName === pmc_name || (second_pmc && p.pmcName === second_pmc));
-      const subjectEngUnits = subjectPoolProps.reduce((s, p) => s + p.propertyUnitCount, 0);
-      const subjectEngValue = subjectEngUnits > 0
-        ? subjectPoolProps.reduce((s, p) => s + p.t12EngPer100 * p.propertyUnitCount, 0) / subjectEngUnits
-        : null;
+      // Flask (generator/data.py:2328-2338): trailing-12mo SUM of new bill connections across
+      // ALL properties, divided by the AVERAGE monthly total unit count over that same window —
+      // a network-wide ratio, NOT a unit-weighted average of each property's own individually-
+      // computed rate (a different, non-equivalent aggregation: summing a ratio-of-ratios biases
+      // toward smaller properties' individual rates in a way Flask's single network-wide ratio
+      // doesn't). This was ALSO reading from networkPoolProps — the shared/filtered pool built
+      // for peer-matching (months_live >= 7, avg rent $700-2500 band) — which silently excluded
+      // some of the subject's OWN properties that don't happen to meet those PEER-comparability
+      // filters. The subject's own engagement needs their full, unfiltered portfolio: inNetwork,
+      // already fetched, no second query needed.
+      const engWindowStart = (() => {
+        const [cy, cm] = cutoffStr.split("-").map(Number);
+        return new Date(cy, cm - 1 - 12, 1).toISOString().slice(0, 10);
+      })();
+      const engUnitsByMonth = new Map<string, number>();
+      let engTotalConnects = 0;
+      for (const r of inNetwork) {
+        if (r.BP_MONTH < engWindowStart || r.BP_MONTH >= cutoffStr) continue;
+        engUnitsByMonth.set(r.BP_MONTH, (engUnitsByMonth.get(r.BP_MONTH) ?? 0) + r.PROPERTY_UNIT_COUNT);
+        engTotalConnects += r.NEW_BILL_CONNECTIONS ?? 0;
+      }
+      const engAvgUnitsRecent = engUnitsByMonth.size > 0
+        ? [...engUnitsByMonth.values()].reduce((s, v) => s + v, 0) / engUnitsByMonth.size
+        : 0;
+      const subjectEngValue = engAvgUnitsRecent > 0 ? engTotalConnects / engAvgUnitsRecent * 100 : null;
       // Same "first bill connection" definition as the peer query's signup_timing CTE (not
       // first payment — a bill connection isn't gated by the monthly BP cycle the way a
       // payment is, so it isolates real marketing/ops speed from calendar-alignment luck), and
