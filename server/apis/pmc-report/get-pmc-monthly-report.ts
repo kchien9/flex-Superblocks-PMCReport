@@ -1966,6 +1966,11 @@ export default api({
     // the budget ran out. Starting it here, in parallel with everything else, gives it the same
     // wall-clock head start as every other query instead of a ~12-query handicap.
     let networkPool: NetworkPoolRow[] = [];
+    // Dedicated property-level peer pool (Flask's pull_network_property_pool,
+    // generator/data.py:4900-5066) — see the full comment on PROPERTY_POOL_SQL below for why
+    // this can't just reuse networkPool.
+    let propertyPool: NetworkPoolRow[] = [];
+    let propertyPoolError: string | null = null;
     // TEMPORARY diagnostic — captures the real error instead of silently swallowing it.
     let networkPoolError: string | null = null;
     const NETWORK_POOL_SQL = `WITH prop_zip AS (
@@ -2017,10 +2022,13 @@ export default api({
                 -- unconditionally, regardless of the peer-sampling cap below. A single PMC never
                 -- has anywhere near enough properties to threaten the byte-size cap, but without
                 -- this, an unordered LIMIT over the full network can arbitrarily exclude the very
-                -- PMC this report is being generated for -- which is exactly what zeroed out the
-                -- subject's own "Engagement (per 100 units)" stat (subjectPoolProps below reads
-                -- this same network pool filtered to the subject's PMC name -- if the subject's
-                -- rows didn't survive the cap, that filter comes back empty).
+                -- PMC this report is being generated for. (Historical note: this originally
+                -- guarded a subjectPoolProps read of this pool for the subject's own engagement
+                -- stat — that stat has since been moved to read directly from allRows/inNetwork
+                -- instead, per the engagement fix elsewhere in this file, so this CTE no longer
+                -- protects that specific stat. Left in place since the general principle — a
+                -- report should never silently lose its own subject's rows to an unordered cap —
+                -- still holds for whatever else reads this pool.)
                 SELECT PMC_NAME, PROPERTY_NAME, PROPERTY_STATE, PROPERTY_UNIT_COUNT,
                        RENT_PAID_AMOUNT, BILLS_PAID_COUNT, ROLLOUT_MONTH, T12_CONNECTIONS,
                        PROPERTY_PUBLIC_ID
@@ -2136,6 +2144,86 @@ export default api({
           networkPoolError = `${base}${extra} (failed after ${maxAttempts} attempts)`;
           return [] as NetworkPoolRow[];
         })();
+
+    // Dedicated property-level peer pool — Flask's real pull_network_property_pool
+    // (generator/data.py:4900-5066), NOT a reuse of networkPool above. networkPool is
+    // deliberately SAMPLED (top 20 properties per PMC by unit count, capped at 3000 total) to
+    // stay under Superblocks' ~5MB step-output limit for PMC-level geo-tier matching, where
+    // that sampling is a reasonable trade-off. Per-property peer matching (resolvePropertyPeerNar/
+    // resolvePropertyPeerEngagement below) was reading from that SAME sampled pool though —
+    // confirmed live: per-property peer medians on the Property Deep Dive slide came back
+    // close-but-not-exact vs Flask across the board (e.g. adoption peer median 15.4% vs
+    // Flask's 11.7%, engagement 29 vs 30), even for tiny 12-unit sister properties that should
+    // land in an identical peer bucket. Root cause: the top-20-per-PMC cap silently drops most
+    // small/mid-size properties from every PMC, and the 3000-row cap drops entire
+    // alphabetically-late PMCs once the true network exceeds it — exactly the kind of
+    // systematic bias that shows up as "close but consistently off," not random noise. Flask's
+    // real pool has no such sampling at all.
+    // months_live >= 7 (Flask's own filter) is pushed into a HAVING clause here specifically
+    // to shrink the response payload before it hits Snowflake's wire, since that's the actual
+    // constraint surface — not to introduce new filtering behavior. The other Flask filter
+    // (rent band 700-2500, bypassed when bills_paid_count < 3) stays a JS post-filter below,
+    // matching the existing pattern; it's a much smaller row-count lever than months_live and
+    // doesn't need to move.
+    // NO row-count cap is applied — if this hits the same 5MB ceiling networkPool did before
+    // its own cap was added, it needs to fail closed (empty pool, property-level peer medians
+    // just don't show) rather than take down the whole report — same defensive catch-to-empty
+    // pattern as networkPoolPromise above, not a retry-into-a-cap.
+    const PROPERTY_POOL_SQL = `WITH prop_zip AS (
+                SELECT PROPERTY_PUBLIC_ID, PROPERTY_ZIP,
+                       ROW_NUMBER() OVER (PARTITION BY PROPERTY_PUBLIC_ID ORDER BY CREATED_AT_UTC DESC) AS rn
+                FROM PRODUCTION.ANALYTICS.DIM_PROPERTIES_PMCS
+             ),
+             latest AS (
+                SELECT MAX(BP_MONTH) AS bp_month
+                FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS
+                WHERE BP_MONTH < ? AND IS_INTEGRATED_TOTAL = TRUE
+             ),
+             agg AS (
+                SELECT
+                  PMC_NAME, PROPERTY_NAME,
+                  MAX(CASE WHEN BP_MONTH = (SELECT bp_month FROM latest) THEN PROPERTY_STATE END) AS PROPERTY_STATE,
+                  MAX(CASE WHEN BP_MONTH = (SELECT bp_month FROM latest) THEN PROPERTY_UNIT_COUNT END) AS PROPERTY_UNIT_COUNT,
+                  MAX(CASE WHEN BP_MONTH = (SELECT bp_month FROM latest) THEN RENT_PAID_AMOUNT END) AS RENT_PAID_AMOUNT,
+                  MAX(CASE WHEN BP_MONTH = (SELECT bp_month FROM latest) THEN BILLS_PAID_COUNT END) AS BILLS_PAID_COUNT,
+                  MAX(ROLLOUT_MONTH) AS ROLLOUT_MONTH,
+                  SUM(CASE WHEN BP_MONTH >= DATEADD('month', -12, (SELECT bp_month FROM latest))
+                            AND BP_MONTH <= (SELECT bp_month FROM latest)
+                       THEN NEW_BILL_CONNECTIONS_PROPERTY ELSE 0 END) AS T12_CONNECTIONS,
+                  ANY_VALUE(PROPERTY_PUBLIC_ID) AS PROPERTY_PUBLIC_ID
+                FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS
+                WHERE IS_INTEGRATED_TOTAL = TRUE
+                  AND ROLLOUT_MONTH IS NOT NULL
+                  -- Lossless perf optimization, same reasoning as networkPool's identical bound:
+                  -- nothing below reads data older than 13mo back from "latest".
+                  AND BP_MONTH >= DATEADD('month', -13, (SELECT bp_month FROM latest))
+                  AND BP_MONTH <= (SELECT bp_month FROM latest)
+                GROUP BY PMC_NAME, PROPERTY_NAME
+                HAVING MAX(CASE WHEN BP_MONTH = (SELECT bp_month FROM latest) THEN PROPERTY_UNIT_COUNT END) >= 10
+                   AND MAX(CASE WHEN BP_MONTH = (SELECT bp_month FROM latest) THEN PROPERTY_STATE END) IS NOT NULL
+                   AND MAX(CASE WHEN BP_MONTH = (SELECT bp_month FROM latest) THEN PROPERTY_STATE END) != ''
+                   AND DATEDIFF('month', MAX(ROLLOUT_MONTH), (SELECT bp_month FROM latest)) >= 7
+             )
+             SELECT a.PMC_NAME, a.PROPERTY_NAME, a.PROPERTY_STATE, a.PROPERTY_UNIT_COUNT,
+                    a.RENT_PAID_AMOUNT, a.BILLS_PAID_COUNT, a.ROLLOUT_MONTH, a.T12_CONNECTIONS,
+                    PRODUCTION.ANALYTICS.FIPS_TO_CENSUS_DATA(
+                        PRODUCTION.ANALYTICS.ZIP_TO_FIPS(LEFT(p.PROPERTY_ZIP, 5)),
+                        'median_renter_household_income'
+                    ) AS MEDIAN_RENTER_INCOME
+             FROM agg a
+             LEFT JOIN prop_zip p
+               ON p.PROPERTY_PUBLIC_ID = a.PROPERTY_PUBLIC_ID AND p.rn = 1`;
+    const propertyPoolPromise = !needsQBRQueries
+      ? Promise.resolve([] as NetworkPoolRow[])
+      : ctx.integrations.snowflake_sso.query(
+          PROPERTY_POOL_SQL,
+          NetworkPoolSchema,
+          [cutoffStr],
+          { label: "Pull unsampled network-wide property pool for per-property peer matching (Property Deep Dive)" }
+        ).catch((err) => {
+          propertyPoolError = err instanceof Error ? err.message : String(err);
+          return [] as NetworkPoolRow[];
+        });
 
     const [metricsRows, dqShieldedRows, yearlyRentBillsRows, trendRawRows, retentionCohortRows, customerMonthRows] = await Promise.all([
       ctx.integrations.snowflake_sso.query(
@@ -2615,11 +2703,12 @@ export default api({
         { label: "Fetch network-wide age-since-rollout benchmark for New Rollouts section" }
       ).catch(() => [] as z.infer<typeof StageAgeBenchmarkSchema>[]);
 
-      const [networkPoolResult, regionDetailResult, subjectIncomeRows, tenurePercentileRows, disabledPropertyResult, stageAgeBenchmarkResult] = await Promise.all([
-        networkPoolPromise, regionDetailPromise, subjectIncomePromise, tenurePercentilePromise,
+      const [networkPoolResult, propertyPoolResult, regionDetailResult, subjectIncomeRows, tenurePercentileRows, disabledPropertyResult, stageAgeBenchmarkResult] = await Promise.all([
+        networkPoolPromise, propertyPoolPromise, regionDetailPromise, subjectIncomePromise, tenurePercentilePromise,
         disabledPropertiesPromise, stageAgeBenchmarkPromise,
       ]);
       networkPool = networkPoolResult;
+      propertyPool = propertyPoolResult;
       regionDetail = regionDetailResult;
       disabledPropertyRows = disabledPropertyResult;
       stageAgeBenchmarkRows = stageAgeBenchmarkResult;
@@ -2882,7 +2971,10 @@ export default api({
 
     // --- Per-property peer matching (geography + rent + age aware) ---
     const reportingMonthDate = latestCompletedMonth ? new Date(latestCompletedMonth) : new Date();
-    const networkPoolProps: NetworkPoolProperty[] = networkPool
+    // Reads from propertyPool (Flask's real pull_network_property_pool - dedicated, unsampled),
+    // NOT networkPool (the PMC-level, sampled pool used for geo-tier matching) - see the full
+    // comment on PROPERTY_POOL_SQL above for why those two can't share a source.
+    const networkPoolProps: NetworkPoolProperty[] = propertyPool
       .filter((r) => r.PROPERTY_STATE && r.ROLLOUT_MONTH)
       .map((r) => {
         const rollout = new Date(r.ROLLOUT_MONTH!);
@@ -2907,7 +2999,13 @@ export default api({
           medianRenterIncome: r.MEDIAN_RENTER_INCOME,
         };
       })
-      .filter((p) => p.monthsLive >= 7 && (p.avgRent === 0 || (p.avgRent >= 700 && p.avgRent <= 2500)));
+      // Flask (generator/data.py:5062): _rent_ok = (bills_paid_count < 3) | (avg_rent between
+      // 700 and 2500) - a property with too few payers to trust its avg_rent estimate isn't
+      // excluded on that noise. This was previously checking avgRent === 0 as the bypass,
+      // which is NOT equivalent: a property with 1-2 payers (nonzero avgRent, potentially an
+      // outlier from so few payers) should also bypass the rent-band check but didn't, quietly
+      // shrinking the pool relative to Flask's real population.
+      .filter((p) => p.monthsLive >= 7 && (p.billsPaid < 3 || (p.avgRent >= 700 && p.avgRent <= 2500)));
 
     // Shared exclusion set for every peer-pool read below — on a combined 2-PMC report, both
     // named PMCs' own properties must be excluded, or the second PMC's properties silently
@@ -4445,6 +4543,8 @@ export default api({
         `_msl (months since launch): ${_msl}`,
         `networkPool.length (raw SQL rows): ${networkPool.length}`,
         `networkPoolError: ${networkPoolError}`,
+        `propertyPool.length (raw SQL rows, unsampled): ${propertyPool.length}`,
+        `propertyPoolError: ${propertyPoolError}`,
         `networkPoolProps.length (post-filter): ${networkPoolProps.length}`,
         `lockedPeers.length: ${lockedPeers.length}`,
         `lockedPeersCriteria: ${lockedPeersCriteria}`,
