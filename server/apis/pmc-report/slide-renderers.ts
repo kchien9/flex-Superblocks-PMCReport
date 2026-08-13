@@ -1886,12 +1886,14 @@ export function renderAdoptionTrend(input: {
     ...(showEstablished ? estValsList.filter((v): v is number => v != null) : []),
     ...(showBenchmark ? benchmarkVals.filter((v): v is number => v != null) : []),
   ];
-  // Flask's documented rule (this repo's CLAUDE.md, "Chart: Adoption Trend"):
-  // suggestedMin = floor(min data) - 1, suggestedMax = floor(max data) + 1. This was using
-  // ceil(max) + 2 -- two separate deviations that both push the axis higher than Flask's,
-  // which is why the chart kept extending to 22% with real data nowhere near it.
+  // Flask's REAL formula (generator/slides.py:1331-1332 — verified directly against live
+  // source, not this repo's CLAUDE.md, which documents "+1" and is stale on this specific
+  // point): y_min = max(0, int(min(all_pts)) - 1), y_max = int(max(all_pts)) + 2. The earlier
+  // fix this session ("+1") was itself wrong, based on that stale doc — it just happened to
+  // still look like an improvement over the previous "ceil(max)+2" bug (22% axis with data
+  // nowhere near it), without landing on Flask's actual number.
   const yMin = allPts.length > 0 ? Math.max(0, Math.floor(Math.min(...allPts)) - 1) : 0;
-  const yMax = allPts.length > 0 ? Math.floor(Math.max(...allPts)) + 1 : 15;
+  const yMax = allPts.length > 0 ? Math.floor(Math.max(...allPts)) + 2 : 15;
 
   // ─── Expansion note ─────────────────────────────────────────────────────
   let expansionNote = "";
