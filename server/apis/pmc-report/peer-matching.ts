@@ -20,6 +20,10 @@ export interface NetworkPoolProperty {
   propertyState: string;
   propertyUnitCount: number;
   avgRent: number;
+  /** Bills paid this property's latest month — lets callers reconstruct a PMC-level
+   * bills-weighted average rent (sum(avgRent*billsPaid)/sum(billsPaid)) instead of a plain
+   * per-property average, matching Flask's per_pmc_totals (generator/data.py:4118-4121). */
+  billsPaid: number;
   monthsLive: number;
   nar: number;
   t12EngPer100: number;

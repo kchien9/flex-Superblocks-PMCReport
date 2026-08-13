@@ -38,6 +38,131 @@ type NetworkPoolRow = { PMC_NAME: string; PROPERTY_NAME: string; PROPERTY_STATE:
 let _networkPoolCache: { cutoff: string; data: NetworkPoolRow[]; fetchedAt: number } | null = null;
 const _NETWORK_POOL_TTL_MS = 10 * 60 * 1000; // 10 minutes — unused while caching is disabled, see below
 
+// ─── Peer-matching geo helpers (faithful port of Flask's generator/data.py:1047-1440) ───
+// Ported because the peer-median/Peer Benchmarks cohort was found to diverge from Flask's:
+// the tier ladder further down was missing the multi-state overlap tier AND the region tier
+// entirely, and its "footprint" tiers didn't actually check footprint (no bucket match — they
+// behaved like Flask's unconditional "none" tiers under a misleading label). All four pieces
+// below exist purely to let the tier ladder match Flask's real ladder tier-for-tier.
+const STATE_TO_REGION: Record<string, string> = {
+  FL: "Southeast", GA: "Southeast", SC: "Southeast", NC: "Southeast",
+  TN: "Southeast", AL: "Southeast", MS: "Southeast", VA: "Southeast",
+  WV: "Southeast", KY: "Southeast",
+  AR: "South Central", LA: "South Central", OK: "South Central", TX: "South Central",
+  AZ: "Southwest", NM: "Southwest",
+  OH: "Midwest", IN: "Midwest", IL: "Midwest", MI: "Midwest",
+  WI: "Midwest", MN: "Midwest", IA: "Midwest", MO: "Midwest",
+  ND: "Midwest", SD: "Midwest", NE: "Midwest", KS: "Midwest",
+  CO: "Mountain", UT: "Mountain", NV: "Mountain", ID: "Mountain",
+  MT: "Mountain", WY: "Mountain",
+  CA: "Pacific", WA: "Pacific", OR: "Pacific", AK: "Pacific", HI: "Pacific",
+  NY: "Northeast", NJ: "Northeast", PA: "Northeast", MA: "Northeast",
+  CT: "Northeast", RI: "Northeast", VT: "Northeast", NH: "Northeast",
+  ME: "Northeast", MD: "Northeast", DE: "Northeast", DC: "Northeast",
+};
+
+/** Flask: _dominant_region (generator/data.py:1298) — only a real >=45% plurality counts as a
+ * region identity; a genuinely national footprint (e.g. 36/35/23% split) must fall through to
+ * the footprint-bucket tiers instead of being mislabeled with whichever region barely edges out. */
+function dominantRegion(stateUnits: Map<string, number>, minShare = 0.45): string | null {
+  const regionUnits = new Map<string, number>();
+  for (const [st, units] of stateUnits) {
+    const r = STATE_TO_REGION[st];
+    if (r) regionUnits.set(r, (regionUnits.get(r) ?? 0) + units);
+  }
+  if (regionUnits.size === 0) return null;
+  let total = 0;
+  for (const u of regionUnits.values()) total += u;
+  if (total <= 0) return null;
+  let topRegion = "", topUnits = -1;
+  for (const [r, u] of regionUnits) { if (u > topUnits) { topUnits = u; topRegion = r; } }
+  return topUnits / total >= minShare ? topRegion : null;
+}
+
+/** Flask: _primary_state_if_dominant (generator/data.py:1325) — same real-plurality guard
+ * (>=35%) as dominantRegion, one level down. A PMC spread thin across many states in one
+ * region has no single-state identity and should fall through to region matching instead. */
+function primaryStateIfDominant(stateUnits: Map<string, number>, minShare = 0.35): string | null {
+  let total = 0;
+  for (const u of stateUnits.values()) total += u;
+  if (total <= 0) return null;
+  let topState = "", topUnits = -1;
+  for (const [st, u] of stateUnits) { if (u > topUnits) { topUnits = u; topState = st; } }
+  return topUnits / total >= minShare ? topState : null;
+}
+
+/** Flask: _fp_bucket (generator/data.py:1426) — footprint bucket by state count. */
+function fpBucket(stateCount: number): string {
+  if (stateCount <= 1) return "single";
+  if (stateCount <= 4) return "regional";
+  if (stateCount <= 9) return "multi";
+  return "national";
+}
+
+interface GeoTierCandidate { name: string; totalUnits: number; stateUnits: Map<string, number> }
+
+/** Flask: _resolve_geo_tier (generator/data.py:1341) — multi-state overlap matching, tried
+ * BEFORE the dominant-state/region/footprint tiers below. A subject genuinely present in two
+ * states with neither dominant (e.g. real CA+WA presence) previously reduced to
+ * primaryState=null/dominantRegion=null and fell straight to a count-based footprint bucket
+ * with no attempt to find peers who ALSO operate in those same states — this fixes that blind
+ * spot without replacing the existing tiers, which remain the fallback when no overlap match. */
+function resolveGeoTier<T extends GeoTierCandidate>(
+  candidates: T[],
+  subjectStateUnits: Map<string, number>,
+  minPoolSize = 3
+): { matched: T[]; label: string; isOverlap: boolean } {
+  const subjectStates = new Set<string>();
+  for (const [st, u] of subjectStateUnits) if (u > 0) subjectStates.add(st);
+  if (subjectStates.size === 0 || candidates.length === 0) {
+    return { matched: [], label: "", isOverlap: false };
+  }
+
+  const overlapUnits = (su: Map<string, number>) => {
+    let s = 0;
+    for (const [st, u] of su) if (subjectStates.has(st)) s += u;
+    return s;
+  };
+  const coverage = (su: Map<string, number>) => {
+    let c = 0;
+    for (const st of subjectStates) if ((su.get(st) ?? 0) > 0) c++;
+    return c;
+  };
+
+  const withMeta = candidates.map((c) => {
+    const ov = overlapUnits(c.stateUnits);
+    return { c, overlapUnits: ov, coverage: coverage(c.stateUnits), concentration: c.totalUnits > 0 ? ov / c.totalUnits : 0 };
+  });
+
+  const nStates = subjectStates.size;
+  const notThin = minPoolSize * 2;
+  const sortedStates = [...subjectStates].sort();
+  const statesLabel = nStates <= 6 ? sortedStates.join(", ") : "your markets";
+
+  // Tier 1: true 1:1 — candidate's own portfolio is >=70% concentrated inside the subject's
+  // states AND covers every one of them.
+  const t1 = withMeta.filter((m) => m.concentration >= 0.70 && m.coverage >= nStates && m.overlapUnits > 0);
+  if (t1.length >= minPoolSize) {
+    return { matched: t1.map((m) => m.c), label: `true 1:1 match in ${statesLabel}`, isOverlap: true };
+  }
+
+  // Tier 2: both-state presence — covers every one of the subject's states, any concentration.
+  if (nStates >= 2) {
+    const t2 = withMeta.filter((m) => m.coverage >= nStates && m.overlapUnits > 0);
+    if (t2.length >= notThin) {
+      return { matched: t2.map((m) => m.c), label: `presence in every one of ${statesLabel}`, isOverlap: true };
+    }
+  }
+
+  // Tier 3: any real overlap presence in at least one of the subject's states.
+  const t3 = withMeta.filter((m) => m.overlapUnits > 0);
+  if (t3.length >= minPoolSize) {
+    return { matched: t3.map((m) => m.c), label: `presence in ${statesLabel}`, isOverlap: true };
+  }
+
+  return { matched: [], label: "", isOverlap: false };
+}
+
 const RawRowSchema = z.object({
   BP_MONTH: z.string(),
   PROPERTY_NAME: z.string(),
@@ -2683,6 +2808,7 @@ export default api({
           propertyState: r.PROPERTY_STATE!,
           propertyUnitCount: r.PROPERTY_UNIT_COUNT,
           avgRent,
+          billsPaid,
           monthsLive: mLive,
           nar,
           t12EngPer100,
@@ -2862,85 +2988,144 @@ export default api({
       _msl = (ly - ey) * 12 + (lm - em) + 1;
     }
 
-    // --- Locked peers for rolling median (pure JS tiered matching, no query) ---
+    // --- Locked peers for rolling median (faithful port of Flask's pull_rolling_peer_median
+    // Step A, generator/data.py:4043-4199 — pure JS tiered matching, no query) ---
     // Computed regardless of tenure — the rolling time-series median (below) is only useful
     // for established PMCs (>=36mo), but this cohort itself also backs the Peer Benchmarks
     // slide's snapshot percentiles for PMCs of any tenure, so it can't be gated on _msl.
+    //
+    // This used to be a "simplified Flask approach" that quietly dropped two real tiers (multi-
+    // state overlap, region) and mislabeled two more: its "footprint" tiers never actually
+    // checked footprint bucket (single/regional/multi/national) — they behaved exactly like
+    // Flask's unconditional "none" tiers under a misleading "geographic footprint" label. That's
+    // the direct cause of the peer-median line coming back close to, but not matching, Flask's
+    // (14.6% vs 15.0%) — a materially different (if similar-looking) cohort. Now matches Flask's
+    // real ladder tier-for-tier, in the same order, with the same thresholds.
     let lockedPeers: string[] = [];
     let lockedPeersCriteria = "comparable PMCs";
     if (networkPoolProps.length > 0) {
-      // Step 1: Aggregate networkPool to PMC level for peer matching
-      const pmcAgg = new Map<string, { totalUnits: number; avgRent: number; primaryState: string; stateCount: number }>();
+      // Step 1: Aggregate networkPool to PMC level for peer matching. avgRent is bills-weighted
+      // (sum of each property's avgRent*billsPaid, divided by summed billsPaid) — matching
+      // Flask's per_pmc_totals (generator/data.py:4118-4121) exactly. This used to just take the
+      // FIRST property's avgRent per PMC and never update it, which is not a weighted average at
+      // all for any multi-property PMC.
+      const pmcAgg = new Map<string, { totalUnits: number; totalRent: number; totalBills: number; stateCount: number }>();
       const pmcStateUnits = new Map<string, Map<string, number>>();
       for (const p of networkPoolProps) {
         if (p.pmcName === pmc_name || (second_pmc && p.pmcName === second_pmc)) continue;
+        const rent = p.avgRent * p.billsPaid; // reconstruct raw rent for correct weighting
         const existing = pmcAgg.get(p.pmcName);
         if (!existing) {
-          pmcAgg.set(p.pmcName, { totalUnits: p.propertyUnitCount, avgRent: p.avgRent, primaryState: p.propertyState, stateCount: 1 });
+          pmcAgg.set(p.pmcName, { totalUnits: p.propertyUnitCount, totalRent: rent, totalBills: p.billsPaid, stateCount: 1 });
           pmcStateUnits.set(p.pmcName, new Map([[p.propertyState, p.propertyUnitCount]]));
         } else {
           existing.totalUnits += p.propertyUnitCount;
-          // Weighted avg rent approximation
+          existing.totalRent += rent;
+          existing.totalBills += p.billsPaid;
           const su = pmcStateUnits.get(p.pmcName)!;
           su.set(p.propertyState, (su.get(p.propertyState) ?? 0) + p.propertyUnitCount);
         }
       }
-      // Derive primary state (most units)
       for (const [nm, su] of pmcStateUnits.entries()) {
         const agg = pmcAgg.get(nm);
-        if (!agg) continue;
-        let maxSt = "", maxU = 0;
-        for (const [st, u] of su.entries()) { if (u > maxU) { maxU = u; maxSt = st; } }
-        agg.primaryState = maxSt;
-        agg.stateCount = su.size;
+        if (agg) agg.stateCount = su.size;
       }
 
-      // Step 2: Match peers using Flask's tiered approach
+      // Step 2: Subject's own profile — full per-state breakdown (needed for the overlap tier),
+      // plus the same >=35%/>=45% real-plurality gating Flask uses for primaryState/dominantRegion
+      // instead of an unconditional max() (a subject genuinely split ~35/35/30 across 3 states
+      // has no real single-state identity and should fall through to region/footprint, not get
+      // matched to peers who happen to share its barely-largest state).
       const subjectUnits = latestRows.reduce((s, r) => s + r.PROPERTY_UNIT_COUNT, 0);
       const subjectBills = latestRows.reduce((s, r) => s + r.BILLS_PAID, 0);
       const subjectRent = latestRows.reduce((s, r) => s + r.RENT_PAID, 0);
       const subjectAvgRent = subjectBills > 0 ? subjectRent / subjectBills : 0;
-      const subjectState = (() => {
-        const stateMap = new Map<string, number>();
-        for (const r of latestRows) {
-          if (r.PROPERTY_STATE) stateMap.set(r.PROPERTY_STATE, (stateMap.get(r.PROPERTY_STATE) ?? 0) + r.PROPERTY_UNIT_COUNT);
-        }
-        let maxSt = "", maxU = 0;
-        for (const [st, u] of stateMap) { if (u > maxU) { maxU = u; maxSt = st; } }
-        return maxSt;
-      })();
+      const subjectStateUnits = new Map<string, number>();
+      for (const r of latestRows) {
+        if (r.PROPERTY_STATE) subjectStateUnits.set(r.PROPERTY_STATE, (subjectStateUnits.get(r.PROPERTY_STATE) ?? 0) + r.PROPERTY_UNIT_COUNT);
+      }
+      const primaryState = primaryStateIfDominant(subjectStateUnits);
+      const dominantRegionName = dominantRegion(subjectStateUnits);
+      const fpTarget = fpBucket(subjectStateUnits.size);
 
-      type PeerCandidate = { name: string; totalUnits: number; avgRent: number; primaryState: string };
+      interface PeerCandidate { name: string; totalUnits: number; avgRent: number; stateUnits: Map<string, number>; stateCount: number }
       const candidates: PeerCandidate[] = [];
       for (const [nm, agg] of pmcAgg) {
-        candidates.push({ name: nm, totalUnits: agg.totalUnits, avgRent: agg.avgRent, primaryState: agg.primaryState });
+        candidates.push({
+          name: nm,
+          totalUnits: agg.totalUnits,
+          avgRent: agg.totalBills > 0 ? agg.totalRent / agg.totalBills : 0,
+          stateUnits: pmcStateUnits.get(nm) ?? new Map(),
+          stateCount: agg.stateCount,
+        });
       }
 
-      // Tiered matching (simplified Flask approach) — criteria labels match Flask's real
-      // tier ladder (generator/data.py:4156-4165) so the Peer Benchmarks subtitle describes
-      // the ACTUAL cohort that matched, instead of a fabricated segment name.
-      const tiers: Array<{ useState: boolean; lowMult: number; highMult: number; useRent: boolean; minPeers: number; label: string }> = [
-        { useState: true,  lowMult: 0.60, highMult: 1.40, useRent: true,  minPeers: 3, label: `same state (${subjectState}), comparable size & avg rent` },
-        { useState: true,  lowMult: 0.60, highMult: 1.40, useRent: false, minPeers: 3, label: `same state (${subjectState}), comparable size` },
-        { useState: false, lowMult: 0.60, highMult: 1.40, useRent: true,  minPeers: 5, label: "geographic footprint, comparable size & avg rent" },
-        { useState: false, lowMult: 0.30, highMult: 1.70, useRent: true,  minPeers: 5, label: "geographic footprint, comparable size & avg rent" },
-        { useState: false, lowMult: 0.30, highMult: 1.70, useRent: false, minPeers: 5, label: "geographic footprint & comparable size" },
-        { useState: false, lowMult: 0.30, highMult: 1.70, useRent: false, minPeers: 3, label: "comparable size" },
-        // Final fallback: no filters at all, just need 3 peers (Flask also falls through)
-        { useState: false, lowMult: 0.00, highMult: 100.0, useRent: false, minPeers: 3, label: "comparable PMCs" },
-      ];
-      for (const tier of tiers) {
-        let pool = candidates.filter((c) =>
-          c.totalUnits >= subjectUnits * tier.lowMult && c.totalUnits <= subjectUnits * tier.highMult
-        );
-        if (tier.useState) pool = pool.filter((c) => c.primaryState === subjectState);
-        if (tier.useRent && subjectAvgRent > 0) {
-          pool = pool.filter((c) => c.avgRent >= subjectAvgRent * 0.70 && c.avgRent <= subjectAvgRent * 1.30);
+      // Step A1: multi-state overlap tier, tried BEFORE the dominant-state/region/footprint
+      // ladder below — Flask's _resolve_geo_tier (generator/data.py:1341), see resolveGeoTier's
+      // own comment for why this exists separately from the tiers it doesn't replace.
+      if (subjectStateUnits.size > 0) {
+        const overlap = resolveGeoTier(candidates, subjectStateUnits, 3);
+        if (overlap.isOverlap) {
+          let pool = overlap.matched;
+          // Size-match on each candidate's units WITHIN the overlapping states (not their whole
+          // portfolio) — a national operator can be far larger overall while genuinely comparable
+          // in scale just within these states. Uses the SAME overlap-units figure resolveGeoTier
+          // already computed internally; recomputed here identically since it isn't returned.
+          const subjectStates = new Set([...subjectStateUnits.keys()]);
+          const overlapUnitsOf = (su: Map<string, number>) => {
+            let s = 0;
+            for (const [st, u] of su) if (subjectStates.has(st)) s += u;
+            return s;
+          };
+          pool = pool.filter((c) => {
+            const ov = overlapUnitsOf(c.stateUnits);
+            return ov >= subjectUnits * 0.60 && ov <= subjectUnits * 1.40;
+          });
+          if (pool.length >= 3) {
+            if (subjectAvgRent > 0) {
+              const rentSub = pool.filter((c) => c.avgRent >= subjectAvgRent * 0.70 && c.avgRent <= subjectAvgRent * 1.30);
+              if (rentSub.length >= 3) pool = rentSub;
+            }
+            if (pool.length >= 3) {
+              lockedPeers = pool.map((c) => c.name);
+              lockedPeersCriteria = overlap.label;
+            }
+          }
         }
-        if (pool.length >= tier.minPeers) {
-          lockedPeers = pool.map((c) => c.name);
-          lockedPeersCriteria = tier.label;
-          break;
+      }
+
+      // Step A2: dominant-state -> region -> footprint -> none ladder, same order and
+      // thresholds as Flask's `tiers` list (generator/data.py:4168-4181).
+      if (lockedPeers.length === 0) {
+        interface Tier { kind: "state" | "region" | "footprint" | "none"; lowMult: number; highMult: number; useRent: boolean; minPeers: number; label: string }
+        const tiers: Tier[] = [];
+        if (primaryState) {
+          tiers.push({ kind: "state", lowMult: 0.60, highMult: 1.40, useRent: true, minPeers: 3, label: `same state (${primaryState}), comparable size & avg rent` });
+        }
+        if (dominantRegionName) {
+          tiers.push({ kind: "region", lowMult: 0.60, highMult: 1.40, useRent: true, minPeers: 5, label: `${dominantRegionName} region, comparable size & avg rent` });
+        }
+        tiers.push(
+          { kind: "footprint", lowMult: 0.65, highMult: 1.35, useRent: true, minPeers: 5, label: "geographic footprint, comparable size & avg rent" },
+          { kind: "footprint", lowMult: 0.60, highMult: 1.40, useRent: true, minPeers: 3, label: "geographic footprint, comparable size & avg rent" },
+          { kind: "footprint", lowMult: 0.30, highMult: 1.70, useRent: false, minPeers: 5, label: "geographic footprint & comparable size" },
+          { kind: "none", lowMult: 0.30, highMult: 1.70, useRent: true, minPeers: 5, label: "comparable size & avg rent" },
+          { kind: "none", lowMult: 0.30, highMult: 1.70, useRent: false, minPeers: 5, label: "comparable size" },
+          { kind: "none", lowMult: 0.30, highMult: 1.70, useRent: false, minPeers: 3, label: "comparable size" },
+        );
+
+        for (const tier of tiers) {
+          if (tier.useRent && subjectAvgRent <= 0) continue; // Flask: can't apply a rent band without the subject's own avg_rent
+          let pool = candidates.filter((c) => c.totalUnits >= subjectUnits * tier.lowMult && c.totalUnits <= subjectUnits * tier.highMult);
+          if (tier.kind === "state") pool = pool.filter((c) => primaryStateIfDominant(c.stateUnits) === primaryState);
+          else if (tier.kind === "region") pool = pool.filter((c) => dominantRegion(c.stateUnits) === dominantRegionName);
+          else if (tier.kind === "footprint") pool = pool.filter((c) => fpBucket(c.stateCount) === fpTarget);
+          if (tier.useRent) pool = pool.filter((c) => c.avgRent >= subjectAvgRent * 0.70 && c.avgRent <= subjectAvgRent * 1.30);
+          if (pool.length >= tier.minPeers) {
+            lockedPeers = pool.map((c) => c.name);
+            lockedPeersCriteria = tier.label;
+            break;
+          }
         }
       }
     }
