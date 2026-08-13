@@ -2165,10 +2165,28 @@ export default api({
     // (rent band 700-2500, bypassed when bills_paid_count < 3) stays a JS post-filter below,
     // matching the existing pattern; it's a much smaller row-count lever than months_live and
     // doesn't need to move.
-    // NO row-count cap is applied — if this hits the same 5MB ceiling networkPool did before
-    // its own cap was added, it needs to fail closed (empty pool, property-level peer medians
-    // just don't show) rather than take down the whole report — same defensive catch-to-empty
-    // pattern as networkPoolPromise above, not a retry-into-a-cap.
+    // CORRECTION (verified live against real Snowflake data, same day as the first version of
+    // this query shipped): "no cap needed" was wrong. The real unsampled population is 55,901
+    // rows network-wide — at ~500 bytes/row (same 10-column, UDF-chain shape as networkPool's
+    // query) that's 25-30MB, far past Superblocks' ~5MB step-output limit. It didn't fail
+    // outright the way networkPool's original uncapped version did; Kevin's live screenshots
+    // showed real (non-empty) per-property peer data, but SAME-STATE tiers were coming up short
+    // of min_peers=8 even for a state (NC) that has 2,184 real qualifying rows and 965 in the
+    // exact size band - meaning something in the pipeline was silently truncating this response
+    // to an unordered, non-representative subset, the exact same non-determinism failure mode
+    // fixed once already this session for networkPool's own query (see peer_candidates' ORDER
+    // BY comment above) - it just showed up here as "some tiers mysteriously come up short"
+    // instead of a visible crash.
+    // Fix: an explicit, DETERMINISTIC, UNBIASED sample - ORDER BY HASH(PMC_NAME, PROPERTY_NAME)
+    // LIMIT 8000, computed on the cheap agg CTE BEFORE the FIPS_TO_CENSUS_DATA UDF join (so the
+    // expensive UDF chain runs 8,000 times, not 55,901). HASH() on a stable per-row key spreads
+    // the sample uniformly across every state/age-bucket/size combination with no correlation to
+    // any of them - deliberately NOT ORDER BY PMC_NAME or property size, which is exactly the
+    // kind of bias that broke networkPool's OWN pool for its original purpose. Verified live:
+    // an 8,000-row hash-ordered sample of this same population retains 51 real NC candidates in
+    // Osprey Cove South's exact tier (37+mo age bucket, 136-320 units) - comfortably clear of
+    // min_peers=8, and small states/buckets that end up thin will legitimately widen tiers, the
+    // same as Flask's real behavior, rather than silently coming up short from a biased sample.
     const PROPERTY_POOL_SQL = `WITH prop_zip AS (
                 SELECT PROPERTY_PUBLIC_ID, PROPERTY_ZIP,
                        ROW_NUMBER() OVER (PARTITION BY PROPERTY_PUBLIC_ID ORDER BY CREATED_AT_UTC DESC) AS rn
@@ -2203,16 +2221,21 @@ export default api({
                    AND MAX(CASE WHEN BP_MONTH = (SELECT bp_month FROM latest) THEN PROPERTY_STATE END) IS NOT NULL
                    AND MAX(CASE WHEN BP_MONTH = (SELECT bp_month FROM latest) THEN PROPERTY_STATE END) != ''
                    AND DATEDIFF('month', MAX(ROLLOUT_MONTH), (SELECT bp_month FROM latest)) >= 7
+             ),
+             sampled AS (
+                SELECT * FROM agg
+                ORDER BY HASH(PMC_NAME, PROPERTY_NAME)
+                LIMIT 8000
              )
-             SELECT a.PMC_NAME, a.PROPERTY_NAME, a.PROPERTY_STATE, a.PROPERTY_UNIT_COUNT,
-                    a.RENT_PAID_AMOUNT, a.BILLS_PAID_COUNT, a.ROLLOUT_MONTH, a.T12_CONNECTIONS,
+             SELECT s.PMC_NAME, s.PROPERTY_NAME, s.PROPERTY_STATE, s.PROPERTY_UNIT_COUNT,
+                    s.RENT_PAID_AMOUNT, s.BILLS_PAID_COUNT, s.ROLLOUT_MONTH, s.T12_CONNECTIONS,
                     PRODUCTION.ANALYTICS.FIPS_TO_CENSUS_DATA(
                         PRODUCTION.ANALYTICS.ZIP_TO_FIPS(LEFT(p.PROPERTY_ZIP, 5)),
                         'median_renter_household_income'
                     ) AS MEDIAN_RENTER_INCOME
-             FROM agg a
+             FROM sampled s
              LEFT JOIN prop_zip p
-               ON p.PROPERTY_PUBLIC_ID = a.PROPERTY_PUBLIC_ID AND p.rn = 1`;
+               ON p.PROPERTY_PUBLIC_ID = s.PROPERTY_PUBLIC_ID AND p.rn = 1`;
     const propertyPoolPromise = !needsQBRQueries
       ? Promise.resolve([] as NetworkPoolRow[])
       : ctx.integrations.snowflake_sso.query(
@@ -3414,9 +3437,17 @@ export default api({
          -- avoid the stub-month bug fixed elsewhere in this file - that part of the deviation
          -- is intentional and unrelated to this fix.
          peer_penetration AS (
+           -- Capped at 100% (LEAST(1.0, ...)) for the same reason Flask caps the SUBJECT's own
+           -- displayed value (generator/data.py:2414-2416): HUBSPOT_DEAL_TOTAL_COMPANY_UNITS is
+           -- a noisy per-deal snapshot that can understate a peer's true company size, which
+           -- would otherwise show an impossible >100% "penetration" for that one peer and drag
+           -- the whole P25/P50/P75 band with it (confirmed live: P75 showed 116%). Flask itself
+           -- doesn't cap this on the peer side (only the subject's), but there's no principled
+           -- reason a peer's noisy artifact should be allowed to distort the comparison band
+           -- when the subject's own identical artifact isn't - same clamp pattern already used
+           -- for peer_repeat's rate just below.
            SELECT t.PMC_NAME,
-                  SUM(t.PROPERTY_UNIT_COUNT) AS PEN_UNITS,
-                  MAX(t.HUBSPOT_DEAL_TOTAL_COMPANY_UNITS) AS PEN_TOTAL_COMPANY_UNITS
+                  LEAST(1.0, SUM(t.PROPERTY_UNIT_COUNT) / NULLIF(MAX(t.HUBSPOT_DEAL_TOTAL_COMPANY_UNITS), 0)) AS PEN_RATE
            FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS t
            JOIN peer_latest pl ON t.PMC_NAME = pl.PMC_NAME AND t.BP_MONTH = pl.BP_MONTH
            WHERE t.HUBSPOT_DEAL_TOTAL_COMPANY_UNITS > 0
