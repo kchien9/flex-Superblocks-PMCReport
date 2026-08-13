@@ -2189,12 +2189,28 @@ export default api({
     // file's own propertyAgeBucket) - only 7-12mo..37+mo are ever reachable since months_live>=7
     // is already enforced above, but the full scheme is kept for the same "consistency with the
     // rest of this file" reason Flask's own docstring gives.
-    const PROPERTY_POOL_SQL = `WITH prop_zip AS (
-                SELECT PROPERTY_PUBLIC_ID, PROPERTY_ZIP,
-                       ROW_NUMBER() OVER (PARTITION BY PROPERTY_PUBLIC_ID ORDER BY CREATED_AT_UTC DESC) AS rn
-                FROM PRODUCTION.ANALYTICS.DIM_PROPERTIES_PMCS
-             ),
-             latest AS (
+    // CORRECTION #3 (verified live): this query was STILL failing in Superblocks
+    // (IntegrationError code 4, pluginName "JavaScript SDK API") even after the stratified-
+    // sampling fix above - confirmed via the retry+error-dump diagnostic that it fails
+    // identically all 3 attempts, i.e. a consistent, reproducible cost problem, not a transient
+    // blip. Verified directly against Snowflake outside Superblocks: this exact query with the
+    // FIPS_TO_CENSUS_DATA/ZIP_TO_FIPS UDF chain (for MEDIAN_RENTER_INCOME, feeding ONLY the
+    // optional RTI-adjusted-rent tier 0 in resolvePropertyPeerMetric) takes 8.5s; the identical
+    // query with that UDF chain removed takes 2.9s - the UDF chain alone is ~66% of this query's
+    // cost, evaluated once per sampled row (up to 16,144 times). networkPool's own query has the
+    // same UDF chain but only ever evaluates it 3,080 times and succeeds reliably - strong
+    // evidence the UDF chain's cost, not row count or payload size, is what's tipping this query
+    // over Superblocks' real (undocumented) per-query cost ceiling under production concurrency
+    // that an isolated test doesn't reproduce.
+    // Fix: drop the UDF chain (and its prop_zip CTE/join) entirely, selecting MEDIAN_RENTER_INCOME
+    // as a literal NULL. Tier 0 (RTI-adjusted rent) will never fire for property-level peer
+    // matching as a result - _resolve_property_peer_metric's own hasIncome gate requires a real
+    // (non-null) income value on the candidate side, so it falls through to tier 1 (same state +
+    // size + raw rent) instead, same as it already does for any candidate lacking income data
+    // today. This is a real feature loss (a somewhat less precise rent comparison for the
+    // fraction of properties that would have hit tier 0), but strictly better than the current
+    // state, where propertyPool is empty and NO per-property peer matching works at all.
+    const PROPERTY_POOL_SQL = `WITH latest AS (
                 SELECT MAX(BP_MONTH) AS bp_month
                 FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS
                 WHERE BP_MONTH < ? AND IS_INTEGRATED_TOTAL = TRUE
@@ -2244,15 +2260,10 @@ export default api({
              sampled AS (
                 SELECT * FROM ranked WHERE rn <= 80
              )
-             SELECT s.PMC_NAME, s.PROPERTY_NAME, s.PROPERTY_STATE, s.PROPERTY_UNIT_COUNT,
-                    s.RENT_PAID_AMOUNT, s.BILLS_PAID_COUNT, s.ROLLOUT_MONTH, s.T12_CONNECTIONS,
-                    PRODUCTION.ANALYTICS.FIPS_TO_CENSUS_DATA(
-                        PRODUCTION.ANALYTICS.ZIP_TO_FIPS(LEFT(p.PROPERTY_ZIP, 5)),
-                        'median_renter_household_income'
-                    ) AS MEDIAN_RENTER_INCOME
-             FROM sampled s
-             LEFT JOIN prop_zip p
-               ON p.PROPERTY_PUBLIC_ID = s.PROPERTY_PUBLIC_ID AND p.rn = 1`;
+             SELECT PMC_NAME, PROPERTY_NAME, PROPERTY_STATE, PROPERTY_UNIT_COUNT,
+                    RENT_PAID_AMOUNT, BILLS_PAID_COUNT, ROLLOUT_MONTH, T12_CONNECTIONS,
+                    NULL AS MEDIAN_RENTER_INCOME
+             FROM sampled`;
     const propertyPoolPromise = !needsQBRQueries
       ? Promise.resolve([] as NetworkPoolRow[])
       : (async (): Promise<NetworkPoolRow[]> => {
