@@ -2130,7 +2130,14 @@ export default api({
              FROM candidates c`,
             NetworkPoolSchema,
             [cutoffStr],
-            { label: "Pull network property pool for peer matching (incl. median renter income for RTI tier)" }
+            // TEMPORARY: changed label text as a cache-key isolation test — the identical error
+            // object survived 3 structurally different query bodies (original, UDF deferred to
+            // <=15000 rows, UDF removed entirely), all under this same label string. If changing
+            // ONLY the label makes the error disappear or change, Superblocks is memoizing this
+            // call by label/fingerprint rather than actual query content. Restore to the original
+            // label ("Pull network property pool for peer matching (incl. median renter income
+            // for RTI tier)") once this test's result is known either way.
+            { label: "QBR network pool v2 - retry " + cutoffStr }
           ).then((rows) => {
             // Cache the result for future runs
             _networkPoolCache = { cutoff: cutoffStr, data: rows, fetchedAt: Date.now() };
