@@ -2255,15 +2255,48 @@ export default api({
                ON p.PROPERTY_PUBLIC_ID = s.PROPERTY_PUBLIC_ID AND p.rn = 1`;
     const propertyPoolPromise = !needsQBRQueries
       ? Promise.resolve([] as NetworkPoolRow[])
-      : ctx.integrations.snowflake_sso.query(
-          PROPERTY_POOL_SQL,
-          NetworkPoolSchema,
-          [cutoffStr],
-          { label: "Pull network-wide property pool for per-property peer matching, stratified per state x age-bucket cell (Property Deep Dive)" }
-        ).catch((err) => {
-          propertyPoolError = err instanceof Error ? err.message : String(err);
+      : (async (): Promise<NetworkPoolRow[]> => {
+          // Confirmed live: this exact query, run directly against Snowflake outside
+          // Superblocks, returns 16,144 real rows in ~9s with no error - so the generic
+          // "IntegrationError ... failed during 'query'" here is Superblocks-integration-layer
+          // specific (timeout under real concurrent load, a payload/driver difference from the
+          // isolated test, or a transient blip), not a SQL problem. Same retry-with-backoff +
+          // rich-error-dump pattern as networkPoolPromise above, for the same reason: get real
+          // diagnostic signal instead of guessing again.
+          const maxAttempts = 3;
+          let lastErr: unknown = null;
+          for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+            try {
+              return await ctx.integrations.snowflake_sso.query(
+                PROPERTY_POOL_SQL,
+                NetworkPoolSchema,
+                [cutoffStr],
+                { label: "Pull network-wide property pool for per-property peer matching, stratified per state x age-bucket cell (Property Deep Dive)" }
+              );
+            } catch (err) {
+              lastErr = err;
+              if (attempt < maxAttempts) {
+                await new Promise((resolve) => setTimeout(resolve, 750 * attempt));
+              }
+            }
+          }
+          const err = lastErr;
+          const base = err instanceof Error ? err.message : String(err);
+          let extra = "";
+          try {
+            const props = err && typeof err === "object" ? Object.getOwnPropertyNames(err) : [];
+            const extraProps = props.filter((p) => p !== "message" && p !== "stack");
+            if (extraProps.length > 0) {
+              const dump: Record<string, unknown> = {};
+              for (const p of extraProps) dump[p] = (err as Record<string, unknown>)[p];
+              extra = " | extra: " + JSON.stringify(dump, null, 0).slice(0, 2000);
+            }
+          } catch {
+            // ignore — best-effort diagnostic only
+          }
+          propertyPoolError = `${base}${extra} (failed after ${maxAttempts} attempts)`;
           return [] as NetworkPoolRow[];
-        });
+        })();
 
     const [metricsRows, dqShieldedRows, yearlyRentBillsRows, trendRawRows, retentionCohortRows, customerMonthRows] = await Promise.all([
       ctx.integrations.snowflake_sso.query(
