@@ -2119,7 +2119,25 @@ export default api({
             _networkPoolCache = { cutoff: cutoffStr, data: rows, fetchedAt: Date.now() };
             return rows;
           }).catch((err) => {
-            networkPoolError = err instanceof Error ? err.message : String(err);
+            // TEMPORARY diagnostic — err.message alone was just a generic Superblocks wrapper
+            // ("Integration ... failed during 'query'") with no real Snowflake-side detail.
+            // Walk every own-enumerable property (err.cause, err.response, err.details, etc. —
+            // whatever this particular integration error shape actually carries) so the debug
+            // panel surfaces the real underlying failure instead of the wrapper text alone.
+            const base = err instanceof Error ? err.message : String(err);
+            let extra = "";
+            try {
+              const props = err && typeof err === "object" ? Object.getOwnPropertyNames(err) : [];
+              const extraProps = props.filter((p) => p !== "message" && p !== "stack");
+              if (extraProps.length > 0) {
+                const dump: Record<string, unknown> = {};
+                for (const p of extraProps) dump[p] = (err as Record<string, unknown>)[p];
+                extra = " | extra: " + JSON.stringify(dump, null, 0).slice(0, 2000);
+              }
+            } catch {
+              // ignore — best-effort diagnostic only
+            }
+            networkPoolError = base + extra;
             return [] as NetworkPoolRow[];
           });
 
