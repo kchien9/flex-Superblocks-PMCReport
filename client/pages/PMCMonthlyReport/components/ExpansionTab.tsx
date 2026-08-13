@@ -47,7 +47,9 @@ export function ExpansionTab({ pmcNames, pmcLoading, generating, onGenerate }: E
   const [comparisonMonths, setComparisonMonths] = useState(3);
   const [delivery, setDelivery] = useState("sharing");
   const [selectedSlides, setSelectedSlides] = useState<Set<string>>(() => defaultSlideSet(EXPANSION_SLIDES));
-  const [selectedMetrics, setSelectedMetrics] = useState<Set<string>>(() => new Set(BENCHMARK_METRICS.map((m) => m.id)));
+  // Fixed — the picker for this was removed (server never reads it; the Peer Benchmarks slide
+  // has its own inline toggle), but selected_metrics stays in the payload shape unchanged.
+  const [selectedMetrics] = useState<Set<string>>(() => new Set(BENCHMARK_METRICS.map((m) => m.id)));
   const [testimonials, setTestimonials] = useState<Testimonial[]>([]);
 
   const handleGenerate = useCallback(() => {
@@ -105,9 +107,6 @@ export function ExpansionTab({ pmcNames, pmcLoading, generating, onGenerate }: E
           slides={EXPANSION_SLIDES}
           selectedSlides={selectedSlides}
           onSlidesChange={setSelectedSlides}
-          showMetrics
-          selectedMetrics={selectedMetrics}
-          onMetricsChange={setSelectedMetrics}
         />
       </Section>
 

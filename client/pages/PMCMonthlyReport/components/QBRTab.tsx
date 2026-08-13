@@ -39,7 +39,6 @@ export interface QBRFormState {
   adoption_target: number;
   total_company_units: string;
   partner_since_override: string;
-  report_type: string;
   review_period: string;
   delivery: string;
   terminology: string;
@@ -69,16 +68,17 @@ export function QBRTab({ pmcNames, pmcLoading, generating, onGenerate }: QBRTabP
   const [ownershipReportName, setOwnershipReportName] = useState("");
   const [totalCompanyUnits, setTotalCompanyUnits] = useState("");
   const [partnerSinceOverride, setPartnerSinceOverride] = useState("");
-  const [reportType, setReportType] = useState("full");
   const [reviewPeriod, setReviewPeriod] = useState("full");
-  const [delivery, setDelivery] = useState("sharing");
+  const [delivery, setDelivery] = useState("presenting");
   const [terminology, setTerminology] = useState("resident");
-  const [d2cMarketing, setD2cMarketing] = useState("yes");
+  const [d2cMarketing, setD2cMarketing] = useState("no");
   const [comparisonMonths, setComparisonMonths] = useState(3);
   const [whatsNewText, setWhatsNewText] = useState("");
   const [testimonials, setTestimonials] = useState<Testimonial[]>([]);
   const [selectedSlides, setSelectedSlides] = useState<Set<string>>(() => defaultSlideSet(QBR_SLIDES));
-  const [selectedMetrics, setSelectedMetrics] = useState<Set<string>>(() => new Set(BENCHMARK_METRICS.map((m) => m.id)));
+  // Fixed — the picker for this was removed (server never reads it; the Peer Benchmarks slide
+  // has its own inline toggle), but selected_metrics stays in the payload shape unchanged.
+  const [selectedMetrics] = useState<Set<string>>(() => new Set(BENCHMARK_METRICS.map((m) => m.id)));
 
   const canGenerate = reportBasis === "pmc"
     ? !!selectedPMC || propertyIds.length > 0
@@ -95,7 +95,6 @@ export function QBRTab({ pmcNames, pmcLoading, generating, onGenerate }: QBRTabP
       adoption_target: 15,
       total_company_units: totalCompanyUnits,
       partner_since_override: partnerSinceOverride,
-      report_type: reportType,
       review_period: reviewPeriod,
       delivery,
       terminology,
@@ -106,7 +105,7 @@ export function QBRTab({ pmcNames, pmcLoading, generating, onGenerate }: QBRTabP
       testimonials,
       whats_new_text: whatsNewText,
     });
-  }, [canGenerate, reportBasis, selectedPMC, secondPMC, reportName, propertyIds, ownershipReportName, totalCompanyUnits, partnerSinceOverride, reportType, reviewPeriod, delivery, terminology, d2cMarketing, comparisonMonths, selectedSlides, selectedMetrics, testimonials, whatsNewText, onGenerate]);
+  }, [canGenerate, reportBasis, selectedPMC, secondPMC, reportName, propertyIds, ownershipReportName, totalCompanyUnits, partnerSinceOverride, reviewPeriod, delivery, terminology, d2cMarketing, comparisonMonths, selectedSlides, selectedMetrics, testimonials, whatsNewText, onGenerate]);
 
   const handleBasisChange = useCallback((v: string) => {
     setReportBasis(v as "pmc" | "ownership");
@@ -191,10 +190,6 @@ export function QBRTab({ pmcNames, pmcLoading, generating, onGenerate }: QBRTabP
       {/* Toggles */}
       <div className="space-y-3">
         <div className="flex items-center justify-between">
-          <label className="text-xs font-medium text-gray-600">Report Type</label>
-          <ToggleGroup options={[{ value: "full", label: "Full Review" }, { value: "highlights", label: "Highlights" }]} value={reportType} onChange={setReportType} />
-        </div>
-        <div className="flex items-center justify-between">
           <label className="text-xs font-medium text-gray-600">Review Period</label>
           <ToggleGroup options={[{ value: "full", label: "Full" }, { value: "quarter", label: "Quarter" }, { value: "ytd", label: "YTD" }]} value={reviewPeriod} onChange={setReviewPeriod} />
         </div>
@@ -222,9 +217,6 @@ export function QBRTab({ pmcNames, pmcLoading, generating, onGenerate }: QBRTabP
           slides={QBR_SLIDES}
           selectedSlides={selectedSlides}
           onSlidesChange={setSelectedSlides}
-          showMetrics
-          selectedMetrics={selectedMetrics}
-          onMetricsChange={setSelectedMetrics}
           infoItems={[
             { label: "Adoption Ceiling", text: "May not appear even when selected — auto-skipped if partner already markets to residents, peer set is too thin (<5), or they already beat P75." },
             { label: "Delinquency", text: "off by default; framing is being reconsidered for partner sensitivity." },
