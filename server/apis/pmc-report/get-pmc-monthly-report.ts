@@ -2051,6 +2051,19 @@ export default api({
                 -- Cut hard to 3000 as a decisive test, comfortably clear of 5MB even at a
                 -- generous worst-case ~500 bytes/row (~1.5MB total); can be tuned back up now
                 -- that the cap is confirmed.
+                --
+                -- ORDER BY here is NOT optional. Snowflake gives no row-order guarantee for a
+                -- LIMIT with nothing ordering it -- which 3000 rows out of the full qualifying
+                -- pool actually survive can differ between two runs of the IDENTICAL query
+                -- against IDENTICAL data. That reshuffles which PMCs' properties get counted,
+                -- which reshuffles the tier-matching JS does downstream, which reshuffles who
+                -- ends up in lockedPeers -- this is what made the peer median swing wildly
+                -- between two reports generated 5 minutes apart with no real data change.
+                -- PMC_NAME, rn gives a fully stable, reproducible selection (alphabetical, then
+                -- each PMC's own top properties by size) -- deterministic, at the cost of a
+                -- mild bias toward alphabetically-early PMCs if the true pool exceeds 3000,
+                -- which is a far better trade than "random each run."
+                ORDER BY PMC_NAME, rn
                 LIMIT 3000
              ),
              candidates AS (
@@ -3194,11 +3207,18 @@ export default api({
          -- payment). Independent of peer_current/peer_repeat above (doesn't need the subject's
          -- units), so it's its own CTE chain rather than joining into theirs.
          signup_timing AS (
+            -- Scoped to properties rolled out in the trailing 12 months, not a PMC's entire
+            -- history -- Wellington joined 5 years ago, so a lifetime average would be
+            -- dominated by rollouts from years back and say nothing about how fast marketing/
+            -- ops get NEW properties live today. Matches the same trailing-12mo window every
+            -- other metric on this slide (Engagement, Repeat Rate) already uses, for the same
+            -- "how do things look now" reason.
             SELECT PMC_NAME, PROPERTY_NAME, ROLLOUT_MONTH,
                    MIN(CASE WHEN BILLS_PAID_COUNT > 0 THEN BP_MONTH END) AS FIRST_PAID_MONTH
             FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS
             WHERE PMC_NAME IN (${lockedPeers.map(() => "?").join(", ")})
               AND ROLLOUT_MONTH IS NOT NULL
+              AND ROLLOUT_MONTH >= DATEADD('month', -12, ?::DATE)
               AND BP_MONTH >= ROLLOUT_MONTH
               AND BP_MONTH < ?
             GROUP BY PMC_NAME, PROPERTY_NAME, ROLLOUT_MONTH
@@ -3249,7 +3269,7 @@ export default api({
         SegmentPercentilesSchema,
         [
           ...lockedPeers, latestCompletedMonth, latestCompletedMonth, latestCompletedMonth, latestCompletedMonth, latestCompletedMonth,
-          ...lockedPeers, cutoffStr,
+          ...lockedPeers, cutoffStr, cutoffStr,
         ],
         { label: "Compute peer-cohort P25/P50/P75 for multi-benchmark (real cohort, not a segment table)" }
       ).catch((err) => { console.error("[PERC QUERY FAILED]", String(err)); return [] as z.infer<typeof SegmentPercentilesSchema>[]; })
@@ -3324,9 +3344,14 @@ export default api({
       const subjectEngValue = subjectEngUnits > 0
         ? subjectPoolProps.reduce((s, p) => s + p.t12EngPer100 * p.propertyUnitCount, 0) / subjectEngUnits
         : null;
-      // Same "first payment" definition as the peer query's signup_timing CTE: per property,
-      // earliest BP_MONTH (at or after rollout) with BILLS_PAID_COUNT > 0.
+      // Same "first payment" definition as the peer query's signup_timing CTE, and the same
+      // trailing-12mo-rollout scope: Wellington joined 5 years ago, so an all-time average
+      // would be dominated by ancient rollouts and say nothing about how fast NEW properties
+      // get live today. Per property: earliest BP_MONTH (at or after rollout) with
+      // BILLS_PAID_COUNT > 0, but only for properties that rolled out in the last 12 months.
       const subjectSignupTimingValue = (() => {
+        const [cy, cm] = cutoffStr.split("-").map(Number);
+        const rolloutCutoff12mo = new Date(cy, cm - 1 - 12, 1).toISOString().slice(0, 10);
         const byProp = new Map<string, { rollout: string | null; firstPaid: string | null }>();
         for (const r of trendRawRows) {
           const entry = byProp.get(r.PROPERTY_NAME) ?? { rollout: r.ROLLOUT_MONTH, firstPaid: null };
@@ -3338,7 +3363,7 @@ export default api({
         }
         const monthsList: number[] = [];
         for (const { rollout, firstPaid } of byProp.values()) {
-          if (!rollout || !firstPaid) continue;
+          if (!rollout || !firstPaid || rollout < rolloutCutoff12mo) continue;
           const [ry, rm] = rollout.split("-").map(Number);
           const [py, pm] = firstPaid.split("-").map(Number);
           monthsList.push((py - ry) * 12 + (pm - rm));
