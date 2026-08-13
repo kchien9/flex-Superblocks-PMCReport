@@ -3284,15 +3284,29 @@ export default api({
          peer_current AS (
            SELECT t.PMC_NAME,
                   SUM(t.PROPERTY_UNIT_COUNT) AS UNITS,
-                  SUM(t.CHARGED_USERS_COUNT) AS CHARGED_USERS,
-                  -- Portfolio Penetration's denominator (enrolled units / whole-company units).
-                  -- Reuses peer_current's existing peer_latest join instead of Flask's exact
-                  -- BP_MONTH match, which would risk the same stub-month bug fixed elsewhere in
-                  -- this file (Snowflake pre-creates a zeroed row for the in-progress BP month).
-                  MAX(t.HUBSPOT_DEAL_TOTAL_COMPANY_UNITS) AS TOTAL_COMPANY_UNITS
+                  SUM(t.CHARGED_USERS_COUNT) AS CHARGED_USERS
            FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS t
            JOIN peer_latest pl ON t.PMC_NAME = pl.PMC_NAME AND t.BP_MONTH = pl.BP_MONTH
            WHERE t.IS_INTEGRATED_TOTAL = TRUE
+           GROUP BY t.PMC_NAME
+         ),
+         -- Portfolio Penetration's own peer CTE, kept separate from peer_current above.
+         -- Flask's real peer_penetration CTE (generator/data.py:2035-2043) deliberately has
+         -- NO IS_INTEGRATED_TOTAL filter - only HUBSPOT_DEAL_TOTAL_COMPANY_UNITS > 0. Reusing
+         -- peer_current here (an earlier version of this query did) silently added that filter
+         -- back in, which pulled in a different (smaller) peer distribution than Flask's -
+         -- confirmed live: Flask P50/P75 = 46%/87%, ours = 80%/116% on an otherwise-identical
+         -- peer cohort (other metrics' P50s matched almost exactly). Still uses peer_latest's
+         -- per-peer join (not Flask's exact single-calendar-month BP_MONTH = rpt_str match) to
+         -- avoid the stub-month bug fixed elsewhere in this file - that part of the deviation
+         -- is intentional and unrelated to this fix.
+         peer_penetration AS (
+           SELECT t.PMC_NAME,
+                  SUM(t.PROPERTY_UNIT_COUNT) AS PEN_UNITS,
+                  MAX(t.HUBSPOT_DEAL_TOTAL_COMPANY_UNITS) AS PEN_TOTAL_COMPANY_UNITS
+           FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS t
+           JOIN peer_latest pl ON t.PMC_NAME = pl.PMC_NAME AND t.BP_MONTH = pl.BP_MONTH
+           WHERE t.HUBSPOT_DEAL_TOTAL_COMPANY_UNITS > 0
            GROUP BY t.PMC_NAME
          ),
          peer_engagement AS (
@@ -3379,12 +3393,11 @@ export default api({
          FROM signup_timing_pmc
          UNION ALL
          SELECT 'PENETRATION' AS METRIC,
-                PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY UNITS / NULLIF(TOTAL_COMPANY_UNITS, 0)) AS P25,
-                PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY UNITS / NULLIF(TOTAL_COMPANY_UNITS, 0)) AS P50,
-                PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY UNITS / NULLIF(TOTAL_COMPANY_UNITS, 0)) AS P75,
+                PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY PEN_UNITS / NULLIF(PEN_TOTAL_COMPANY_UNITS, 0)) AS P25,
+                PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY PEN_UNITS / NULLIF(PEN_TOTAL_COMPANY_UNITS, 0)) AS P50,
+                PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY PEN_UNITS / NULLIF(PEN_TOTAL_COMPANY_UNITS, 0)) AS P75,
                 NULL AS P90, NULL AS P99, NULL AS PMC_VALUE
-         FROM peer_current
-         WHERE TOTAL_COMPANY_UNITS > 0`,
+         FROM peer_penetration`,
         SegmentPercentilesSchema,
         [
           ...lockedPeers, latestCompletedMonth, latestCompletedMonth, latestCompletedMonth, latestCompletedMonth, latestCompletedMonth,
@@ -3557,6 +3570,17 @@ export default api({
         console.warn(`[PMC Report] subject portfolio-total Salesforce query failed for ${pmc_name}: ${subjectPortfolioTotalError}`);
       }
       const subjectTotalCompanyUnits = subjectPortfolioRow?.TOTAL_COMPANY_UNITS ?? 0;
+      // Numerator: latestMonth.units (IS_IN_NETWORK-filtered), NOT Flask's literal
+      // current["property_unit_count"].sum() (unfiltered df, same missing-filter pattern as
+      // the engagement bug fixed earlier). Verified live for Wellington: Flask's own SFDC
+      // snapshot (ACCOUNT_TOTAL_COMPANY_UNITS / ACCOUNT_FLEX_UNITS = 4,300 / 2,992 = 69.6%)
+      // reconciles almost exactly with this IS_IN_NETWORK-filtered number (68%), while Flask's
+      // compute_benchmark() itself displays 94% - implying an enrolled-units numerator ~1,090
+      // higher than Salesforce's own recorded figure, almost certainly non-in-network rows
+      // leaking into Flask's unfiltered sum. Deliberately NOT matching Flask's literal
+      // behavior here since it demonstrably drifts from ground truth; Flask's own
+      // compute_benchmark should get the equivalent fix (scope current to IS_IN_NETWORK rows)
+      // rather than this side chasing Flask's inflated number.
       const subjectPenetrationValue = subjectTotalCompanyUnits > 0
         ? Math.min((latestMonth?.units ?? 0) / subjectTotalCompanyUnits, 1.0)
         : null;
