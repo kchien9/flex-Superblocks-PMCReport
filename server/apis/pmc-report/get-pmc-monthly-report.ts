@@ -3154,7 +3154,12 @@ export default api({
          peer_current AS (
            SELECT t.PMC_NAME,
                   SUM(t.PROPERTY_UNIT_COUNT) AS UNITS,
-                  SUM(t.CHARGED_USERS_COUNT) AS CHARGED_USERS
+                  SUM(t.CHARGED_USERS_COUNT) AS CHARGED_USERS,
+                  -- Portfolio Penetration's denominator (enrolled units / whole-company units).
+                  -- Reuses peer_current's existing peer_latest join instead of Flask's exact
+                  -- BP_MONTH match, which would risk the same stub-month bug fixed elsewhere in
+                  -- this file (Snowflake pre-creates a zeroed row for the in-progress BP month).
+                  MAX(t.HUBSPOT_DEAL_TOTAL_COMPANY_UNITS) AS TOTAL_COMPANY_UNITS
            FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS t
            JOIN peer_latest pl ON t.PMC_NAME = pl.PMC_NAME AND t.BP_MONTH = pl.BP_MONTH
            WHERE t.IS_INTEGRATED_TOTAL = TRUE
@@ -3232,7 +3237,15 @@ export default api({
                 PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY AVG_MONTHS_TO_SIGNUP) AS P50,
                 PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY AVG_MONTHS_TO_SIGNUP) AS P75,
                 NULL AS P90, NULL AS P99, NULL AS PMC_VALUE
-         FROM signup_timing_pmc`,
+         FROM signup_timing_pmc
+         UNION ALL
+         SELECT 'PENETRATION' AS METRIC,
+                PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY UNITS / NULLIF(TOTAL_COMPANY_UNITS, 0)) AS P25,
+                PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY UNITS / NULLIF(TOTAL_COMPANY_UNITS, 0)) AS P50,
+                PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY UNITS / NULLIF(TOTAL_COMPANY_UNITS, 0)) AS P75,
+                NULL AS P90, NULL AS P99, NULL AS PMC_VALUE
+         FROM peer_current
+         WHERE TOTAL_COMPANY_UNITS > 0`,
         SegmentPercentilesSchema,
         [
           ...lockedPeers, latestCompletedMonth, latestCompletedMonth, latestCompletedMonth, latestCompletedMonth, latestCompletedMonth,
@@ -3332,6 +3345,12 @@ export default api({
         }
         return monthsList.length > 0 ? monthsList.reduce((s, v) => s + v, 0) / monthsList.length : null;
       })();
+      // Flask: pmc_penetration = min(enrolled_units / total_company_units, 1.0) — capped so a
+      // stale/undersized HubSpot total-company-units figure can't produce an impossible >100%.
+      const subjectTotalCompanyUnits = inNetwork.reduce((max, r) => Math.max(max, r.HUBSPOT_DEAL_TOTAL_COMPANY_UNITS ?? 0), 0);
+      const subjectPenetrationValue = subjectTotalCompanyUnits > 0
+        ? Math.min((latestMonth?.units ?? 0) / subjectTotalCompanyUnits, 1.0)
+        : null;
       segmentPercentiles = segmentPercentiles.map((m) => {
         if (m.metric === "NAR" && subjectNarValue != null) return { ...m, pmcValue: subjectNarValue };
         if (m.metric === "NEW_CONNECTIONS" && subjectEngValue != null) return { ...m, pmcValue: subjectEngValue };
@@ -3341,6 +3360,7 @@ export default api({
         // already hides a row whose pmcValue is null, and a 0-month fallback would display as
         // "instant," which is a misleading placeholder, not a real result.
         if (m.metric === "SIGNUP_TIMING") return { ...m, pmcValue: subjectSignupTimingValue, lowerIsBetter: true };
+        if (m.metric === "PENETRATION") return { ...m, pmcValue: subjectPenetrationValue };
         return m;
       });
     }
