@@ -2231,8 +2231,11 @@ export default api({
     // landing on only ~9 peers after cap=30 thinned the pool, small enough that a real 31%-
     // zero-mass population can swing the reported median all the way to 0% by chance. Raised
     // to 45 (9,827 rows, verified this specific tiny-Southeast segment's candidate count grows
-    // from 82 to 121 going 30->45) - still well clear of the confirmed-failing 16,144, and
-    // gives this kind of thin segment a meaningfully more stable sample.
+    // from 82 to 121 going 30->45) - confirmed working in production, 0%-median issue resolved.
+    // Kevin asked to push further for a more compelling sample size generally; raised to 60
+    // (12,648 rows, verified live 4.4s standalone) - this is closer to the confirmed-failing
+    // 16,144 than earlier steps (~78% of the way there vs. ~61% at cap=45), so if this specific
+    // step fails, the real threshold is somewhere between 45 and 60, not further out.
     // TEMPORARY diagnostic — this exact query has failed identically ("IntegrationError code 4")
     // across two substantively different versions now (stratified-with-UDF, then stratified-
     // without-UDF), and Superblocks' error text is too generic to tell whether that's the same
@@ -2241,7 +2244,7 @@ export default api({
     // if the NEXT failure shows this exact string, we know for certain the UDF-free query is
     // really what ran and the problem is something else entirely; if the panel is missing this
     // line or shows old debugInfo shape, the working tree is still stale.
-    const PROPERTY_POOL_SQL_VERSION = "v7-no-udf-stratified-45";
+    const PROPERTY_POOL_SQL_VERSION = "v8-no-udf-stratified-60";
     const PROPERTY_POOL_SQL = `WITH latest AS (
                 SELECT MAX(BP_MONTH) AS bp_month
                 FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS
@@ -2290,7 +2293,7 @@ export default api({
                 FROM agg
              ),
              sampled AS (
-                SELECT * FROM ranked WHERE rn <= 45
+                SELECT * FROM ranked WHERE rn <= 60
              )
              SELECT PMC_NAME, PROPERTY_NAME, PROPERTY_STATE, PROPERTY_UNIT_COUNT,
                     RENT_PAID_AMOUNT, BILLS_PAID_COUNT, ROLLOUT_MONTH, T12_CONNECTIONS,
