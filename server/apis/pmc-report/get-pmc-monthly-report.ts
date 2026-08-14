@@ -2215,13 +2215,15 @@ export default api({
     // confirmed in the debug panel that the UDF-free query genuinely ran and still failed
     // identically. Rules out both the UDF-chain theory (on its own) AND a working-tree sync-lag
     // repeat (the version marker proved the new code was live). What's left: raw row count.
-    // networkPool's own query succeeds reliably at 3,080 rows; this query, even UDF-free, is
-    // still 16,144 rows - over 5x larger. Cutting the per-cell cap from 80 to 15 brings the total
-    // to 3,521 rows, matching networkPool's proven-safe scale almost exactly. This is a real,
-    // meaningful completeness tradeoff (Congaree Villas' 69-row SC cell now retains only 15 of
-    // them, not all 69), prioritizing "working at all" over "as complete as possible" until this
-    // is confirmed to succeed - the cap can be raised again once we know Superblocks' real
-    // threshold for this query shape rather than continuing to guess blind.
+    // networkPool's own query succeeds reliably at 3,080 rows; this query, even UDF-free, was
+    // still 16,144 rows - over 5x larger. Cutting the per-cell cap to 15 (3,521 rows total)
+    // confirmed live: it works. Two real data points now: 3,521 succeeds, 16,144 fails - the
+    // real threshold sits somewhere between them.
+    // Cap=15 was a real completeness cost (Congaree Villas' 69-row SC cell kept only 15 of
+    // them), so once cap=15 was confirmed working, raised it to 30 (6,780 rows, measured 4.4s
+    // standalone) - roughly double the coverage while staying well clear of the confirmed-
+    // failing 16,144. Keep narrowing this range in future passes if more completeness is
+    // wanted; each step should be verified live before shipping, not guessed.
     // TEMPORARY diagnostic — this exact query has failed identically ("IntegrationError code 4")
     // across two substantively different versions now (stratified-with-UDF, then stratified-
     // without-UDF), and Superblocks' error text is too generic to tell whether that's the same
@@ -2230,7 +2232,7 @@ export default api({
     // if the NEXT failure shows this exact string, we know for certain the UDF-free query is
     // really what ran and the problem is something else entirely; if the panel is missing this
     // line or shows old debugInfo shape, the working tree is still stale.
-    const PROPERTY_POOL_SQL_VERSION = "v5-no-udf-stratified-15";
+    const PROPERTY_POOL_SQL_VERSION = "v6-no-udf-stratified-30";
     const PROPERTY_POOL_SQL = `WITH latest AS (
                 SELECT MAX(BP_MONTH) AS bp_month
                 FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS
@@ -2279,7 +2281,7 @@ export default api({
                 FROM agg
              ),
              sampled AS (
-                SELECT * FROM ranked WHERE rn <= 15
+                SELECT * FROM ranked WHERE rn <= 30
              )
              SELECT PMC_NAME, PROPERTY_NAME, PROPERTY_STATE, PROPERTY_UNIT_COUNT,
                     RENT_PAID_AMOUNT, BILLS_PAID_COUNT, ROLLOUT_MONTH, T12_CONNECTIONS,
