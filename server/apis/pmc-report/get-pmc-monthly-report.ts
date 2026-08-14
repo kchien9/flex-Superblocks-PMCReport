@@ -2221,9 +2221,18 @@ export default api({
     // real threshold sits somewhere between them.
     // Cap=15 was a real completeness cost (Congaree Villas' 69-row SC cell kept only 15 of
     // them), so once cap=15 was confirmed working, raised it to 30 (6,780 rows, measured 4.4s
-    // standalone) - roughly double the coverage while staying well clear of the confirmed-
-    // failing 16,144. Keep narrowing this range in future passes if more completeness is
-    // wanted; each step should be verified live before shipping, not guessed.
+    // standalone) - confirmed working in production too.
+    // At cap=30, a real second-order issue surfaced: several tiny (10-20 unit), mature (37+mo)
+    // NC/SC properties (the CumTow sister properties) showed an adoption peer median of exactly
+    // 0.0%, which looked wrong but wasn't fabricated - verified live against the true unsampled
+    // population that ~31% of tiny mature Southeast properties genuinely have zero bills paid
+    // that month (true median across 154 real candidates is ~10%, not 0%). The problem was
+    // sample SIZE, not sample correctness: the region-tier match for these properties was
+    // landing on only ~9 peers after cap=30 thinned the pool, small enough that a real 31%-
+    // zero-mass population can swing the reported median all the way to 0% by chance. Raised
+    // to 45 (9,827 rows, verified this specific tiny-Southeast segment's candidate count grows
+    // from 82 to 121 going 30->45) - still well clear of the confirmed-failing 16,144, and
+    // gives this kind of thin segment a meaningfully more stable sample.
     // TEMPORARY diagnostic — this exact query has failed identically ("IntegrationError code 4")
     // across two substantively different versions now (stratified-with-UDF, then stratified-
     // without-UDF), and Superblocks' error text is too generic to tell whether that's the same
@@ -2232,7 +2241,7 @@ export default api({
     // if the NEXT failure shows this exact string, we know for certain the UDF-free query is
     // really what ran and the problem is something else entirely; if the panel is missing this
     // line or shows old debugInfo shape, the working tree is still stale.
-    const PROPERTY_POOL_SQL_VERSION = "v6-no-udf-stratified-30";
+    const PROPERTY_POOL_SQL_VERSION = "v7-no-udf-stratified-45";
     const PROPERTY_POOL_SQL = `WITH latest AS (
                 SELECT MAX(BP_MONTH) AS bp_month
                 FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS
@@ -2281,7 +2290,7 @@ export default api({
                 FROM agg
              ),
              sampled AS (
-                SELECT * FROM ranked WHERE rn <= 30
+                SELECT * FROM ranked WHERE rn <= 45
              )
              SELECT PMC_NAME, PROPERTY_NAME, PROPERTY_STATE, PROPERTY_UNIT_COUNT,
                     RENT_PAID_AMOUNT, BILLS_PAID_COUNT, ROLLOUT_MONTH, T12_CONNECTIONS,
