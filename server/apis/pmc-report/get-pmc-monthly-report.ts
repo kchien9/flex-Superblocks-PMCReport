@@ -2210,6 +2210,15 @@ export default api({
     // today. This is a real feature loss (a somewhat less precise rent comparison for the
     // fraction of properties that would have hit tier 0), but strictly better than the current
     // state, where propertyPool is empty and NO per-property peer matching works at all.
+    // TEMPORARY diagnostic — this exact query has failed identically ("IntegrationError code 4")
+    // across two substantively different versions now (stratified-with-UDF, then stratified-
+    // without-UDF), and Superblocks' error text is too generic to tell whether that's the same
+    // underlying cost problem persisting or another instance of the working-tree sync-lag that's
+    // hit this session repeatedly. A version marker in the debug panel removes the ambiguity:
+    // if the NEXT failure shows this exact string, we know for certain the UDF-free query is
+    // really what ran and the problem is something else entirely; if the panel is missing this
+    // line or shows old debugInfo shape, the working tree is still stale.
+    const PROPERTY_POOL_SQL_VERSION = "v4-no-udf-stratified-80";
     const PROPERTY_POOL_SQL = `WITH latest AS (
                 SELECT MAX(BP_MONTH) AS bp_month
                 FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS
@@ -4650,6 +4659,7 @@ export default api({
         `_msl (months since launch): ${_msl}`,
         `networkPool.length (raw SQL rows): ${networkPool.length}`,
         `networkPoolError: ${networkPoolError}`,
+        `PROPERTY_POOL_SQL_VERSION: ${PROPERTY_POOL_SQL_VERSION}`,
         `propertyPool.length (raw SQL rows, unsampled): ${propertyPool.length}`,
         `propertyPoolError: ${propertyPoolError}`,
         `networkPoolProps.length (post-filter): ${networkPoolProps.length}`,
