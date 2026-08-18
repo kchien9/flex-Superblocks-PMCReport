@@ -131,20 +131,35 @@ export function renderMarketMap(
   const guarantee: MarketGuarantee = marketAnnualGuarantee(totals, prospectUnits, avgRentInput);
   let guaranteeFootnoteHtml = "";
   if (guarantee.show_guarantee) {
+    // "Your Los Angeles properties" (not "Your portfolio") - this number is scoped to just
+    // this one market, not the prospect's whole company. The cover slide's own guarantee
+    // figure is portfolio-wide and uses a completely different peer-matching basis (comparable
+    // PMCs, not comparable properties in one market) - the two numbers are NOT meant to
+    // reconcile to each other, but "portfolio" here implied whole-company scope when it's
+    // really just this market, which read as a contradiction rather than two intentional
+    // lenses. See the footnote below for the explicit callout.
     bulletsHtml += bullet(
-      "Your portfolio could be guaranteeing",
+      `Your ${escapeHtml(market.label)} properties could be guaranteeing`,
       `${fmtAbbrev(guarantee.annual_guarantee, 1)}/yr`,
       "",
       PROSPECT_GREEN
     );
+    // "properties like yours in this market," not "this market's average rent" - totals
+    // (marketTotals) is built from pullMarketSummary's already rent+size-similarity-filtered
+    // chosenRow, not the unfiltered market_wide numbers, so this fallback rent already reflects
+    // the comparable peer set, not every property in the market regardless of size/rent fit.
     const rentSource = guarantee.avg_rent_is_market_fallback
-      ? "this market's average rent"
+      ? "avg rent of properties like yours in this market"
       : "your average rent input";
     guaranteeFootnoteHtml = `
       <div style="font-size:11px;color:#a09cb0;margin-top:14px;line-height:1.5;">
         Estimated guarantee: your ${prospectUnits.toLocaleString()} units &times; $${guarantee.avg_rent.toLocaleString(undefined, { maximumFractionDigits: 0 })}/mo
         (${rentSource}) &times; ${(avg_adoption * 100).toFixed(1)}% market adoption rate, annualized.
         Actual results will vary.
+      </div>
+      <div style="font-size:11px;color:#a09cb0;margin-top:8px;line-height:1.5;">
+        This reflects your properties in ${escapeHtml(market.label)} only, benchmarked against comparable properties in this specific market &mdash;
+        a different, narrower lens than the portfolio-wide comparison against similar PMCs shown earlier in this deck. Both are real estimates; they're not meant to add up to the same number.
       </div>`;
   }
 
@@ -165,38 +180,6 @@ export function renderMarketMap(
 
   // Legend
   const prospectLabel = prospectPins.length === 1 ? "Your 1 property" : `Your ${prospectPins.length.toLocaleString()} properties`;
-
-  // TEMPORARY diagnostic — Kevin reported the property count still shows the unfiltered
-  // ("all") population even after entering a real avg-rent value. The filtering logic itself
-  // (pullMarketSummary's tier selection) looked correct on read-through, so rather than guess
-  // further, surface exactly what each sub-market DMA resolved to: the avgRentInput this
-  // function actually received, and per-DMA tier/label/pool-size/fallback-reason. If
-  // avgRentInput shows as null/0 here despite Kevin having typed a number, the bug is upstream
-  // (client form state or API input wiring) - if it shows a real number but every DMA still
-  // resolved to "all", the bug is in pullMarketSummary's tier-selection logic itself (e.g. the
-  // MIN_COMPARABLE_PROPERTIES=40 threshold not clearing for this specific market).
-  const debugPanelHtml = `
-    <div style="position:absolute;bottom:8px;left:8px;right:8px;z-index:1001;
-                font-family:monospace;font-size:10px;color:#1D1D1D;">
-      <div onclick="this.nextElementSibling.style.display = this.nextElementSibling.style.display === 'none' ? 'block' : 'none';"
-           style="display:inline-block;background:#fff3cd;border:1px solid #ffe69c;border-radius:6px;
-                  padding:2px 8px;cursor:pointer;font-weight:700;">DEBUG (temporary) — click to expand</div>
-      <div style="display:none;max-height:200px;overflow-y:auto;line-height:1.5;
-                  background:#fff3cd;border:1px solid #ffe69c;border-radius:6px;padding:8px 10px;
-                  white-space:pre-wrap;margin-top:2px;">${escapeHtml(
-        [
-          `avgRentInput received by renderMarketMap: ${avgRentInput}`,
-          `market.sub_markets: ${market.sub_markets.join(", ")}`,
-          ...market.sub_markets.map((dma) => {
-            const s = summaryByDma[dma]?.similarity;
-            const allCount = summaryByDma[dma]?.total_properties ?? 0;
-            return s
-              ? `  ${dma}: tier=${s.tier} label="${s.label}" pool_properties=${s.pool_properties} is_fallback=${s.is_fallback} unknown_rent_properties=${s.unknown_rent_properties} rent_band=[${Math.round(s.rent_low)}, ${Math.round(s.rent_high)}]`
-              : `  ${dma}: similarity=null (avgRent was 0/falsy for this DMA's pullMarketSummary call) total_properties=${allCount}`;
-          }),
-        ].join("\n")
-      )}</div>
-    </div>`;
 
   const html = `
   <style>
@@ -222,7 +205,6 @@ export function renderMarketMap(
       ${bulletsHtml}
       ${guaranteeFootnoteHtml}
     </div>
-    ${debugPanelHtml}
   </div>`;
 
   // Serialize pin data for JS

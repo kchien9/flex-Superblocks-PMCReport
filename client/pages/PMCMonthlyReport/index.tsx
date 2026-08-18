@@ -154,10 +154,13 @@ export default function PMCMonthlyReportPage() {
 
   const deckLabel = activeTab === "qbr" ? "report" : activeTab === "new_logo" ? "prospect deck" : "expansion deck";
 
-  // Log geocode diagnostic to browser console for debugging
+  // Log geocode + upload-parsing diagnostics to browser console for debugging
   useEffect(() => {
     if (effectiveProspectData?.geocode_diagnostic) {
       console.log("[GEOCODE DIAGNOSTIC]", JSON.stringify(effectiveProspectData.geocode_diagnostic, null, 2));
+    }
+    if (effectiveProspectData?.upload_diagnostic) {
+      console.log("[UPLOAD PARSE DIAGNOSTIC]", JSON.stringify(effectiveProspectData.upload_diagnostic, null, 2));
     }
   }, [effectiveProspectData]);
 

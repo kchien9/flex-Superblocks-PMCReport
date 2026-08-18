@@ -21,6 +21,26 @@ export interface ParsedProperty {
   csvState?: string;
 }
 
+/** TEMPORARY diagnostic — surfaces exactly what parsePropertyUpload actually saw/matched, so a
+ * units total that doesn't match a manual count (or a units column that silently isn't found)
+ * is visible instead of guessed at. Kevin reported the export's own "# of Units" column sums to
+ * ~837 by hand but the app computed 617 for the same market. */
+export interface UploadParseDiagnostic {
+  headers_seen: string[];
+  address_col: string | null;
+  street_col: string | null;
+  city_col: string | null;
+  state_col: string | null;
+  zip_col: string | null;
+  units_col: string | null;
+  name_col: string | null;
+  rows_in_sheet: number;
+  rows_parsed: number;
+  rows_dropped_no_address: number;
+  rows_trimmed_by_max_properties: number;
+  total_units_parsed: number;
+}
+
 export interface GeocodedProperty extends ParsedProperty {
   lat: number;
   lon: number;
@@ -246,9 +266,18 @@ function findColumn(headers: string[], ...keywords: string[]): string | null {
   return null;
 }
 
-/** Parse property rows from raw upload data. */
-export function parsePropertyUpload(rows: Record<string, string>[]): ParsedProperty[] {
-  if (rows.length === 0) return [];
+/** Parse property rows from raw upload data. Returns the parsed properties plus a diagnostic
+ * of exactly what columns were detected/used, so a units total that looks wrong is traceable
+ * instead of guessed at. */
+export function parsePropertyUpload(
+  rows: Record<string, string>[]
+): { properties: ParsedProperty[]; diagnostic: UploadParseDiagnostic } {
+  const emptyDiagnostic: UploadParseDiagnostic = {
+    headers_seen: [], address_col: null, street_col: null, city_col: null, state_col: null,
+    zip_col: null, units_col: null, name_col: null, rows_in_sheet: 0, rows_parsed: 0,
+    rows_dropped_no_address: 0, rows_trimmed_by_max_properties: 0, total_units_parsed: 0,
+  };
+  if (rows.length === 0) return { properties: [], diagnostic: emptyDiagnostic };
 
   const headers = Object.keys(rows[0]);
   const addressCol = findColumn(headers, "address");
@@ -260,6 +289,7 @@ export function parsePropertyUpload(rows: Record<string, string>[]): ParsedPrope
   const nameCol = findColumn(headers, "property name", "property", "name");
 
   const properties: ParsedProperty[] = [];
+  let droppedNoAddress = 0;
 
   for (const row of rows) {
     let address = "";
@@ -275,7 +305,7 @@ export function parsePropertyUpload(rows: Record<string, string>[]): ParsedPrope
       address = parts.join(", ");
     }
 
-    if (!address) continue;
+    if (!address) { droppedNoAddress++; continue; }
 
     const units = unitsCol ? parseUnits(row[unitsCol]) : 0;
     const property_name = nameCol ? (row[nameCol] || "").trim() : "";
@@ -293,13 +323,36 @@ export function parsePropertyUpload(rows: Record<string, string>[]): ParsedPrope
     });
   }
 
+  const rowsParsedBeforeTrim = properties.length;
+  const totalUnitsParsed = properties.reduce((s, p) => s + p.units, 0);
+
   // Trim to MAX_PROPERTIES by unit count
+  let trimmedCount = 0;
+  let finalProperties = properties;
   if (properties.length > MAX_PROPERTIES) {
     properties.sort((a, b) => b.units - a.units);
-    return properties.slice(0, MAX_PROPERTIES);
+    trimmedCount = properties.length - MAX_PROPERTIES;
+    finalProperties = properties.slice(0, MAX_PROPERTIES);
   }
 
-  return properties;
+  return {
+    properties: finalProperties,
+    diagnostic: {
+      headers_seen: headers,
+      address_col: addressCol,
+      street_col: streetCol,
+      city_col: cityCol,
+      state_col: stateCol,
+      zip_col: zipCol,
+      units_col: unitsCol,
+      name_col: nameCol,
+      rows_in_sheet: rows.length,
+      rows_parsed: rowsParsedBeforeTrim,
+      rows_dropped_no_address: droppedNoAddress,
+      rows_trimmed_by_max_properties: trimmedCount,
+      total_units_parsed: totalUnitsParsed,
+    },
+  };
 }
 
 function parseUnits(val: string | undefined | null): number {
@@ -312,7 +365,7 @@ function parseUnits(val: string | undefined | null): number {
 export async function parseUpload(
   content: string,
   filename: string
-): Promise<ParsedProperty[]> {
+): Promise<{ properties: ParsedProperty[]; diagnostic: UploadParseDiagnostic }> {
   const ext = filename.toLowerCase().split(".").pop() || "";
   let rows: Record<string, string>[];
 
