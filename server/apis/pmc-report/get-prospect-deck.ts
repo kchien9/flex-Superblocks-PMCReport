@@ -1,4 +1,4 @@
-import { api, z, snowflake } from "@superblocksteam/sdk-api";
+import { api, z, snowflake, restApiIntegration } from "@superblocksteam/sdk-api";
 import {
   renderProspectCover,
   renderEmbedActivation,
@@ -44,6 +44,12 @@ import { renderMarketMap } from "./market-map-slides.js";
 import { buildProspectSpeakerNotesHtml } from "./speaker-notes.js";
 
 const SNOWFLAKE_ID = "d38ee94a-4e93-46f5-ab44-c65a99b3aea5";
+// "Census Geocoder" REST API integration, configured in Superblocks' Integrations panel.
+// Replaces the raw fetch() calls market-map-geocode.ts used to make directly, which failed
+// with "ReferenceError: fetch is not defined" - this server runtime has no global fetch,
+// same as every other external call in this codebase (Snowflake, Salesforce, Notion,
+// Anthropic all go through ctx.integrations.X too).
+const CENSUS_GEOCODER_ID = "3d0e85c7-61d4-402f-bf97-64a3428c15a4";
 const TBL = "PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS";
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -147,6 +153,7 @@ export default api({
 
   integrations: {
     snowflake_sso: snowflake(SNOWFLAKE_ID),
+    census: restApiIntegration(CENSUS_GEOCODER_ID),
   },
 
   input: z.object({
@@ -233,7 +240,7 @@ export default api({
         } else {
           // Geocode all addresses
           const addresses = parsed.map(p => p.address);
-          const { results: geoResults, diagnostic } = await geocodeAddressesConcurrent(addresses);
+          const { results: geoResults, diagnostic } = await geocodeAddressesConcurrent(addresses, ctx.integrations.census);
           geocodeDiagnostic = diagnostic;
 
           // Count geocoding success/failure
