@@ -87,7 +87,7 @@ export default function PMCMonthlyReportPage() {
       prospect_name: state.prospect_account,
       units,
       state: stateVal,
-      pms: state.pms || null,
+      pms: null,
       segment: null as string | null,
       asset_subtypes: assetSubtypes.length > 0 ? assetSubtypes : null,
       avg_rent: state.avg_monthly_rent ? parseFloat(state.avg_monthly_rent) : null,

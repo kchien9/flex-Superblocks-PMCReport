@@ -100,8 +100,6 @@ export interface NewLogoFormState {
   total_units: string;
   states: string;
 
-  pms: string;
-  presenting_to: string;
   portfolio_type: string;
   property_type: string;
   portfolio_footprint: string;
@@ -124,14 +122,12 @@ export function NewLogoTab({ generating, onGenerate }: NewLogoTabProps) {
   const [totalUnits, setTotalUnits] = useState("");
   const [states, setStates] = useState("");
 
-  const [pms, setPms] = useState("");
-  const [presentingTo, setPresentingTo] = useState("general");
   const [portfolioType, setPortfolioType] = useState("multi_family");
   const [propertyType, setPropertyType] = useState("conventional");
   const [portfolioFootprint, setPortfolioFootprint] = useState("not_specified");
 
   const [avgMonthlyRent, setAvgMonthlyRent] = useState("");
-  const [delivery, setDelivery] = useState("sharing");
+  const [delivery, setDelivery] = useState("presenting");
   const [selectedSlides, setSelectedSlides] = useState<Set<string>>(() => defaultSlideSet(NEW_LOGO_SLIDES));
   const [testimonials, setTestimonials] = useState<Testimonial[]>([]);
   const [propertyListFile, setPropertyListFile] = useState<File | null>(null);
@@ -142,7 +138,6 @@ export function NewLogoTab({ generating, onGenerate }: NewLogoTabProps) {
     setProspectAccount(result.account_name);
     if (result.total_units) setTotalUnits(String(result.total_units));
     if (result.state) setStates(result.state);
-    if (result.pms) setPms(result.pms);
     if (result.portfolio_type) {
       const ptMap: Record<string, string> = {
         "Multi Family": "multi_family",
@@ -189,8 +184,6 @@ export function NewLogoTab({ generating, onGenerate }: NewLogoTabProps) {
       prospect_account: prospectAccount,
       total_units: totalUnits,
       states,
-      pms,
-      presenting_to: presentingTo,
       portfolio_type: portfolioType,
       property_type: propertyType,
       portfolio_footprint: portfolioFootprint,
@@ -204,30 +197,33 @@ export function NewLogoTab({ generating, onGenerate }: NewLogoTabProps) {
         ? propertyListFile.name.replace(/\.(xlsx|xls)$/i, ".csv")
         : null,
     });
-  }, [prospectAccount, totalUnits, states, pms, presentingTo, portfolioType, propertyType, portfolioFootprint, avgMonthlyRent, delivery, selectedSlides, testimonials, propertyListCsv, propertyListFile, onGenerate]);
+  }, [prospectAccount, totalUnits, states, portfolioType, propertyType, portfolioFootprint, avgMonthlyRent, delivery, selectedSlides, testimonials, propertyListCsv, propertyListFile, onGenerate]);
 
   const inputCls = "w-full px-3 py-2 text-sm border border-gray-200 rounded-[4px] focus:outline-none focus:ring-2 focus:ring-[#6A3DB8]/30 focus:border-[#6A3DB8]";
   const selectCls = `${inputCls} bg-white`;
 
   return (
     <div className="space-y-4">
-      {/* Prospect Account search */}
-      <ProspectSearch onSelect={handleProspectSelect} />
+      {/* Prospect Account — only required field */}
+      <div>
+        <ProspectSearch onSelect={handleProspectSelect} />
+        <p className="text-[10px] text-red-500 mt-0.5 font-medium">* Required</p>
+      </div>
 
-      {/* Auto-populated editable fields */}
-      <div className="grid grid-cols-2 gap-3">
-        <div>
-          <label className="block text-xs font-medium text-gray-600 mb-1.5">Total Units</label>
-          <input type="number" value={totalUnits} onChange={(e) => setTotalUnits(e.target.value)} placeholder="—" className={inputCls} />
+      {/* Auto-populated overrides */}
+      <div>
+        <div className="flex items-baseline gap-1 mb-1.5">
+          <label className="block text-xs font-medium text-gray-600">Total Units</label>
+          <span className="text-[10px] text-gray-400">override — auto-fills from Salesforce</span>
         </div>
-        <div>
-          <label className="block text-xs font-medium text-gray-600 mb-1.5">PMS</label>
-          <input type="text" value={pms} onChange={(e) => setPms(e.target.value)} placeholder="e.g. Yardi, RealPage" className={inputCls} />
-        </div>
+        <input type="number" value={totalUnits} onChange={(e) => setTotalUnits(e.target.value)} placeholder="—" className={inputCls} />
       </div>
 
       <div>
-        <label className="block text-xs font-medium text-gray-600 mb-1.5">State(s)</label>
+        <div className="flex items-baseline gap-1 mb-1.5">
+          <label className="block text-xs font-medium text-gray-600">State(s)</label>
+          <span className="text-[10px] text-gray-400">auto-derived from property list upload</span>
+        </div>
         {propertyListFile ? (
           <div className="relative">
             <input type="text" value={states} readOnly className={`${inputCls} bg-gray-50 text-gray-400 cursor-not-allowed`} />
@@ -243,24 +239,12 @@ export function NewLogoTab({ generating, onGenerate }: NewLogoTabProps) {
       {/* Dropdowns */}
       <div className="grid grid-cols-2 gap-3">
         <div>
-          <label className="block text-xs font-medium text-gray-600 mb-1.5">Presenting To</label>
-          <select value={presentingTo} onChange={(e) => setPresentingTo(e.target.value)} className={selectCls}>
-            <option value="general">General audience</option>
-            <option value="cfo">CFO/VP Finance</option>
-            <option value="coo">COO/VP Ops</option>
-            <option value="regional">Regional/Property Manager</option>
-          </select>
-        </div>
-        <div>
           <label className="block text-xs font-medium text-gray-600 mb-1.5">Portfolio Type</label>
           <select value={portfolioType} onChange={(e) => setPortfolioType(e.target.value)} className={selectCls}>
             <option value="multi_family">Multi Family</option>
             <option value="single_family">Single Family</option>
           </select>
         </div>
-      </div>
-
-      <div className="grid grid-cols-2 gap-3">
         <div>
           <label className="block text-xs font-medium text-gray-600 mb-1.5">Property Type</label>
           <select value={propertyType} onChange={(e) => setPropertyType(e.target.value)} className={selectCls}>
@@ -271,22 +255,26 @@ export function NewLogoTab({ generating, onGenerate }: NewLogoTabProps) {
             <option value="senior">Senior Housing</option>
           </select>
         </div>
-        <div>
-          <label className="block text-xs font-medium text-gray-600 mb-1.5">Portfolio Footprint</label>
-          <select value={portfolioFootprint} onChange={(e) => setPortfolioFootprint(e.target.value)} className={selectCls}>
-            <option value="not_specified">Not specified</option>
-            <option value="single_market">Single Market</option>
-            <option value="regional">Regional</option>
-            <option value="multi_state">Multi-State</option>
-            <option value="national">National</option>
-          </select>
+      </div>
+
+      <div>
+        <div className="flex items-baseline gap-1 mb-1.5">
+          <label className="block text-xs font-medium text-gray-600">Portfolio Footprint</label>
+          <span className="text-[10px] text-gray-400">optional — auto-derived from state(s)</span>
         </div>
+        <select value={portfolioFootprint} onChange={(e) => setPortfolioFootprint(e.target.value)} className={selectCls}>
+          <option value="not_specified">Not specified</option>
+          <option value="single_market">Single Market</option>
+          <option value="regional">Regional</option>
+          <option value="multi_state">Multi-State</option>
+          <option value="national">National</option>
+        </select>
       </div>
 
       <div>
         <div className="flex items-baseline gap-1 mb-1.5">
           <label className="block text-xs font-medium text-gray-600">Avg Monthly Rent</label>
-          <span className="text-[10px] text-gray-400">opt</span>
+          <span className="text-[10px] text-gray-400">optional — defaults to matched peer group's median</span>
         </div>
         <input type="number" min={0} value={avgMonthlyRent} onChange={(e) => setAvgMonthlyRent(e.target.value)} placeholder="Peer median"
           className={inputCls} />

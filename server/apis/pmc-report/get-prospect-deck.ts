@@ -1479,9 +1479,12 @@ export default api({
         // Pull summaries for all qualifying DMAs (with similarity filtering)
         const allDmas = [...new Set(markets.flatMap(m => m.sub_markets))];
         const summaryByDma: Record<string, MarketSummary> = {};
+        // Use peer median rent as fallback when user hasn't typed a value, so
+        // Market Map's similarity filter stays consistent with the main benchmark calc.
+        const effectiveRentForMap = avgRentInput || benchmarks.median_avg_rent || 0;
         for (const dma of allDmas) {
           summaryByDma[dma] = await pullMarketSummary(dma, bpMonth, yearStart, ctx.integrations.snowflake_sso, {
-            avgRent: avgRentInput || 0,
+            avgRent: effectiveRentForMap,
             avgUnitsPerProperty,
           });
         }

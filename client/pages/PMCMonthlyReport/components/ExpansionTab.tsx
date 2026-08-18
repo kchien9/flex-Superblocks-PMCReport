@@ -45,7 +45,7 @@ export function ExpansionTab({ pmcNames, pmcLoading, generating, onGenerate }: E
   const [ownershipReportName, setOwnershipReportName] = useState("");
   const [reviewPeriod, setReviewPeriod] = useState("full");
   const [comparisonMonths, setComparisonMonths] = useState(3);
-  const [delivery, setDelivery] = useState("sharing");
+  const [delivery, setDelivery] = useState("presenting");
   const [selectedSlides, setSelectedSlides] = useState<Set<string>>(() => defaultSlideSet(EXPANSION_SLIDES));
   // Fixed — the picker for this was removed (server never reads it; the Peer Benchmarks slide
   // has its own inline toggle), but selected_metrics stays in the payload shape unchanged.
