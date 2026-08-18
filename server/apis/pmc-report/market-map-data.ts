@@ -837,10 +837,20 @@ export function filterPinsNearAny<T extends { lat: number; lon: number }>(
   referencePins: Array<{ lat: number; lon: number }>,
   maxMiles = 35
 ): T[] {
-  if (referencePins.length === 0) return pins;
+  // Must check for VALID (finite) reference pins, not just a non-empty array. If every
+  // referencePin has NaN coordinates (e.g. an upload where every address failed geocoding -
+  // see assignMarkets' NaN sentinel for failed geocodes), referencePins.length is still > 0,
+  // so the old `=== 0` check never caught this: haversineMiles against NaN always returns NaN,
+  // and `NaN <= maxMiles` is always false, so EVERY network pin silently got filtered out even
+  // though the pool of real matches (confirmed via pullMarketSummary) was healthy. Filter to
+  // finite references first, then fall back to unfiltered pins if none survive - showing the
+  // real Flex network for this market is strictly better than showing nothing just because we
+  // don't know exactly where the prospect's own properties are.
+  const validReferences = referencePins.filter(r => Number.isFinite(r.lat) && Number.isFinite(r.lon));
+  if (validReferences.length === 0) return pins;
   return pins.filter(p =>
     Number.isFinite(p.lat) && Number.isFinite(p.lon) &&
-    referencePins.some(r => haversineMiles(p.lat, p.lon, r.lat, r.lon) <= maxMiles)
+    validReferences.some(r => haversineMiles(p.lat, p.lon, r.lat, r.lon) <= maxMiles)
   );
 }
 

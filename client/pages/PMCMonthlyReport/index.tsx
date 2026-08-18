@@ -180,9 +180,15 @@ export default function PMCMonthlyReportPage() {
     if (effectiveProspectData.market_map_warning) flags.push(effectiveProspectData.market_map_warning);
     const gd = effectiveProspectData.geocode_diagnostic;
     if (gd && gd.failed > 0) {
-      flags.push(
-        `${gd.failed} of ${gd.total} uploaded addresses could not be geocoded and won't appear as pins on the Market Map (property/unit counts are unaffected).`
-      );
+      const allFailed = gd.failed === gd.total;
+      let msg = `${gd.failed} of ${gd.total} uploaded addresses could not be geocoded and won't appear as pins on the Market Map (property/unit counts are unaffected).`;
+      if (allFailed) {
+        msg += " Every address failed - check the upload's address format (needs a full street address, or Street/City/State/Zip columns).";
+      }
+      if (gd.errors && gd.errors.length > 0) {
+        msg += ` First error: ${gd.errors[0]}`;
+      }
+      flags.push(msg);
     }
     return {
       html,
