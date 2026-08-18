@@ -46,6 +46,9 @@ import GetProspectDeck from './pmc-report/get-prospect-deck.js';
 import SetupUsageTable from './usage/setup-table.js';
 import LogUsageEvent from './usage/log-event.js';
 import GetUsageStats from './usage/get-stats.js';
+import SetupFeedbackTable from './feedback/setup-table.js';
+import SubmitFeedback from './feedback/submit.js';
+import GetFeedback from './feedback/get-all.js';
 
 const apis = {
   SetupContentLibrary,
@@ -81,6 +84,9 @@ const apis = {
   SetupUsageTable,
   LogUsageEvent,
   GetUsageStats,
+  SetupFeedbackTable,
+  SubmitFeedback,
+  GetFeedback,
 } as const;
 
 export default apis;

@@ -23,6 +23,13 @@ function escapeHtml(s: string): string {
     .replace(/"/g, "&quot;");
 }
 
+/** Convert "LOS ANGELES" → "Los Angeles", preserving short words like "of", "the" in lowercase. */
+function titleCase(s: string): string {
+  return s
+    .toLowerCase()
+    .replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
 function fmtAbbrev(v: number, decimals = 0): string {
   const trim = (s: string) => {
     if (decimals > 0 && s.includes(".")) return s.replace(/0+$/, "").replace(/\.$/, "");
@@ -143,7 +150,7 @@ export function renderMarketMap(
     // really just this market, which read as a contradiction rather than two intentional
     // lenses. See the footnote below for the explicit callout.
     bulletsHtml += bullet(
-      `Your ${escapeHtml(market.label)} properties could be guaranteeing`,
+      `Your ${escapeHtml(titleCase(market.label))} properties could be guaranteeing`,
       `${fmtAbbrev(guarantee.annual_guarantee, 1)}/yr`,
       "",
       PROSPECT_GREEN
@@ -162,7 +169,7 @@ export function renderMarketMap(
         Actual results will vary.
       </div>
       <div style="font-size:11px;color:#a09cb0;margin-top:8px;line-height:1.5;">
-        This reflects your properties in ${escapeHtml(market.label)} only, benchmarked against comparable properties in this specific market &mdash;
+        This reflects your properties in ${escapeHtml(titleCase(market.label))} only, benchmarked against comparable properties in this specific market &mdash;
         a different, narrower lens than the portfolio-wide comparison against similar PMCs shown earlier in this deck. Both are real estimates; they're not meant to add up to the same number.
       </div>`;
   }

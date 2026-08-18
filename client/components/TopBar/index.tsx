@@ -16,6 +16,7 @@ const pageTitles: Record<string, string> = {
   "/opportunity-data-quality": "Opp Data Quality",
   "/pitch-prep": "PitchPrep",
   "/pmc-monthly-report": "PMC Report",
+  "/feedback": "Feedback",
 };
 
 export default function TopBar() {

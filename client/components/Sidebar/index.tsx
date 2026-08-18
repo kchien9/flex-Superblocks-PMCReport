@@ -15,6 +15,7 @@ type NavItem = {
 const settingsSubItems: NavItem[] = [
   { label: "User Management", icon: "users", path: "/user-management" },
   { label: "Permissions", icon: "shield", path: "/permissions" },
+  { label: "Feedback", icon: "message-square", path: "/feedback" },
   { label: "Audit Log", icon: "list", path: "/audit-log" },
   { label: "Module Registry", icon: "layout-grid", path: "/module-registry" },
   { label: "Skills Registry", icon: "zap", path: "/skills-registry" },

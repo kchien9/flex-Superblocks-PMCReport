@@ -6,6 +6,7 @@ import { Toaster } from "./components/common/sonner";
 import Sidebar from "./components/Sidebar";
 import TopBar from "./components/TopBar";
 import ImpersonationBanner from "./components/ImpersonationBanner";
+import FeedbackWidget from "./components/FeedbackWidget";
 import { ImpersonationProvider } from "./context/ImpersonationContext";
 import { PermissionsProvider } from "./context/PermissionsContext";
 
@@ -39,6 +40,7 @@ export default function AppComponent() {
         </ImpersonationProvider>
         </PermissionsProvider>
       </AppProvider>
+      <FeedbackWidget />
       <Toaster />
     </>
   );

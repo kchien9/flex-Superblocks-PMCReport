@@ -123,6 +123,14 @@ export const router = createBrowserRouter([
           }),
       },
       {
+        path: "/feedback",
+        lazy: () =>
+          import("./pages/Feedback/index.js").then((mod) => {
+            const Component = mod.default;
+            return { Component };
+          }),
+      },
+      {
         path: "*",
         Component: () => {
           const currentPath = window.location.pathname;
