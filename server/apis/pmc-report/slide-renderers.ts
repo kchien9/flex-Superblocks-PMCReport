@@ -1010,10 +1010,13 @@ export function renderPropertiesWorthCelebrating(input: {
   // 0%-adoption laggard was invisible on both slides purely for being under the 10-unit floor.
   const { established, portfolioAvgNar, portfolioAvgEng } = buildEstablishedPool(propertySnapshot);
 
-  // Top performers: above portfolio average by a meaningful margin
-  // Flask: impact_score = property_unit_count * outperformance (units × how much above target)
-  // "the biggest, most replicable wins surface first — not just whichever single small property
-  //  happens to have the highest raw NAR"
+  // Top performers: above portfolio average by a meaningful margin. Selection (which
+  // properties make the top-12 pool) still uses impact_score = units × outperformance -
+  // Flask: "the biggest, most replicable wins surface first - not just whichever single small
+  // property happens to have the highest raw NAR." Display order is separate: sorted by
+  // observed adoption rate, highest to lowest (Kevin's ask, mirroring the identical fix on
+  // Flask's render_properties_worth_celebrating) - a straight adoption-rate sort BEFORE the
+  // slice would have changed which 12 properties get selected, not just their order.
   const celebrationDf = established
     .filter((p) => p.adoptionRate > portfolioAvgNar)
     .sort((a, b) => {
@@ -1021,7 +1024,8 @@ export function renderPropertiesWorthCelebrating(input: {
       const bImpact = b.units * (b.adoptionRate - portfolioAvgNar);
       return bImpact - aImpact;
     })
-    .slice(0, 12);
+    .slice(0, 12)
+    .sort((a, b) => b.adoptionRate - a.adoptionRate);
 
   if (celebrationDf.length === 0) return { html: "", js: "" };
 
@@ -1277,6 +1281,13 @@ export function renderAdoptionOpportunities(input: {
     totalShown++;
     laggards.push(r);
   }
+
+  // Display order is separate from selection order: `ranked`'s priority sort (narGap, then
+  // isZero/noD2c/opportunityScore) decided WHICH properties made it into `laggards` via the
+  // capping loop above - that must stay untouched. For display, re-sort the already-selected
+  // set by observed adoption rate, highest to lowest (Kevin's ask, mirroring the identical fix
+  // on Flask's render_adoption_opportunities).
+  laggards.sort((a, b) => b.p.adoptionRate - a.p.adoptionRate);
 
   // ── Disabled Properties ─────────────────────────────────────────────────
   const disabledRowsHtml = disabledProperties.map((d) => `
