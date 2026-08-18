@@ -138,8 +138,11 @@ export function QBRTab({ pmcNames, pmcLoading, generating, onGenerate }: QBRTabP
       {/* PMC Mode */}
       {reportBasis === "pmc" && (
         <>
-          {/* PMC Search */}
-          <PMCSearch label="PMC" placeholder="Search for a PMC..." value={selectedPMC} onChange={setSelectedPMC} pmcNames={pmcNames} loading={pmcLoading} />
+          {/* PMC Search — required */}
+          <div>
+            <PMCSearch label="PMC" placeholder="Search for a PMC..." value={selectedPMC} onChange={setSelectedPMC} pmcNames={pmcNames} loading={pmcLoading} />
+            <p className="text-[10px] text-red-500 mt-0.5 font-medium">* Required</p>
+          </div>
 
           {/* Second PMC */}
           {!showSecondPMC ? (

@@ -207,7 +207,7 @@ export function ResultsPanel({ generating, reportData, delivery, deckLabel, erro
       {/* Iframe */}
       <iframe
         srcDoc={reportData.html}
-        className="flex-1 w-full border-0"
+        className="flex-1 w-full border-0 min-h-[60vh]"
         sandbox="allow-scripts allow-same-origin allow-downloads allow-popups allow-presentation"
         allowFullScreen
         title="Report Deck"

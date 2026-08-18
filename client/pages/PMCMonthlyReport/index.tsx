@@ -245,7 +245,7 @@ export default function PMCMonthlyReportPage() {
 
     {/* ─── Below: Results (fills remaining space) ──────────────────────── */}
     {(isGenerating || currentReportData || !!currentError) && (
-        <div className="min-h-[600px] flex flex-col">
+        <div className="min-h-[75vh] flex flex-col">
           <ResultsPanel
             generating={isGenerating}
             reportData={currentReportData ?? null}

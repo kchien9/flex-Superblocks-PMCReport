@@ -72,16 +72,22 @@ export function ExpansionTab({ pmcNames, pmcLoading, generating, onGenerate }: E
 
   return (
     <div className="space-y-4">
-      {/* PMC Search — existing customers only */}
-      <PMCSearch label="Property Management Company" placeholder="Search existing Flex customers..." value={selectedPMC} onChange={setSelectedPMC} pmcNames={pmcNames} loading={pmcLoading} />
+      {/* PMC Search — required */}
+      <div>
+        <PMCSearch label="Property Management Company" placeholder="Search existing Flex customers..." value={selectedPMC} onChange={setSelectedPMC} pmcNames={pmcNames} loading={pmcLoading} />
+        <p className="text-[10px] text-red-500 mt-0.5 font-medium">* Required</p>
+      </div>
 
       {/* Total Portfolio Units */}
       <div>
-        <label className="block text-xs font-medium text-gray-600 mb-1.5">Total Portfolio Units</label>
+        <div className="flex items-baseline gap-1 mb-1.5">
+          <label className="block text-xs font-medium text-gray-600">Total Portfolio Units</label>
+          <span className="text-[10px] text-gray-400">override — auto-fills from Salesforce</span>
+        </div>
         <input type="number" min={0} value={totalPortfolioUnits} onChange={(e) => setTotalPortfolioUnits(e.target.value)}
-          placeholder="Full portfolio size from ALN/Salesforce"
+          placeholder="Pulls from Salesforce automatically"
           className={inputCls} />
-        <p className="text-[10px] text-gray-400 mt-1">Includes properties not yet on Flex</p>
+        <p className="text-[10px] text-gray-400 mt-1">Only override if the Salesforce value is incorrect</p>
       </div>
 
       {/* Cross-PMC Properties (collapsed behind link) */}
