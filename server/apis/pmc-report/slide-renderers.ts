@@ -3134,7 +3134,11 @@ export function renderQbrClose(input: QbrCloseInput): SlideResult {
   let win1Head: string, win1Body: string;
   if (nearP75) {
     win1Head = `Top-quartile adoption at ${narPct}`;
-    win1Body = `Your adoption rate puts you in the top 25% across the Flex network. Residents are finding value and coming back - that's the signal.`;
+    // "across your peer group," not "across the Flex network" - nearP75/bNar come from the
+    // same geo/size/rent/tenure-matched peer benchmark the other branches here correctly call
+    // "peer median" - claiming network-wide overstated what this number actually measures
+    // (Kevin's catch, mirrored from the identical fix in Flask's render_qbr_close).
+    win1Body = `Your adoption rate puts you in the top 25% across your peer group. Residents are finding value and coming back - that's the signal.`;
   } else if (aboveMedian) {
     win1Head = `Above-average adoption at ${narPct}`;
     win1Body = `Peer median is ${bPct}. You're above it - room to grow by driving activation at lower-performing properties.`;
