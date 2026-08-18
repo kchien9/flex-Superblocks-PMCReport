@@ -28,13 +28,22 @@ function _fmt(v: number, decimals = 0): string {
   };
   if (v >= 1_000_000_000) return `$${trim((v / 1_000_000_000).toFixed(decimals))}B`;
   if (v >= 1_000_000) return `$${trim((v / 1_000_000).toFixed(decimals))}M`;
-  if (v >= 1_000) return `$${trim((v / 1_000).toFixed(decimals))}K`;
+  if (v >= 1_000) {
+    // Guard against rounding producing "1000K" when the value is just under 1M
+    const scaled = (v / 1_000).toFixed(decimals);
+    if (parseFloat(scaled) >= 1_000) return `$${trim((v / 1_000_000).toFixed(1))}M`;
+    return `$${trim(scaled)}K`;
+  }
   return `$${trim(v.toFixed(decimals))}`;
 }
 
 function _fmtHero(v: number): string {
   if (v >= 1_000_000) return `$${(v / 1_000_000).toFixed(1)}M`;
-  if (v >= 1_000) return `$${(v / 1_000).toFixed(0)}K`;
+  if (v >= 1_000) {
+    const scaled = (v / 1_000).toFixed(0);
+    if (parseFloat(scaled) >= 1_000) return `$${(v / 1_000_000).toFixed(1)}M`;
+    return `$${scaled}K`;
+  }
   return `$${Math.round(v).toLocaleString()}`;
 }
 

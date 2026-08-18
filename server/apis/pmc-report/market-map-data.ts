@@ -264,9 +264,18 @@ export function parsePropertyUpload(rows: Record<string, string>[]): ParsedPrope
   for (const row of rows) {
     let address = "";
     if (addressCol && row[addressCol]?.trim()) {
-      address = row[addressCol].trim();
+      // "Address" column exists — but Census geocoder needs a FULL address
+      // (street + city + state + zip) to resolve reliably. If city/state/zip
+      // are available in separate columns, append them so the geocoder gets
+      // e.g. "4600 Silver Hill Rd, Washington, DC 20233" instead of just
+      // "4600 Silver Hill Rd".
+      const parts: string[] = [row[addressCol].trim()];
+      if (cityCol && row[cityCol]?.trim()) parts.push(row[cityCol].trim());
+      if (stateCol && row[stateCol]?.trim()) parts.push(row[stateCol].trim());
+      if (zipCol && row[zipCol]?.trim()) parts.push(row[zipCol].trim());
+      address = parts.join(", ");
     } else {
-      // Build from components
+      // Build from components (street + city + state + zip)
       const parts: string[] = [];
       if (streetCol && row[streetCol]?.trim()) parts.push(row[streetCol].trim());
       if (cityCol && row[cityCol]?.trim()) parts.push(row[cityCol].trim());
