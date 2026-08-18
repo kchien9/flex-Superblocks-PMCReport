@@ -39,6 +39,7 @@ import {
   type SimilarityInfo,
   type ProspectPin,
   type NetworkPin,
+  type UploadParseDiagnostic,
 } from "./market-map-data.js";
 import { renderMarketMap } from "./market-map-slides.js";
 import { buildProspectSpeakerNotesHtml } from "./speaker-notes.js";
@@ -204,6 +205,24 @@ export default api({
       nominatim_hits: z.number(),
       errors: z.array(z.string()),
     }).nullable(),
+    // TEMPORARY diagnostic — traces exactly which columns parsePropertyUpload matched and the
+    // resulting units total, so a units sum that doesn't match a manual count is traceable
+    // instead of guessed at (console-logged client-side, same as geocode_diagnostic).
+    upload_diagnostic: z.object({
+      headers_seen: z.array(z.string()),
+      address_col: z.string().nullable(),
+      street_col: z.string().nullable(),
+      city_col: z.string().nullable(),
+      state_col: z.string().nullable(),
+      zip_col: z.string().nullable(),
+      units_col: z.string().nullable(),
+      name_col: z.string().nullable(),
+      rows_in_sheet: z.number(),
+      rows_parsed: z.number(),
+      rows_dropped_no_address: z.number(),
+      rows_trimmed_by_max_properties: z.number(),
+      total_units_parsed: z.number(),
+    }).nullable(),
   }),
 
   async run(ctx, input) {
@@ -231,10 +250,12 @@ export default api({
     let marketMapWarning: string | null = null;
     let derivedStates: string[] = [];
     let geocodeDiagnostic: GeocodeDiagnostic | null = null;
+    let uploadDiagnostic: UploadParseDiagnostic | null = null;
 
     if (property_list_csv && property_list_filename) {
       try {
-        const parsed = await parseUpload(property_list_csv, property_list_filename);
+        const { properties: parsed, diagnostic: parseDiag } = await parseUpload(property_list_csv, property_list_filename);
+        uploadDiagnostic = parseDiag;
         if (parsed.length === 0) {
           marketMapWarning = "Property list upload was empty or could not be parsed. Market maps skipped.";
         } else {
@@ -550,6 +571,7 @@ export default api({
         default_hidden_slides: [],
         market_map_warning: marketMapWarning,
         geocode_diagnostic: geocodeDiagnostic,
+        upload_diagnostic: uploadDiagnostic,
       };
     }
 
@@ -562,6 +584,7 @@ export default api({
         default_hidden_slides: [],
         market_map_warning: marketMapWarning,
         geocode_diagnostic: geocodeDiagnostic,
+        upload_diagnostic: uploadDiagnostic,
       };
     }
 
@@ -1676,6 +1699,7 @@ export default api({
       default_hidden_slides: defaultHiddenSlides,
       market_map_warning: marketMapWarning,
       geocode_diagnostic: geocodeDiagnostic,
+      upload_diagnostic: uploadDiagnostic,
     };
   },
 });
