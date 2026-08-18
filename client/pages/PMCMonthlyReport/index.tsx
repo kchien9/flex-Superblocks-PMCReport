@@ -170,7 +170,27 @@ export default function PMCMonthlyReportPage() {
       defaultHiddenSlides: effectiveProspectData.default_hidden_slides || [],
       pdfFilename: effectiveProspectData.slides.length > 0 ? "prospect_deck" : undefined,
     });
-    return { html, empty: false, emailDraft: effectiveProspectData.email_draft || undefined, notes_html: effectiveProspectData.notes_html || undefined };
+    // market_map_warning and geocode_diagnostic were both computed server-side but never
+    // surfaced anywhere the user could actually see (market_map_warning wasn't read at all;
+    // geocode_diagnostic only went to the browser console via the effect above) - reusing the
+    // same flags[] mechanism QBR already uses for "Pre-meeting flags" so a bad property-list
+    // upload (e.g. addresses that fail to geocode) is visible on the report itself instead of
+    // silently producing a Market Map slide that just looks broken with no explanation.
+    const flags: string[] = [];
+    if (effectiveProspectData.market_map_warning) flags.push(effectiveProspectData.market_map_warning);
+    const gd = effectiveProspectData.geocode_diagnostic;
+    if (gd && gd.failed > 0) {
+      flags.push(
+        `${gd.failed} of ${gd.total} uploaded addresses could not be geocoded and won't appear as pins on the Market Map (property/unit counts are unaffected).`
+      );
+    }
+    return {
+      html,
+      empty: false,
+      flags: flags.length > 0 ? flags : undefined,
+      emailDraft: effectiveProspectData.email_draft || undefined,
+      notes_html: effectiveProspectData.notes_html || undefined,
+    };
   }, [effectiveProspectData]);
 
   // Pick the right data/error/generating state based on active tab

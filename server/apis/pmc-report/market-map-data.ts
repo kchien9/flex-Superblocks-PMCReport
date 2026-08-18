@@ -376,8 +376,22 @@ export async function assignMarkets(
       property_name: p.property_name,
       address: p.address,
       units: p.units,
-      lat: p.lat ?? 0,
-      lon: p.lon ?? 0,
+      // `?? 0` used to silently place any property whose geocoding failed at (0, 0) — the
+      // Gulf of Guinea, a real but completely wrong location that still passes
+      // Number.isFinite(). If MULTIPLE properties in one upload all fail geocoding (e.g. a
+      // batch of malformed/unrecognized addresses), they'd all stack on that exact point:
+      // the map zooms to open ocean (shows as solid blue, looking like tiles aren't loading),
+      // and every real nearby network pin gets filtered out by filterPinsNearAny's 35-mile
+      // radius since the "reference" point is thousands of miles from the real market.
+      // NaN is the correct sentinel here instead: pinsCentroid, filterPinsByDistance, and
+      // filterPinsNearAny (market-map-data.ts) already explicitly filter to
+      // Number.isFinite(lat/lon) before using coordinates, and the client-side pin renderer
+      // (market-map-slides.ts's isFinitePin) already does the same — NaN correctly drops
+      // these properties from the MAP (no pin plotted, since we don't know where they are)
+      // without touching their unit/property counts anywhere else, and with zero changes
+      // needed to any of that already-correct downstream filtering.
+      lat: p.lat ?? NaN,
+      lon: p.lon ?? NaN,
       zip: effectiveZip,
       state: effectiveState,
       dma: zipToDma[effectiveZip] || "Unknown",
