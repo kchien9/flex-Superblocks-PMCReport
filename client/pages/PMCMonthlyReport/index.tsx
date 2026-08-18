@@ -204,7 +204,7 @@ export default function PMCMonthlyReportPage() {
         </div>
 
         {/* Tab content */}
-        <div className="p-5 max-w-4xl">
+        <div className="p-5 max-w-6xl">
           {activeTab === "qbr" && (
             <QBRTab pmcNames={pmcNames} pmcLoading={pmcLoading} generating={generating} onGenerate={handleQBRGenerate} />
           )}

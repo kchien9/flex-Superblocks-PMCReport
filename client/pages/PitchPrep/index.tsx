@@ -508,7 +508,7 @@ export default function PitchPrep() {
       >
         {/* Step 1: Meeting Prep */}
         {activeTab === 0 && (
-          <section className="max-w-2xl">
+          <section className="max-w-5xl">
             {/* Selected account summary (collapsed view) */}
             {selectedAccount ? (
               <div className="flex items-center justify-between px-4 py-3 rounded-lg border border-[#00c896] bg-[#00c896]/5 mb-8">
@@ -607,7 +607,7 @@ export default function PitchPrep() {
 
         {/* Step 2: Account Intel */}
         {activeTab === 1 && (
-          <section className="max-w-4xl">
+          <section className="max-w-6xl">
             <h2 className="text-lg font-semibold text-gray-900 mb-1">Account Intelligence</h2>
             <p className="text-sm text-gray-500 mb-6">
               AI-powered research on {selectedAccount?.Name || "your account"}.
@@ -647,7 +647,7 @@ export default function PitchPrep() {
 
         {/* Step 3: Pre-Call Brief */}
         {activeTab === 2 && (
-          <section className="pitch-prep-brief-print max-w-4xl">
+          <section className="pitch-prep-brief-print max-w-6xl">
             <h2 className="text-lg font-semibold text-gray-900 mb-1 pitch-prep-hide-print">Pre-Call Brief</h2>
             <p className="text-sm text-gray-500 mb-6 pitch-prep-hide-print">
               Your rep-ready brief for {selectedAccount?.Name || "this account"}.
@@ -686,7 +686,7 @@ export default function PitchPrep() {
         {/* Step 4: Pitch Practice — HIDDEN (In Development) */}
         {/* To re-enable: uncomment tab id:3 in TABS array and restore this section */}
         {false && activeTab === 3 && (
-          <section className="max-w-4xl">
+          <section className="max-w-6xl">
             <h2 className="text-lg font-semibold text-gray-900 mb-1">Pitch Practice</h2>
             <p className="text-sm text-gray-500 mb-4">
               Roleplay your call with an AI prospect. Practice makes perfect.
