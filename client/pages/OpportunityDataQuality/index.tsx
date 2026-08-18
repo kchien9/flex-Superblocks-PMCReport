@@ -1,6 +1,7 @@
 import { useState, useMemo, useEffect, useRef } from "react";
 import { useApiData } from "@/hooks/useApiData.js";
 import { useApi } from "@/hooks/useApi.js";
+import { useUsageTracking } from "@/hooks/useUsageTracking";
 import TeamCard from "@/components/OpportunityDQ/TeamCard";
 import RankedRepTable from "@/components/OpportunityDQ/RankedRepTable";
 import WeekOverWeekChart from "@/components/OpportunityDQ/WeekOverWeekChart";
@@ -38,6 +39,8 @@ function weightedAvg(reps: Rep[]): number {
 }
 
 export default function OpportunityDataQualityPage() {
+  useUsageTracking("Opp Data Quality", { trackPageView: true });
+
   const [view, setView] = useState<ViewMode>("sales");
   const { data, loading, fetching } = useApiData("GetOpportunityDQLive", {});
   const { data: historyData, loading: historyLoading } = useApiData("GetOpportunityDQHistory", {});

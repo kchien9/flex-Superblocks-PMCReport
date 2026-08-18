@@ -2,6 +2,7 @@ import { useState, useCallback, useMemo, useEffect } from "react";
 import { useNavigate } from "react-router";
 import { useApiData } from "@/hooks/useApiData.js";
 import { useApi } from "@/hooks/useApi.js";
+import { useUsageTracking } from "@/hooks/useUsageTracking";
 import { FilterBar } from "@/components/PSMDashboard/FilterBar";
 import { SettingsModal, DEFAULT_SETTINGS, type DashboardSettings } from "@/components/PSMDashboard/SettingsModal";
 import { AccountCard, AccountCardSkeleton, type AccountData, type ActionItem } from "@/components/PSMDashboard/AccountCard";
@@ -13,6 +14,8 @@ const MONTH_NAMES = [
 ];
 
 export default function PSMDashboardPage() {
+  useUsageTracking("PSM Dashboard", { trackPageView: true });
+
   const navigate = useNavigate();
   const [settings, setSettings] = useState<DashboardSettings>(DEFAULT_SETTINGS);
   const [showSettings, setShowSettings] = useState(false);

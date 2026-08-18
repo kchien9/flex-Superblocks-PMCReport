@@ -19,7 +19,8 @@ import {
   type EditorConfig,
 } from "@superblocksteam/library";
 
-import { useIsMobile } from "@/components/hooks/use-mobile";
+// useIsMobile stub — this component is unused in the app
+const useIsMobile = () => false;
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
