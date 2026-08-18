@@ -1,5 +1,6 @@
 import { useState, useCallback, useEffect, useMemo } from "react";
 import { useApiData } from "@/hooks/useApiData.js";
+import { useUsageTracking } from "@/hooks/useUsageTracking";
 import { useCountUp } from "../../hooks/useCountUp";
 import { RefreshCw, TrendingUp } from "lucide-react";
 
@@ -296,6 +297,8 @@ function LoadingSkeleton() {
 
 // --- Main Page ---
 export default function Leaderboard() {
+  useUsageTracking("Leaderboard", { trackPageView: true });
+
   const [period, setPeriod] = useState<string>("This Month");
   const [team, setTeam] = useState<string>("All Teams");
 

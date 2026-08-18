@@ -12,12 +12,10 @@
  * IMPORTANT: Use .js extension for imports (required for ESM compatibility)
  */
 
-import TestSnowflakeConnection from './snowflake/test-connection.js';
 import SetupContentLibrary from './content-library/setup.js';
 import GetContentLibrary from './content-library/get-all.js';
 import UpdateContentDocument from './content-library/update.js';
-import GetContextDocument from './content-library/get-document.js';
-import InsertContentDocument from './content-library/insert.js';
+
 import GetPSMNARData from './psm-dashboard/get-nar-data.js';
 import GeneratePSMActionItems from './psm-dashboard/generate-action-items.js';
 import GetPSMList from './psm-dashboard/get-psm-list.js';
@@ -25,12 +23,10 @@ import SetupSkillRegistry from './skills-registry/setup.js';
 import GetSkillRegistry from './skills-registry/get-all.js';
 import UpdateSkill from './skills-registry/update.js';
 import InsertSkill from './skills-registry/insert.js';
-import GetDashboardKPIs from './dashboard/get-kpis.js';
 import GetPMCPropertyDetail from './psm-dashboard/get-pmc-property-detail.js';
 import GetPMCSupportHealth from './psm-dashboard/get-pmc-support-health.js';
 import GetLeaderboardClosedWon from './leaderboard/get-closed-won.js';
 import GetLeaderboardPipeline from './leaderboard/get-pipeline.js';
-import GetDashboardPipelineData from './dashboard/get-pipeline-data.js';
 import GetPMCTicketList from './psm-dashboard/get-pmc-ticket-list.js';
 import SetupAuditTables from './audit/setup-tables.js';
 import GetOpportunityDQLive from './opportunity-dq/get-live.js';
@@ -47,14 +43,14 @@ import GetPMCMonthlyReport from './pmc-report/get-pmc-monthly-report.js';
 import GetPMCTestimonials from './pmc-report/get-pmc-testimonials.js';
 import SearchProspectAccounts from './pmc-report/search-prospect-accounts.js';
 import GetProspectDeck from './pmc-report/get-prospect-deck.js';
+import SetupUsageTable from './usage/setup-table.js';
+import LogUsageEvent from './usage/log-event.js';
+import GetUsageStats from './usage/get-stats.js';
 
 const apis = {
-  TestSnowflakeConnection,
   SetupContentLibrary,
   GetContentLibrary,
   UpdateContentDocument,
-  GetContextDocument,
-  InsertContentDocument,
   GetPSMNARData,
   GeneratePSMActionItems,
   GetPSMList,
@@ -62,12 +58,10 @@ const apis = {
   GetSkillRegistry,
   UpdateSkill,
   InsertSkill,
-  GetDashboardKPIs,
   GetPMCPropertyDetail,
   GetPMCSupportHealth,
   GetLeaderboardClosedWon,
   GetLeaderboardPipeline,
-  GetDashboardPipelineData,
   GetPMCTicketList,
   SetupAuditTables,
   GetOpportunityDQLive,
@@ -84,6 +78,9 @@ const apis = {
   GetPMCTestimonials,
   SearchProspectAccounts,
   GetProspectDeck,
+  SetupUsageTable,
+  LogUsageEvent,
+  GetUsageStats,
 } as const;
 
 export default apis;

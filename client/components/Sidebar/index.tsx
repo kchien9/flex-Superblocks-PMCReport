@@ -39,7 +39,7 @@ export default function Sidebar() {
 
   // Check if a module is visible for the current role based on saved permissions
   const isModuleVisible = (moduleName: string) => {
-    if (moduleName === "Dashboard") return true; // Dashboard always visible
+    if (moduleName === "Home") return true; // Home always visible
     return savedPermissions[moduleName]?.[currentRole] ?? true;
   };
 
@@ -99,16 +99,42 @@ export default function Sidebar() {
 
       {/* Navigation */}
       <nav className="flex-1 flex flex-col gap-1 px-2">
-        {/* Dashboard */}
+        {/* Home */}
         <button
           onClick={() => navigate("/")}
           className={`flex items-center gap-3 px-3 py-2 rounded-md text-sm font-normal transition-colors w-full text-left
             ${location.pathname === "/" ? "bg-white/15 border-l-2 border-white text-white" : "text-white/80 border-l-2 border-transparent hover:bg-white/[0.08]"}
           `}
-          title={collapsed ? "Dashboard" : undefined}
+          title={collapsed ? "Home" : undefined}
         >
-          <Icon icon="layout-grid" className="w-4 h-4 flex-shrink-0 text-white" />
-          {!collapsed && <span className="whitespace-nowrap">Dashboard</span>}
+          <Icon icon="home" className="w-4 h-4 flex-shrink-0 text-white" />
+          {!collapsed && <span className="whitespace-nowrap">Home</span>}
+        </button>
+
+        {/* Leaderboard - only shown if permitted */}
+        {showLeaderboard && (
+        <button
+          onClick={() => navigate("/leaderboard")}
+          className={`flex items-center gap-3 px-3 py-2 rounded-md text-sm font-normal transition-colors w-full text-left
+            ${location.pathname === "/leaderboard" ? "bg-white/15 border-l-2 border-white text-white" : "text-white/80 border-l-2 border-transparent hover:bg-white/[0.08]"}
+          `}
+          title={collapsed ? "Leaderboard" : undefined}
+        >
+          <Icon icon="trophy" className="w-4 h-4 flex-shrink-0 text-white" />
+          {!collapsed && <span className="whitespace-nowrap">Leaderboard</span>}
+        </button>
+        )}
+
+        {/* Opportunity Data Quality */}
+        <button
+          onClick={() => navigate("/opportunity-data-quality")}
+          className={`flex items-center gap-3 px-3 py-2 rounded-md text-sm font-normal transition-colors w-full text-left
+            ${location.pathname === "/opportunity-data-quality" ? "bg-white/15 border-l-2 border-white text-white" : "text-white/80 border-l-2 border-transparent hover:bg-white/[0.08]"}
+          `}
+          title={collapsed ? "Opp Data Quality" : undefined}
+        >
+          <Icon icon="badge-check" className="w-4 h-4 flex-shrink-0 text-white" />
+          {!collapsed && <span className="whitespace-nowrap">Opp Data Quality</span>}
         </button>
 
         {/* Pricing Calculator - only shown if permitted */}
@@ -122,20 +148,6 @@ export default function Sidebar() {
         >
           <Icon icon="calculator" className="w-4 h-4 flex-shrink-0 text-white" />
           {!collapsed && <span className="whitespace-nowrap">Pricing Calculator</span>}
-        </button>
-        )}
-
-        {/* Leaderboard - only shown if permitted */}
-        {showLeaderboard && (
-        <button
-          onClick={() => navigate("/leaderboard")}
-          className={`flex items-center gap-3 px-3 py-2 rounded-md text-sm font-normal transition-colors w-full text-left
-            ${location.pathname === "/leaderboard" ? "bg-white/15 border-l-2 border-white text-white" : "text-white/80 border-l-2 border-transparent hover:bg-white/[0.08]"}
-          `}
-          title={collapsed ? "Leaderboard" : undefined}
-        >
-          <Icon icon="trophy" className="w-4 h-4 flex-shrink-0 text-white" />
-          {!collapsed && <span className="whitespace-nowrap">Leaderboard</span>}
         </button>
         )}
 
@@ -177,18 +189,6 @@ export default function Sidebar() {
         )}
         </>
         )}
-
-        {/* Opportunity Data Quality */}
-        <button
-          onClick={() => navigate("/opportunity-data-quality")}
-          className={`flex items-center gap-3 px-3 py-2 rounded-md text-sm font-normal transition-colors w-full text-left
-            ${location.pathname === "/opportunity-data-quality" ? "bg-white/15 border-l-2 border-white text-white" : "text-white/80 border-l-2 border-transparent hover:bg-white/[0.08]"}
-          `}
-          title={collapsed ? "Opp Data Quality" : undefined}
-        >
-          <Icon icon="badge-check" className="w-4 h-4 flex-shrink-0 text-white" />
-          {!collapsed && <span className="whitespace-nowrap">Opp Data Quality</span>}
-        </button>
 
         {/* PMC Monthly Report */}
         <button

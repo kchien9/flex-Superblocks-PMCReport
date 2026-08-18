@@ -3,7 +3,7 @@ import { useSuperblocksUser } from "@superblocksteam/library";
 import { Icon } from "@/components/ui/icon";
 
 const pageTitles: Record<string, string> = {
-  "/": "Dashboard",
+  "/": "Home",
   "/pricing-calculator": "Pricing Calculator",
   "/leaderboard": "Leaderboard",
   "/psm-dashboard": "PSM Dashboard",
@@ -13,6 +13,9 @@ const pageTitles: Record<string, string> = {
   "/module-registry": "Module Registry",
   "/skills-registry": "Skills Registry",
   "/content-library": "Content Library",
+  "/opportunity-data-quality": "Opp Data Quality",
+  "/pitch-prep": "PitchPrep",
+  "/pmc-monthly-report": "PMC Report",
 };
 
 export default function TopBar() {

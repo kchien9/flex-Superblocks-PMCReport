@@ -1,6 +1,8 @@
-import { useState, useCallback, useRef, useMemo, useEffect } from "react";
+import { useCallback, useRef, useMemo, useEffect } from "react";
+import { useSessionState } from "@/hooks/useSessionState";
 import { useApiData } from "@/hooks/useApiData.js";
 import { useApi } from "@/hooks/useApi.js";
+import { useUsageTracking } from "@/hooks/useUsageTracking";
 import { QBRTab, type QBRFormState } from "./components/QBRTab.js";
 import { NewLogoTab, type NewLogoFormState } from "./components/NewLogoTab.js";
 import { ExpansionTab, type ExpansionFormState } from "./components/ExpansionTab.js";
@@ -16,8 +18,10 @@ const TABS: { id: TabId; label: string }[] = [
 ];
 
 export default function PMCMonthlyReportPage() {
-  const [activeTab, setActiveTab] = useState<TabId>("qbr");
-  const [delivery, setDelivery] = useState("sharing");
+  const { track } = useUsageTracking("PMC Report", { trackPageView: true });
+
+  const [activeTab, setActiveTab] = useSessionState<TabId>("pmcreport:activeTab", "qbr");
+  const [delivery, setDelivery] = useSessionState<string>("pmcreport:delivery", "sharing");
 
   // ─── API Hooks ──────────────────────────────────────────────────────────────
   const { data: pmcData, loading: pmcLoading } = useApiData("GetPMCNames", {});
@@ -25,6 +29,23 @@ export default function PMCMonthlyReportPage() {
   const { run: generateProspectDeck, loading: prospectGenerating, data: prospectData, error: prospectError } = useApi("GetProspectDeck");
   const lastArgsRef = useRef<Parameters<typeof generateReport>[0] | null>(null);
   const lastProspectArgsRef = useRef<Parameters<typeof generateProspectDeck>[0] | null>(null);
+
+  // ─── Session-cached report outputs ─────────────────────────────────────────
+  const [cachedReportData, setCachedReportData] = useSessionState<any>("pmcreport:reportData", null);
+  const [cachedProspectData, setCachedProspectData] = useSessionState<any>("pmcreport:prospectData", null);
+
+  // Sync fresh API results into session cache
+  useEffect(() => {
+    if (reportData) setCachedReportData(reportData);
+  }, [reportData, setCachedReportData]);
+
+  useEffect(() => {
+    if (prospectData) setCachedProspectData(prospectData);
+  }, [prospectData, setCachedProspectData]);
+
+  // Use fresh data if available, otherwise fall back to cached
+  const effectiveReportData = reportData ?? cachedReportData;
+  const effectiveProspectData = prospectData ?? cachedProspectData;
 
   const pmcNames = pmcData?.pmcNames ?? [];
 
@@ -47,10 +68,11 @@ export default function PMCMonthlyReportPage() {
     lastArgsRef.current = args;
     try {
       await generateReport(args);
+      track("report_generated", { deck_mode: "qbr", pmc_name: args.pmc_name });
     } catch {
       // Error is in useApi state
     }
-  }, [generateReport]);
+  }, [generateReport, track]);
 
   const handleNewLogoGenerate = useCallback(async (state: NewLogoFormState) => {
     setDelivery(state.delivery);
@@ -83,10 +105,11 @@ export default function PMCMonthlyReportPage() {
     lastProspectArgsRef.current = args;
     try {
       await generateProspectDeck(args);
+      track("report_generated", { deck_mode: "new_logo", prospect: args.prospect_name });
     } catch {
       // Error is in useApi state
     }
-  }, [generateProspectDeck]);
+  }, [generateProspectDeck, track]);
 
   const handleExpansionGenerate = useCallback(async (state: ExpansionFormState) => {
     setDelivery(state.delivery);
@@ -107,10 +130,11 @@ export default function PMCMonthlyReportPage() {
     lastArgsRef.current = args;
     try {
       await generateReport(args);
+      track("report_generated", { deck_mode: "expansion", pmc_name: args.pmc_name });
     } catch {
       // Error is in useApi state
     }
-  }, [generateReport]);
+  }, [generateReport, track]);
 
   const handleRetry = useCallback(async () => {
     if (activeTab === "new_logo" && lastProspectArgsRef.current) {
@@ -132,27 +156,27 @@ export default function PMCMonthlyReportPage() {
 
   // Log geocode diagnostic to browser console for debugging
   useEffect(() => {
-    if (prospectData?.geocode_diagnostic) {
-      console.log("[GEOCODE DIAGNOSTIC]", JSON.stringify(prospectData.geocode_diagnostic, null, 2));
+    if (effectiveProspectData?.geocode_diagnostic) {
+      console.log("[GEOCODE DIAGNOSTIC]", JSON.stringify(effectiveProspectData.geocode_diagnostic, null, 2));
     }
-  }, [prospectData]);
+  }, [effectiveProspectData]);
 
   // Normalize prospect deck response into ResultsPanel format
   const normalizedProspectData = useMemo(() => {
-    if (!prospectData) return null;
-    if (prospectData.error) return { html: "", empty: false, flags: [], emailDraft: prospectData.email_draft || "" };
-    if (!prospectData.slides || prospectData.slides.length === 0) return { html: "", empty: true };
-    const html = wrapSlidesHtml(prospectData.slides, {
-      defaultHiddenSlides: prospectData.default_hidden_slides || [],
-      pdfFilename: prospectData.slides.length > 0 ? "prospect_deck" : undefined,
+    if (!effectiveProspectData) return null;
+    if (effectiveProspectData.error) return { html: "", empty: false, flags: [], emailDraft: effectiveProspectData.email_draft || "" };
+    if (!effectiveProspectData.slides || effectiveProspectData.slides.length === 0) return { html: "", empty: true };
+    const html = wrapSlidesHtml(effectiveProspectData.slides, {
+      defaultHiddenSlides: effectiveProspectData.default_hidden_slides || [],
+      pdfFilename: effectiveProspectData.slides.length > 0 ? "prospect_deck" : undefined,
     });
-    return { html, empty: false, emailDraft: prospectData.email_draft || undefined, notes_html: prospectData.notes_html || undefined };
-  }, [prospectData]);
+    return { html, empty: false, emailDraft: effectiveProspectData.email_draft || undefined, notes_html: effectiveProspectData.notes_html || undefined };
+  }, [effectiveProspectData]);
 
   // Pick the right data/error/generating state based on active tab
   const isGenerating = activeTab === "new_logo" ? prospectGenerating : generating;
-  const currentReportData = activeTab === "new_logo" ? normalizedProspectData : reportData;
-  const currentError = activeTab === "new_logo" ? (prospectData?.error || prospectError) : reportError;
+  const currentReportData = activeTab === "new_logo" ? normalizedProspectData : effectiveReportData;
+  const currentError = activeTab === "new_logo" ? (effectiveProspectData?.error || prospectError) : reportError;
 
   return (
     <div className="flex-1 flex flex-col overflow-y-auto bg-white">
@@ -180,7 +204,7 @@ export default function PMCMonthlyReportPage() {
         </div>
 
         {/* Tab content */}
-        <div className="p-5 max-w-4xl">
+        <div className="p-5 max-w-6xl">
           {activeTab === "qbr" && (
             <QBRTab pmcNames={pmcNames} pmcLoading={pmcLoading} generating={generating} onGenerate={handleQBRGenerate} />
           )}

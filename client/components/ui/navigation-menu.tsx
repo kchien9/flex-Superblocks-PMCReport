@@ -13,7 +13,8 @@ import {
   type EditorConfig,
 } from "@superblocksteam/library";
 
-import { useActivePage } from "@/components/hooks/use-active-page";
+// useActivePage stub — this component is unused in the app
+const useActivePage = () => ({ isPageActive: (_path: string) => false });
 import { Icon } from "@/components/ui/icon";
 import { cn } from "@/lib/utils";
 

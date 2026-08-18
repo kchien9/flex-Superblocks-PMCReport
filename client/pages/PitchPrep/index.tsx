@@ -1,6 +1,8 @@
 import { useState, useCallback, useEffect, useRef } from "react";
+import { useSessionState, clearSessionNamespace } from "@/hooks/useSessionState";
 import { useApi } from "@/hooks/useApi.js";
 import { executeApi } from "@/lib/executeApi.js";
+import { useUsageTracking } from "@/hooks/useUsageTracking";
 import { toast } from "sonner";
 import { Icon } from "@/components/ui/icon";
 import AccountSearchResult from "@/components/PitchPrep/AccountSearchResult";
@@ -67,7 +69,7 @@ const TABS = [
   { id: 0, label: "1 · Meeting Prep" },
   { id: 1, label: "2 · Account Intel" },
   { id: 2, label: "3 · Pre-Call Brief" },
-  { id: 3, label: "4 · Pitch Practice" },
+  // { id: 3, label: "4 · Pitch Practice" }, // Hidden — In Development
 ] as const;
 
 /** Tries the live Notion KB fetch; falls back to static export if it fails or returns too little. */
@@ -110,13 +112,20 @@ interface SFClosedLost {
 }
 
 export default function PitchPrep() {
-  // Tab / step flow state
-  const [activeTab, setActiveTab] = useState(0);
-  const [completedSteps, setCompletedSteps] = useState<Set<number>>(new Set());
+  const { track } = useUsageTracking("PitchPrep", { trackPageView: true });
 
-  // Meeting Prep state
-  const [companySearch, setCompanySearch] = useState("");
-  const [searchResults, setSearchResults] = useState<Account[] | null>(null);
+  // Tab / step flow state (persisted)
+  const [activeTab, setActiveTab] = useSessionState<number>("pitchprep:activeTab", 0);
+  const [completedStepsArr, setCompletedStepsArr] = useSessionState<number[]>("pitchprep:completedSteps", []);
+  // Derived Set for convenience; update via the array setter
+  const completedSteps = new Set(completedStepsArr);
+  const setCompletedSteps = useCallback((updater: (prev: Set<number>) => Set<number>) => {
+    setCompletedStepsArr((prev) => [...updater(new Set(prev))]);
+  }, [setCompletedStepsArr]);
+
+  // Meeting Prep state (persisted)
+  const [companySearch, setCompanySearch] = useSessionState<string>("pitchprep:companySearch", "");
+  const [searchResults, setSearchResults] = useSessionState<Account[] | null>("pitchprep:searchResults", null);
   const { run: searchAccounts, loading: searching } = useApi("SearchSalesforceAccounts");
 
   // RunResearch API
@@ -125,22 +134,22 @@ export default function PitchPrep() {
   // GenerateBrief API
   const { run: generateBrief, loading: briefGenerating } = useApi("GenerateBrief");
 
-  // Page-level state variables
-  const [selectedAccount, setSelectedAccount] = useState<Account | null>(null);
-  const [researchData, setResearchData] = useState<Record<string, any> | null>(null);
-  const [researchError, setResearchError] = useState<string | null>(null);
-  const [briefData, setBriefData] = useState<Record<string, any> | null>(null);
-  const [briefText, setBriefText] = useState("");
-  const [briefError, setBriefError] = useState<string | null>(null);
-  const [dealContext, setDealContext] = useState<Record<string, any> | null>(null);
+  // Page-level state variables (persisted)
+  const [selectedAccount, setSelectedAccount] = useSessionState<Account | null>("pitchprep:selectedAccount", null);
+  const [researchData, setResearchData] = useSessionState<Record<string, any> | null>("pitchprep:researchData", null);
+  const [researchError, setResearchError] = useSessionState<string | null>("pitchprep:researchError", null);
+  const [briefData, setBriefData] = useSessionState<Record<string, any> | null>("pitchprep:briefData", null);
+  const [briefText, setBriefText] = useSessionState<string>("pitchprep:briefText", "");
+  const [briefError, setBriefError] = useSessionState<string | null>("pitchprep:briefError", null);
+  const [dealContext, setDealContext] = useSessionState<Record<string, any> | null>("pitchprep:dealContext", null);
   const [searchError, setSearchError] = useState<string | null>(null);
   const [isSalesforceAuthError, setIsSalesforceAuthError] = useState(false);
 
-  // SF enrichment state
-  const [sfActivities, setSfActivities] = useState<SFActivity[]>([]);
-  const [sfOpenOpportunities, setSfOpenOpportunities] = useState<SFOpportunity[]>([]);
-  const [sfClosedLost, setSfClosedLost] = useState<SFClosedLost[]>([]);
-  const [sfDataGaps, setSfDataGaps] = useState<string[]>([]);
+  // SF enrichment state (persisted)
+  const [sfActivities, setSfActivities] = useSessionState<SFActivity[]>("pitchprep:sfActivities", []);
+  const [sfOpenOpportunities, setSfOpenOpportunities] = useSessionState<SFOpportunity[]>("pitchprep:sfOpenOpps", []);
+  const [sfClosedLost, setSfClosedLost] = useSessionState<SFClosedLost[]>("pitchprep:sfClosedLost", []);
+  const [sfDataGaps, setSfDataGaps] = useSessionState<string[]>("pitchprep:sfDataGaps", []);
 
   // Knowledge base builder with 30-minute TTL cache
   const kbRef = useRef<{ text: string; fetchedAt: number }>({ text: "", fetchedAt: 0 });
@@ -244,6 +253,7 @@ export default function PitchPrep() {
             next.add(1);
             return next;
           });
+          track("research_generated", { account: selectedAccount?.Name ?? "" });
           // Pre-warm KB and auto-fire brief generation in background
           buildKnowledgeBase();
         }
@@ -348,6 +358,7 @@ export default function PitchPrep() {
           next.add(2);
           return next;
         });
+        track("brief_generated", { account: selectedAccount?.Name ?? "" });
       }
     } catch (error) {
       briefFiredRef.current = false; // Allow retry
@@ -367,10 +378,11 @@ export default function PitchPrep() {
     triggerBriefGeneration();
   }, [researchData, dealContext, briefData, triggerBriefGeneration]);
 
-  // Start Over — resets all state and returns to tab 1
+  // Start Over — resets all state, clears session, and returns to tab 1
   const handleStartOver = useCallback(() => {
+    clearSessionNamespace("pitchprep:");
     setActiveTab(0);
-    setCompletedSteps(new Set());
+    setCompletedStepsArr([]);
     setCompanySearch("");
     setSearchResults(null);
     setSelectedAccount(null);
@@ -390,16 +402,12 @@ export default function PitchPrep() {
     researchTriggeredRef.current = false;
     briefFiredRef.current = false;
     enrichmentFiredRef.current = false;
-  }, []);
+  }, [setActiveTab, setCompletedStepsArr, setCompanySearch, setSearchResults, setSelectedAccount, setDealContext, setResearchData, setResearchError, setBriefData, setBriefText, setBriefError, setSfActivities, setSfOpenOpportunities, setSfClosedLost, setSfDataGaps]);
 
   // Handle "Practice This Pitch" from Pre-Call Brief tab
+  // NOTE: Pitch Practice is currently hidden — keeping handler for future re-enable
   const handlePracticePitch = useCallback(() => {
-    setCompletedSteps((prev) => {
-      const next = new Set(prev);
-      next.add(2);
-      return next;
-    });
-    setActiveTab(3);
+    // Pitch Practice tab is hidden; no-op for now
   }, []);
 
   // A tab is enabled if it's the first tab, or all prior steps are completed
@@ -500,7 +508,7 @@ export default function PitchPrep() {
       >
         {/* Step 1: Meeting Prep */}
         {activeTab === 0 && (
-          <section className="max-w-2xl">
+          <section className="max-w-5xl">
             {/* Selected account summary (collapsed view) */}
             {selectedAccount ? (
               <div className="flex items-center justify-between px-4 py-3 rounded-lg border border-[#00c896] bg-[#00c896]/5 mb-8">
@@ -599,7 +607,7 @@ export default function PitchPrep() {
 
         {/* Step 2: Account Intel */}
         {activeTab === 1 && (
-          <section className="max-w-4xl">
+          <section className="max-w-6xl">
             <h2 className="text-lg font-semibold text-gray-900 mb-1">Account Intelligence</h2>
             <p className="text-sm text-gray-500 mb-6">
               AI-powered research on {selectedAccount?.Name || "your account"}.
@@ -639,7 +647,7 @@ export default function PitchPrep() {
 
         {/* Step 3: Pre-Call Brief */}
         {activeTab === 2 && (
-          <section className="pitch-prep-brief-print max-w-4xl">
+          <section className="pitch-prep-brief-print max-w-6xl">
             <h2 className="text-lg font-semibold text-gray-900 mb-1 pitch-prep-hide-print">Pre-Call Brief</h2>
             <p className="text-sm text-gray-500 mb-6 pitch-prep-hide-print">
               Your rep-ready brief for {selectedAccount?.Name || "this account"}.
@@ -675,9 +683,10 @@ export default function PitchPrep() {
           </section>
         )}
 
-        {/* Step 4: Pitch Practice */}
-        {activeTab === 3 && (
-          <section className="max-w-4xl">
+        {/* Step 4: Pitch Practice — HIDDEN (In Development) */}
+        {/* To re-enable: uncomment tab id:3 in TABS array and restore this section */}
+        {false && activeTab === 3 && (
+          <section className="max-w-6xl">
             <h2 className="text-lg font-semibold text-gray-900 mb-1">Pitch Practice</h2>
             <p className="text-sm text-gray-500 mb-4">
               Roleplay your call with an AI prospect. Practice makes perfect.

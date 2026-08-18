@@ -13,7 +13,7 @@ export const router = createBrowserRouter([
         path: "/",
         index: true,
         lazy: () =>
-          import("./pages/Dashboard/index.js").then((mod) => {
+          import("./pages/Home/index.js").then((mod) => {
             const Component = mod.default;
             return { Component };
           }),

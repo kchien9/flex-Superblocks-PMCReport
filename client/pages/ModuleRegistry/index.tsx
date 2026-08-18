@@ -12,25 +12,32 @@ type Module = {
 
 const mockModules: Module[] = [
   {
-    name: "Dashboard",
+    name: "PitchPrep",
     status: "Active",
-    description: "Pipeline overview with KPI metrics and stage distribution",
-    roles: ["Admin", "Senior Manager", "RevOps Lead", "Sales Manager", "AE", "SDR"],
-    lastUpdated: "May 31, 2026",
+    description: "AI-generated research briefs and call prep pulling Salesforce and conversation data",
+    roles: ["Admin", "Senior Manager", "AE", "SDR"],
+    lastUpdated: "Aug 18, 2026",
   },
   {
-    name: "Pre-Call Prep",
-    status: "Coming Soon",
-    description: "AI-generated call briefs pulling Salesforce and conversation data",
-    roles: ["Admin", "Senior Manager", "AE", "SDR"],
-    lastUpdated: "—",
+    name: "PMC Monthly Report",
+    status: "Active",
+    description: "AI-generated QBR, New Logo, and Expansion reports for Partner Management Committee reviews",
+    roles: ["Admin", "Senior Manager", "RevOps Lead", "Sales Manager", "AE", "PSM"],
+    lastUpdated: "Aug 10, 2026",
   },
   {
     name: "Leaderboard",
-    status: "Coming Soon",
+    status: "Active",
     description: "Live Salesforce pipeline and closed units tracker for Flex Rent reps",
     roles: ["Admin", "Senior Manager", "Sales Manager", "AE"],
-    lastUpdated: "—",
+    lastUpdated: "July 15, 2026",
+  },
+  {
+    name: "Opp Data Quality",
+    status: "Active",
+    description: "Opportunity data quality scoring and field completeness tracking across the pipeline",
+    roles: ["Admin", "Senior Manager", "RevOps Lead", "Sales Manager", "AE", "SDR"],
+    lastUpdated: "July 20, 2026",
   },
   {
     name: "Pricing Calculator",
