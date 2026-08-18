@@ -87,12 +87,31 @@ export function renderMarketMap(
     new_properties_rent_paid,
   } = totals;
 
+  // Similarity label for the property-count bullet — the `similarity` object (tier, label,
+  // is_fallback, pool sizes) was already computed by pullMarketSummary per DMA, but nothing on
+  // this slide ever surfaced it: the viewer had no way to tell "this count is rent-matched" from
+  // "this is market-wide," which is exactly the distinction the whole feature exists to show.
+  // A market grouping can span multiple sub_markets (DMAs), each independently resolving its own
+  // tier, so pick the WORST (most-fallback) tier across them for an honest single label rather
+  // than reporting the best one and implying uniform filtering that didn't actually happen
+  // everywhere.
+  const subDmaSimilarities = market.sub_markets
+    .map((dma) => summaryByDma[dma]?.similarity)
+    .filter((s): s is NonNullable<typeof s> => s != null);
+  const TIER_RANK: Record<string, number> = { "rent+size": 0, "rent": 1, "all": 2 };
+  const worstSimilarity = subDmaSimilarities.length > 0
+    ? subDmaSimilarities.reduce((worst, s) => (TIER_RANK[s.tier] > TIER_RANK[worst.tier] ? s : worst))
+    : null;
+  const similaritySubtext = worstSimilarity
+    ? `across ${total_pmcs.toLocaleString()} property management companies — ${worstSimilarity.label}`
+    : `across ${total_pmcs.toLocaleString()} property management companies`;
+
   // Build stats bullets
   let bulletsHtml =
     bullet(
       "Properties on Flex in this market",
       `${total_properties.toLocaleString()}`,
-      `across ${total_pmcs.toLocaleString()} property management companies`
+      similaritySubtext
     ) +
     bullet("Active residents splitting rent", `${total_active_users.toLocaleString()}`) +
     bullet("Average adoption rate", `${(avg_adoption * 100).toFixed(1)}%`) +
@@ -147,6 +166,38 @@ export function renderMarketMap(
   // Legend
   const prospectLabel = prospectPins.length === 1 ? "Your 1 property" : `Your ${prospectPins.length.toLocaleString()} properties`;
 
+  // TEMPORARY diagnostic — Kevin reported the property count still shows the unfiltered
+  // ("all") population even after entering a real avg-rent value. The filtering logic itself
+  // (pullMarketSummary's tier selection) looked correct on read-through, so rather than guess
+  // further, surface exactly what each sub-market DMA resolved to: the avgRentInput this
+  // function actually received, and per-DMA tier/label/pool-size/fallback-reason. If
+  // avgRentInput shows as null/0 here despite Kevin having typed a number, the bug is upstream
+  // (client form state or API input wiring) - if it shows a real number but every DMA still
+  // resolved to "all", the bug is in pullMarketSummary's tier-selection logic itself (e.g. the
+  // MIN_COMPARABLE_PROPERTIES=40 threshold not clearing for this specific market).
+  const debugPanelHtml = `
+    <div style="position:absolute;bottom:8px;left:8px;right:8px;z-index:1001;
+                font-family:monospace;font-size:10px;color:#1D1D1D;">
+      <div onclick="this.nextElementSibling.style.display = this.nextElementSibling.style.display === 'none' ? 'block' : 'none';"
+           style="display:inline-block;background:#fff3cd;border:1px solid #ffe69c;border-radius:6px;
+                  padding:2px 8px;cursor:pointer;font-weight:700;">DEBUG (temporary) — click to expand</div>
+      <div style="display:none;max-height:200px;overflow-y:auto;line-height:1.5;
+                  background:#fff3cd;border:1px solid #ffe69c;border-radius:6px;padding:8px 10px;
+                  white-space:pre-wrap;margin-top:2px;">${escapeHtml(
+        [
+          `avgRentInput received by renderMarketMap: ${avgRentInput}`,
+          `market.sub_markets: ${market.sub_markets.join(", ")}`,
+          ...market.sub_markets.map((dma) => {
+            const s = summaryByDma[dma]?.similarity;
+            const allCount = summaryByDma[dma]?.total_properties ?? 0;
+            return s
+              ? `  ${dma}: tier=${s.tier} label="${s.label}" pool_properties=${s.pool_properties} is_fallback=${s.is_fallback} unknown_rent_properties=${s.unknown_rent_properties} rent_band=[${Math.round(s.rent_low)}, ${Math.round(s.rent_high)}]`
+              : `  ${dma}: similarity=null (avgRent was 0/falsy for this DMA's pullMarketSummary call) total_properties=${allCount}`;
+          }),
+        ].join("\n")
+      )}</div>
+    </div>`;
+
   const html = `
   <style>
     .market-map-pin-label {
@@ -156,7 +207,7 @@ export function renderMarketMap(
     }
     .market-map-pin-label::before { display: none; }
   </style>
-  <div class="slide" id="slide-${slideId}" style="background:#FFFFFF;flex-direction:row;padding:0;">
+  <div class="slide" id="slide-${slideId}" style="background:#FFFFFF;flex-direction:row;padding:0;position:relative;">
     <div style="flex:1.2;position:relative;">
       <div id="map-${slideId}" style="position:absolute;inset:0;"></div>
       <div style="position:absolute;bottom:16px;left:16px;z-index:1000;background:rgba(255,255,255,0.92);border-radius:8px;padding:10px 14px;font-size:11px;color:#1D1D1D;box-shadow:0 2px 8px rgba(0,0,0,0.12);">
@@ -171,6 +222,7 @@ export function renderMarketMap(
       ${bulletsHtml}
       ${guaranteeFootnoteHtml}
     </div>
+    ${debugPanelHtml}
   </div>`;
 
   // Serialize pin data for JS
