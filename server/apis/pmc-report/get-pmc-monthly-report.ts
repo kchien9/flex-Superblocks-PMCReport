@@ -3880,13 +3880,28 @@ export default api({
           byProp.set(r.PROPERTY_NAME, entry);
         }
         const monthsList: number[] = [];
+        let mostRecentContributingRollout: string | null = null;
         for (const { rollout, firstConnected } of byProp.values()) {
           if (!rollout || !firstConnected || rollout < rolloutCutoff12mo) continue;
           const [ry, rm] = rollout.split("-").map(Number);
           const [cyy, cmm] = firstConnected.split("-").map(Number);
           monthsList.push((cyy - ry) * 12 + (cmm - rm));
+          if (!mostRecentContributingRollout || rollout > mostRecentContributingRollout) {
+            mostRecentContributingRollout = rollout;
+          }
         }
-        return monthsList.length > 0 ? monthsList.reduce((s, v) => s + v, 0) / monthsList.length : null;
+        if (monthsList.length === 0) return null;
+        // Gate on recency (Kevin's catch): this metric measures whichever cohort happens to be
+        // in the trailing-12mo window, which can be a single rollout from 10+ months ago -
+        // stale data about how onboarding USED to go, not a live signal about how it's going
+        // now. Only trust it if the most recent contributing rollout is itself within the
+        // trailing 3 months - i.e. there's actually been a recent "class" to measure, not just
+        // a wide lookback window catching something old.
+        const recentEnoughCutoff = new Date(cy, cm - 1 - 3, 1).toISOString().slice(0, 10);
+        if (!mostRecentContributingRollout || mostRecentContributingRollout < recentEnoughCutoff) {
+          return null;
+        }
+        return monthsList.reduce((s, v) => s + v, 0) / monthsList.length;
       })();
       // Flask: pmc_penetration = min(enrolled_units / total_company_units, 1.0) — capped so a
       // stale/undersized total-company-units figure can't produce an impossible >100%.
