@@ -482,7 +482,11 @@ function renderExecSummary(d: ExecSummaryInput): { html: string; js: string } {
 
   // ── DQ shielded ───────────────────────────────────────────────────────────
   const dqVal = d.lifetimeDqShielded != null && d.lifetimeDqShielded > 0 ? fmtCurrency(d.lifetimeDqShielded) : "\u2014";
-  const dqSub = d.lifetimeDqShielded != null && d.lifetimeDqShielded > 0 ? "rent covered when residents missed — trailing 13 months" : "";
+  // Window now tracks the report's own period (Full/Quarter/YTD via lookbackMonths) instead of
+  // a fixed 13 months — caption names the real window so it's never ambiguous (Kevin's catch).
+  const dqSub = d.lifetimeDqShielded != null && d.lifetimeDqShielded > 0
+    ? `rent covered when residents missed — trailing ${d.lookbackMonths} month${d.lookbackMonths === 1 ? "" : "s"}`
+    : "";
   // DQ since-comparison pill — always green/positive framing
   let dqPill = "";
   if (d.dqSinceComparison != null && d.dqSinceComparison > 0) {
@@ -2417,6 +2421,11 @@ export default api({
         { label: "Fetch PMC core metrics (repeat rate, segment NAR)" }
       ),
       ctx.integrations.snowflake_sso.query(
+        // Stays a fixed 13-month pull (a safe superset covering the Delinquency slide's own
+        // 12-month display cap) regardless of the report's own lookback_months — that slide's
+        // trend chart always wants the full window. The exec-summary tile's period-scoped
+        // figure (Full/Quarter/YTD) is computed separately below by filtering dqShieldedRows
+        // to lookback_months, not by shrinking this pull.
         `SELECT TO_VARCHAR(BP_MONTH, 'YYYY-MM-DD') AS BP_MONTH,
                 SUM(TOTAL_RENT_SHIELDED) AS TOTAL_RENT_SHIELDED,
                 SUM(RENT_NOT_COLLECTED) AS RENT_NOT_COLLECTED,
@@ -3289,8 +3298,16 @@ export default api({
       trueRepeatRate = Math.min(1, latestMetrics.BILLS_PAID_REPEAT / latestMetrics.BILLS_PAID_PREV_MONTH);
     }
 
-    // --- Compute Lifetime DQ Shielded ---
-    const lifetimeDqShielded = dqShieldedRows.reduce((sum, r) => sum + (r.TOTAL_RENT_SHIELDED ?? 0), 0);
+    // --- Compute DQ shielded for the exec-summary tile — windowed to lookback_months (the
+    // report's own Full/Quarter/YTD period), not the full 13-month dqShieldedRows pulled above
+    // (that stays wide on purpose so the Delinquency slide's own trend chart keeps its full
+    // window). Used to always show a fixed 13-month figure regardless of the period the AE
+    // picked (Kevin's catch). BP_MONTH is 'YYYY-MM-DD' — string comparison is chronological.
+    const dqWindowStartDate = new Date(latestCompletedMonth + "T00:00:00Z");
+    dqWindowStartDate.setUTCMonth(dqWindowStartDate.getUTCMonth() - (lookback_months - 1));
+    const dqWindowStart = dqWindowStartDate.toISOString().slice(0, 10);
+    const dqWindowedRows = dqShieldedRows.filter((r) => r.BP_MONTH != null && r.BP_MONTH >= dqWindowStart);
+    const lifetimeDqShielded = dqWindowedRows.reduce((sum, r) => sum + (r.TOTAL_RENT_SHIELDED ?? 0), 0);
 
     // --- Segment NAR / HubSpot segment label — REMOVED (fabricated data source) ---
     // PARTNER_REPORTING_CORE_METRICS.HUBSPOT_COMPANY_SEGMENT / SEGMENT_NAR_AVG have zero
@@ -4189,10 +4206,11 @@ export default api({
       ? new Set(inNetwork.filter((r) => r.BP_MONTH === prevMonthStr).map((r) => r.PROPERTY_NAME)).size
       : null;
 
-    // Compute DQ shielded since comparison month (same cutoff as other tiles)
+    // Compute DQ shielded since comparison month (same cutoff as other tiles) — filtered from
+    // the same lookback_months-windowed rows as lifetimeDqShielded above, not the raw pull.
     const comparisonMonth = prevMonth?.month ?? null;
     const dqSinceComparison = comparisonMonth
-      ? dqShieldedRows
+      ? dqWindowedRows
           .filter((r) => r.BP_MONTH != null && r.BP_MONTH! > comparisonMonth)
           .reduce((sum, r) => sum + (r.TOTAL_RENT_SHIELDED ?? 0), 0)
       : null;
