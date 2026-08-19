@@ -482,7 +482,7 @@ function renderExecSummary(d: ExecSummaryInput): { html: string; js: string } {
 
   // ── DQ shielded ───────────────────────────────────────────────────────────
   const dqVal = d.lifetimeDqShielded != null && d.lifetimeDqShielded > 0 ? fmtCurrency(d.lifetimeDqShielded) : "\u2014";
-  const dqSub = d.lifetimeDqShielded != null && d.lifetimeDqShielded > 0 ? "rent covered when residents missed" : "";
+  const dqSub = d.lifetimeDqShielded != null && d.lifetimeDqShielded > 0 ? "rent covered when residents missed — trailing 13 months" : "";
   // DQ since-comparison pill — always green/positive framing
   let dqPill = "";
   if (d.dqSinceComparison != null && d.dqSinceComparison > 0) {
@@ -4394,7 +4394,7 @@ export default api({
 
     // ─────────────────────────────────────────────────────────────────────────
     // EXPANSION DECK MODE
-    // Canonical order matches EXPANSION_SLIDE_ORDER in app.py line 125
+    // Canonical order matches EXPANSION_SLIDE_ORDER in app.py's own EXPANSION_SLIDE_ORDER constant
     // (Multiple Payments Update is retired and omitted).
     //
     // Cover and Exec Summary are NOT hardcoded — they only render if selected,
@@ -4419,18 +4419,20 @@ export default api({
         }
       };
 
-      // Canonical expansion slide order (string IDs matching SlidesPicker)
+      // Canonical expansion slide order (string IDs matching SlidesPicker).
+      // Reordered 2026-08-19 per Kevin: growth trend slides move up front (right after the
+      // KPI slide), benchmarking/MetroSight move later, right before the closing slides.
       const EXPANSION_SLIDE_ORDER = [
         "cover",
         "exec_bottom_line",
-        "by_state",
-        "residents_units",     // growth trend
-        "adoption_trend",      // growth trend
-        "cohort_overview",     // growth trend
-        "peer_benchmarks",
-        "retention",
-        "high_rent",
-        "delinquency",
+        "residents_units",     // growth trend — residents paying across unit base
+        "adoption_trend",      // growth trend — adoption by month
+        "cohort_overview",     // growth trend — performance by rollout-month cohort
+        "by_state",            // geographic breakdown
+        "retention",           // resident behavior / loyalty bucket
+        "high_rent",           // rent bucket
+        "delinquency",         // DQ shielded
+        "peer_benchmarks",     // benchmarking
         "expansion_metrosight",
         "expansion_gap",
         "testimonials",
