@@ -3254,12 +3254,13 @@ export default api({
     // --- Segment NAR / HubSpot segment label — REMOVED (fabricated data source) ---
     // PARTNER_REPORTING_CORE_METRICS.HUBSPOT_COMPANY_SEGMENT / SEGMENT_NAR_AVG have zero
     // equivalent anywhere in Flask (confirmed via full-repo grep) — this table/columns don't
-    // exist in real Snowflake. Every read site below is being migrated to the real
-    // geo/size/rent-matched peer cohort (lockedPeers / canonicalPeerNarP50), which is already
-    // sourced from real data (PROPERTY_BP_MONTH_STATS). Kept as explicit nulls (not deleted)
-    // so every downstream `?? fallback` still resolves correctly while that migration lands.
+    // exist in real Snowflake. Every read site is migrated to the real geo/size/rent-matched
+    // peer cohort (lockedPeers / canonicalPeerNarP50 / stageBenchmarksMap), which is already
+    // sourced from real data (PROPERTY_BP_MONTH_STATS) - the Adoption Trend chart's
+    // stage_benchmarks was the last holdout (Kevin's catch) and is now migrated too.
+    // segmentNarAvg kept as an explicit null (not deleted) so its remaining `?? fallback`
+    // read sites still resolve correctly; hubspotSegment had no remaining reader, removed.
     const segmentNarAvg: number | null = null;
-    const hubspotSegment: string | null = null;
 
     // --- Auto-derive is_smb (Flask app.py:1551-1553): mode of STATIC_PARENT_TEAM_NAME_OPPORTUNITY
     // (the internal Flex sales/CS team assignment, aliased SEGMENT_TEAM above) across the PMC's
@@ -3510,6 +3511,7 @@ export default api({
     }
 
     const RollingPeerSchema = z.object({ BP_MONTH: z.string(), SMOOTHED_NAR: z.number().nullable() });
+    const StageBenchmarkQuerySchema = z.object({ MONTH_NUMBER: z.number(), P50: z.number().nullable(), PMC_COUNT: z.number() });
 
     // Peer-Benchmarks percentiles — real formulas ported from Flask's `_run_supplemental_
     // benchmark` (generator/data.py:1920-2093), scoped to the SAME geo/size/rent-matched
@@ -3703,6 +3705,70 @@ export default api({
       ).catch((err) => { console.error("[ROLLING QUERY FAILED]", String(err)); return [] as z.infer<typeof RollingPeerSchema>[]; })
       : Promise.resolve([] as z.infer<typeof RollingPeerSchema>[]);
 
+    // Tenure-cohort benchmark for the Adoption Trend chart (months-since-launch 1-36), for PMCs
+    // below the 36mo "established" threshold where rollingPromise above doesn't apply. Replaces
+    // a stage_benchmarks construction that read PARTNER_REPORTING_CORE_METRICS.SEGMENT_NAR_AVG -
+    // a column explicitly flagged elsewhere in this file as having no real Flask equivalent
+    // ("fabricated data source"). Confirmed real: it produced 8.9% (wrong direction: "below
+    // peer median") where Flask's real tenure-matched benchmark showed 4.8% ("1.6x above"), for
+    // the same PMC, same report - and it dropped the most recent 1-2 months whenever that table
+    // happened to have a null there, which is why the dashed line never reached the current
+    // month. This scopes to the SAME already-resolved, geo/size/rent-matched `lockedPeers`
+    // cohort every other slide in this deck uses (Peer Benchmarks, canonicalPeerNarP50) rather
+    // than independently re-deriving Flask's separate stage-tier ladder (_pull_stage_benchmarks,
+    // generator/data.py:2524) from scratch - internally consistent with the rest of this deck,
+    // even if the resulting peer SET can differ in count from Flask's own separately-resolved
+    // tenure tier. Mirrors Flask's real monthly_nar/monthly_nar_smoothed CTEs exactly: each
+    // peer's OWN adoption rate at their OWN months-since-launch, smoothed over their trailing 3
+    // months of tenure before aggregating cross-sectionally, adoption_rate > 0 filter included
+    // (Flask drops zero/null months from the curve itself, not just from display).
+    const stageBenchmarkPromise = (lockedPeers.length >= 3)
+      ? ctx.integrations.snowflake_sso.query(
+        `WITH pmc_launch AS (
+            SELECT PMC_NAME, MIN(BP_MONTH) AS launch_month
+            FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS
+            WHERE PMC_NAME IN (${lockedPeers.map(() => "?").join(", ")})
+              AND ROLLOUT_MONTH IS NOT NULL
+              AND IS_INTEGRATED_TOTAL = TRUE
+            GROUP BY PMC_NAME
+         ),
+         monthly_nar AS (
+            SELECT
+              s.PMC_NAME,
+              DATEDIFF('month', l.launch_month, s.BP_MONTH) + 1 AS month_number,
+              SUM(s.BILLS_PAID_COUNT) / NULLIF(SUM(s.PROPERTY_UNIT_COUNT)::FLOAT, 0) AS adoption_rate
+            FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS s
+            JOIN pmc_launch l ON s.PMC_NAME = l.PMC_NAME
+            WHERE s.PMC_NAME IN (${lockedPeers.map(() => "?").join(", ")})
+              AND s.BP_MONTH >= l.launch_month
+              AND s.BP_MONTH < ?
+              AND s.IS_INTEGRATED_TOTAL = TRUE
+            GROUP BY s.PMC_NAME, month_number
+            HAVING adoption_rate IS NOT NULL AND adoption_rate > 0
+         ),
+         monthly_nar_smoothed AS (
+            SELECT
+              PMC_NAME, month_number,
+              AVG(adoption_rate) OVER (
+                PARTITION BY PMC_NAME ORDER BY month_number
+                ROWS BETWEEN 2 PRECEDING AND CURRENT ROW
+              ) AS smoothed_adoption_rate
+            FROM monthly_nar
+         )
+         SELECT
+           month_number AS MONTH_NUMBER,
+           PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY smoothed_adoption_rate) AS P50,
+           COUNT(DISTINCT PMC_NAME) AS PMC_COUNT
+         FROM monthly_nar_smoothed
+         WHERE month_number BETWEEN 1 AND 36
+         GROUP BY month_number
+         ORDER BY month_number`,
+        StageBenchmarkQuerySchema,
+        [...lockedPeers, ...lockedPeers, cutoffStr],
+        { label: "Tenure-cohort peer benchmark for Adoption Trend chart (locked peers, months-since-launch)" }
+      ).catch((err) => { console.error("[STAGE BENCHMARK QUERY FAILED]", String(err)); return [] as z.infer<typeof StageBenchmarkQuerySchema>[]; })
+      : Promise.resolve([] as z.infer<typeof StageBenchmarkQuerySchema>[]);
+
     // On-Time Payment Rate via CPT_OUTCOMES_SEMANTIC_VIEW was tried and pulled back out.
     // Querying that semantic view crashed the ENTIRE report generation ("Generation failed"),
     // not a graceful per-metric degradation the way every other optional query in this file
@@ -3714,7 +3780,18 @@ export default api({
     // report generation again.
 
     // Fire both independent round-trips together instead of one at a time
-    const [percRows, rollingRows] = await Promise.all([segPercPromise, rollingPromise]);
+    const [percRows, rollingRows, stageBenchmarkRows] = await Promise.all([segPercPromise, rollingPromise, stageBenchmarkPromise]);
+
+    // Build the tenure-bucketed benchmark map the Adoption Trend chart reads (kpis.stage_benchmarks).
+    // peer_label matches lockedPeersCriteria - the SAME criteria string the Peer Benchmarks slide
+    // shows, so the two never disagree on what "peer" means (this deck's whole reason for having
+    // a canonical/locked peer cohort at all).
+    const stageBenchmarksMap: Record<number, { p50: number | null; peer_label?: string }> = {};
+    for (const row of stageBenchmarkRows) {
+      if (row.P50 != null) {
+        stageBenchmarksMap[row.MONTH_NUMBER] = { p50: row.P50, peer_label: lockedPeersCriteria };
+      }
+    }
 
     // PMC_VALUE is always NULL from the query above (the subject is excluded from lockedPeers,
     // so it can't appear in its own peer-percentile query) — filled in from values already
@@ -4606,16 +4683,10 @@ export default api({
     const adoptionTrendKpis = {
       pmc_name,
       months_since_launch: monthsSinceLaunch,
-      // Build stage_benchmarks: map month-since-launch to segment P50 NAR
-      stage_benchmarks: Object.fromEntries(
-        metricsRows
-          .filter((r) => r.SEGMENT_NAR_AVG != null)
-          .map((r, i, arr) => {
-            // Map this month's data to a months-since-launch value
-            const msLaunch = monthsSinceLaunch - (arr.length - 1 - i);
-            return [Math.max(1, Math.min(36, msLaunch)), { p50: r.SEGMENT_NAR_AVG!, peer_label: hubspotSegment ?? undefined }];
-          })
-      ),
+      // Real tenure-cohort benchmark (locked-peers cohort, months-since-launch) - see
+      // stageBenchmarksMap above. Replaced the SEGMENT_NAR_AVG-based construction (fabricated
+      // data source, confirmed producing a wrong number in the wrong direction - Kevin's catch).
+      stage_benchmarks: stageBenchmarksMap,
       // Use real rolling peer median if available; otherwise hide the peer median line
       // (a flat line from SEGMENT_NAR_AVG is misleading — better to show no peer line
       // than a constant that doesn't actually represent calendar-month peer movement)
