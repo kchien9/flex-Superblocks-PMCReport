@@ -47,17 +47,19 @@ export const NEW_LOGO_SLIDES: SlideOption[] = [
   { id: "close", label: "Closing Slide", defaultOn: true },
 ];
 
+// Order matches EXPANSION_SLIDE_ORDER below (deck render order) so the chips read top-to-bottom
+// the same way the deck plays out — reordered 2026-08-19 alongside that change.
 export const EXPANSION_SLIDES: SlideOption[] = [
   { id: "cover", label: "Cover", defaultOn: true },
   { id: "exec_bottom_line", label: "Executive Bottom Line", defaultOn: true },
-  { id: "by_state", label: "By State", defaultOn: true },
   { id: "residents_units", label: "Residents, Units & Rent", defaultOn: true },
   { id: "adoption_trend", label: "Adoption Trend", defaultOn: true },
   { id: "cohort_overview", label: "Cohort Overview", defaultOn: true },
-  { id: "peer_benchmarks", label: "Peer Benchmarks", defaultOn: true },
+  { id: "by_state", label: "By State", defaultOn: true },
   { id: "retention", label: "Retention", defaultOn: true },
   { id: "high_rent", label: "Flex For Everyone", defaultOn: true },
   { id: "delinquency", label: "Delinquency", defaultOn: true },
+  { id: "peer_benchmarks", label: "Peer Benchmarks", defaultOn: true },
   { id: "expansion_metrosight", label: "MetroSight", defaultOn: true },
   { id: "expansion_gap", label: "Portfolio Gap", defaultOn: true },
   { id: "testimonials", label: "Testimonials", defaultOn: true },
