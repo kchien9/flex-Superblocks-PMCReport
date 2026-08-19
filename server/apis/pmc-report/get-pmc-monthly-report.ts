@@ -1975,14 +1975,20 @@ export default api({
     // report (15,000-row cap + a UDF chain), so it was consistently the one still running when
     // the budget ran out. Starting it here, in parallel with everything else, gives it the same
     // wall-clock head start as every other query instead of a ~12-query handicap.
-    let networkPool: NetworkPoolRow[] = [];
+    // Currently write-only (its debug-panel reader was removed) - kept, not deleted, since it's
+    // a real query result and this file's own comments document real cost-diagnosis history
+    // around it; underscore-prefixed per this codebase's convention for intentionally-idle
+    // diagnostics rather than silently dropping a traced pipeline.
+    let _networkPool: NetworkPoolRow[] = [];
     // Dedicated property-level peer pool (Flask's pull_network_property_pool,
     // generator/data.py:4900-5066) — see the full comment on PROPERTY_POOL_SQL below for why
     // this can't just reuse networkPool.
     let propertyPool: NetworkPoolRow[] = [];
-    let propertyPoolError: string | null = null;
+    // Also currently write-only (debug-panel reader removed); underscore-prefixed for the same
+    // reason as _networkPool above.
+    let _propertyPoolError: string | null = null;
     // TEMPORARY diagnostic — captures the real error instead of silently swallowing it.
-    let networkPoolError: string | null = null;
+    let _networkPoolError: string | null = null;
     const NETWORK_POOL_SQL = `WITH prop_zip AS (
                 SELECT PROPERTY_PUBLIC_ID, PROPERTY_ZIP,
                        ROW_NUMBER() OVER (PARTITION BY PROPERTY_PUBLIC_ID ORDER BY CREATED_AT_UTC DESC) AS rn
@@ -2151,7 +2157,7 @@ export default api({
           } catch {
             // ignore — best-effort diagnostic only
           }
-          networkPoolError = `${base}${extra} (failed after ${maxAttempts} attempts)`;
+          _networkPoolError = `${base}${extra} (failed after ${maxAttempts} attempts)`;
           return [] as NetworkPoolRow[];
         })();
 
@@ -2271,7 +2277,9 @@ export default api({
     // enough to hit 10 in every size band, let alone 60 in aggregate) - not expected to
     // reopen the IntegrationError code 4 cost ceiling documented above, but worth confirming
     // live after this ships.
-    const PROPERTY_POOL_SQL_VERSION = "v9-no-udf-stratified-state-age-size-10";
+    // Version-history marker, no remaining reader since its debug-panel display was removed;
+    // underscore-prefixed rather than deleted, so a future diagnostic pass can find this thread.
+    const _PROPERTY_POOL_SQL_VERSION = "v9-no-udf-stratified-state-age-size-10";
     const PROPERTY_POOL_SQL = `WITH latest AS (
                 SELECT MAX(BP_MONTH) AS bp_month
                 FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS
@@ -2379,7 +2387,7 @@ export default api({
           } catch {
             // ignore — best-effort diagnostic only
           }
-          propertyPoolError = `${base}${extra} (failed after ${maxAttempts} attempts)`;
+          _propertyPoolError = `${base}${extra} (failed after ${maxAttempts} attempts)`;
           return [] as NetworkPoolRow[];
         })();
 
@@ -2838,7 +2846,7 @@ export default api({
         networkPoolPromise, propertyPoolPromise, regionDetailPromise, subjectIncomePromise, tenurePercentilePromise,
         disabledPropertiesPromise,
       ]);
-      networkPool = networkPoolResult;
+      _networkPool = networkPoolResult;
       propertyPool = propertyPoolResult;
       regionDetail = regionDetailResult;
       disabledPropertyRows = disabledPropertyResult;
@@ -3300,6 +3308,13 @@ export default api({
     // On a 2-PMC combined report, the second PMC's NAR would otherwise inflate the P50.
     let segmentPercentiles: { metric: string; p25: number; p50: number; p75: number; p90: number; p99: number; pmcValue: number | null; lowerIsBetter?: boolean }[] = [];
     let canonicalPeerNarP50: number | null = null;
+    // P25/P75 companions to canonicalPeerNarP50, resolved from the SAME tier at the SAME time -
+    // added alongside the tenure-cohort tier fix below so the Performance Benchmarks slide's
+    // IQR band can never show a P25/P75 from a different (snapshot) distribution than its own
+    // P50 (Kevin's catch: P50 updated to the real 4.8-4.9% tenure-matched value, but P25/P75
+    // stayed at the old snapshot's 11.9%/17.0% - an impossible P25 > P50 ordering on screen).
+    let canonicalPeerNarP25: number | null = null;
+    let canonicalPeerNarP75: number | null = null;
     let rollingPeerMedianMap: Record<string, { p50: number }> = {};
     // Compute months since launch for benchmark resolution (used by peer median + adoption trend)
     let _msl = 0;
@@ -3506,7 +3521,13 @@ export default api({
     }
 
     const RollingPeerSchema = z.object({ BP_MONTH: z.string(), SMOOTHED_NAR: z.number().nullable() });
-    const StageBenchmarkQuerySchema = z.object({ MONTH_NUMBER: z.number(), P50: z.number().nullable(), PMC_COUNT: z.number() });
+    const StageBenchmarkQuerySchema = z.object({
+      MONTH_NUMBER: z.number(),
+      P25: z.number().nullable(),
+      P50: z.number().nullable(),
+      P75: z.number().nullable(),
+      PMC_COUNT: z.number(),
+    });
 
     // Peer-Benchmarks percentiles — real formulas ported from Flask's `_run_supplemental_
     // benchmark` (generator/data.py:1920-2093), scoped to the SAME geo/size/rent-matched
@@ -3752,7 +3773,9 @@ export default api({
          )
          SELECT
            month_number AS MONTH_NUMBER,
+           PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY smoothed_adoption_rate) AS P25,
            PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY smoothed_adoption_rate) AS P50,
+           PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY smoothed_adoption_rate) AS P75,
            COUNT(DISTINCT PMC_NAME) AS PMC_COUNT
          FROM monthly_nar_smoothed
          WHERE month_number BETWEEN 1 AND 36
@@ -3783,10 +3806,10 @@ export default api({
     // a canonical/locked peer cohort at all). pmc_count surfaces how many peers actually had data
     // at that specific bucket, shown alongside the label (Kevin's ask) - a bucket down to 2 peers
     // shouldn't read with the same confidence as one with 5.
-    const stageBenchmarksMap: Record<number, { p50: number | null; peer_label?: string; pmc_count?: number }> = {};
+    const stageBenchmarksMap: Record<number, { p25: number | null; p50: number | null; p75: number | null; peer_label?: string; pmc_count?: number }> = {};
     for (const row of stageBenchmarkRows) {
       if (row.P50 != null) {
-        stageBenchmarksMap[row.MONTH_NUMBER] = { p50: row.P50, peer_label: lockedPeersCriteria, pmc_count: row.PMC_COUNT };
+        stageBenchmarksMap[row.MONTH_NUMBER] = { p25: row.P25, p50: row.P50, p75: row.P75, peer_label: lockedPeersCriteria, pmc_count: row.PMC_COUNT };
       }
     }
 
@@ -3968,10 +3991,14 @@ export default api({
       const narPerc = segmentPercentiles.find((s) => s.metric === "NAR");
       if (narPerc) {
         canonicalPeerNarP50 = narPerc.p50; // tier 3
+        canonicalPeerNarP25 = narPerc.p25;
+        canonicalPeerNarP75 = narPerc.p75;
       }
 
       // Tier 2: nearest tenure bucket to months_since_launch, mirroring Flask's
-      // `min(stage_bmarks.keys(), key=lambda k: abs(k - months_since))` exactly.
+      // `min(stage_bmarks.keys(), key=lambda k: abs(k - months_since))` exactly. P25/P75 move
+      // WITH P50 here, from the same bucket's same smoothed cross-sectional distribution -
+      // never left behind pointing at tier 3's unrelated snapshot (Kevin's catch).
       if (Object.keys(stageBenchmarksMap).length > 0 && _msl > 0) {
         let nearestMn = -1;
         let nearestDist = Infinity;
@@ -3983,9 +4010,11 @@ export default api({
             nearestMn = mn;
           }
         }
-        const nearestP50 = nearestMn >= 0 ? stageBenchmarksMap[nearestMn]?.p50 : null;
-        if (nearestP50 != null) {
-          canonicalPeerNarP50 = nearestP50;
+        const nearestRow = nearestMn >= 0 ? stageBenchmarksMap[nearestMn] : undefined;
+        if (nearestRow?.p50 != null) {
+          canonicalPeerNarP50 = nearestRow.p50;
+          canonicalPeerNarP25 = nearestRow.p25;
+          canonicalPeerNarP75 = nearestRow.p75;
         }
       }
 
@@ -3994,6 +4023,11 @@ export default api({
       // 36mo with a stray non-empty rollingPeerMedianMap (e.g. the network-wide fallback a
       // few hundred lines up) would wrongly prefer calendar-time movement over the real
       // tenure-matched comparison for a PMC still in its ramp stage.
+      // KNOWN GAP: rollingPromise/RollingPeerSchema only computes SMOOTHED_NAR (P50), not a
+      // full percentile spread, so P25/P75 aren't updated here - an established (>=36mo) PMC
+      // on this tier can still show a P50 that doesn't visually center in its P25-P75 band.
+      // Smaller and pre-existing vs. the tier 2/3 fix above; would need widening rollingPromise
+      // itself (PERCENTILE_CONT at 0.25/0.75 alongside the existing smoothed-NAR calc) to close.
       if (_msl >= 36 && rollingRows.length > 0) {
         const latestPeer = rollingRows[rollingRows.length - 1];
         if (latestPeer.SMOOTHED_NAR != null) {
@@ -4454,9 +4488,18 @@ export default api({
           }
 
           case "peer_benchmarks": {
-            // Use canonical-resolved metrics for NAR P50 consistency
+            // Use canonical-resolved metrics for NAR consistency - P25/P75 move WITH P50 from
+            // the same resolved tier (same fix as the QBR peer_benchmarks case above/below;
+            // this Expansion-mode copy had the identical stale-spread bug).
             const expBenchMetrics = segmentPercentiles.map((m) => {
-              if (m.metric === "NAR" && canonicalPeerNarP50 != null) return { ...m, p50: canonicalPeerNarP50 };
+              if (m.metric === "NAR" && canonicalPeerNarP50 != null) {
+                return {
+                  ...m,
+                  p50: canonicalPeerNarP50,
+                  p25: canonicalPeerNarP25 ?? m.p25,
+                  p75: canonicalPeerNarP75 ?? m.p75,
+                };
+              }
               if (m.metric === "REPEAT_RATE" && subjectRepeatValue != null) return { ...m, pmcValue: subjectRepeatValue };
               return m;
             });
@@ -4747,10 +4790,12 @@ export default api({
       monthlyTotals,
       pmcName: pmcDisplayName,
       slideId: 6,
+      // P25/P75 move with P50 from the same resolved tier - same fix as the Peer Benchmarks
+      // slide above (Kevin's catch: P50 alone used to get the canonical override here too).
       peerPercentiles: narPerc ? {
-        p25: narPerc.p25,
+        p25: canonicalPeerNarP25 ?? narPerc.p25,
         p50: canonicalPeerNarP50 ?? narPerc.p50,
-        p75: narPerc.p75,
+        p75: canonicalPeerNarP75 ?? narPerc.p75,
         p90: narPerc.p90,
         p99: narPerc.p99,
       } : undefined,
@@ -4786,7 +4831,16 @@ export default api({
     const benchmarkMetrics = segmentPercentiles
       .map((m) => {
         if (m.metric === "NAR" && canonicalPeerNarP50 != null) {
-          return { ...m, p50: canonicalPeerNarP50 };
+          // P25/P75 move together with P50 - all three (or none) come from whichever tier
+          // resolved above, never a mix of this tier's P50 with a different tier's spread
+          // (Kevin's catch: P50 alone used to get overridden here, leaving P25/P75 pointing at
+          // the old snapshot distribution - an impossible P25 > P50 ordering on screen).
+          return {
+            ...m,
+            p50: canonicalPeerNarP50,
+            p25: canonicalPeerNarP25 ?? m.p25,
+            p75: canonicalPeerNarP75 ?? m.p75,
+          };
         }
         if (m.metric === "REPEAT_RATE" && subjectRepeatValue != null) {
           return { ...m, pmcValue: subjectRepeatValue };
@@ -4803,33 +4857,6 @@ export default api({
       // prefix was missing here, so the renderer's existing peerCount-gated subtitle logic
       // (slide-renderers.ts, subtitlePeers) fell through to the bare criteria string instead.
       peerCount: lockedPeers.length,
-      // TEMPORARY diagnostic — remove once the empty-metrics root cause is confirmed and fixed.
-      debugInfo: [
-        `pmc_name (query param): ${pmc_name}`,
-        `latestCompletedMonth: ${latestCompletedMonth}`,
-        `cutoffStr: ${cutoffStr}`,
-        `_msl (months since launch): ${_msl}`,
-        `networkPool.length (raw SQL rows): ${networkPool.length}`,
-        `networkPoolError: ${networkPoolError}`,
-        `PROPERTY_POOL_SQL_VERSION: ${PROPERTY_POOL_SQL_VERSION}`,
-        `propertyPool.length (raw SQL rows, unsampled): ${propertyPool.length}`,
-        `propertyPoolError: ${propertyPoolError}`,
-        `networkPoolProps.length (post-filter): ${networkPoolProps.length}`,
-        `lockedPeers.length: ${lockedPeers.length}`,
-        `lockedPeersCriteria: ${lockedPeersCriteria}`,
-        `lockedPeers (first 10): ${lockedPeers.slice(0, 10).join(", ")}`,
-        `segmentPercentiles.length: ${segmentPercentiles.length}`,
-        `segmentPercentiles: ${JSON.stringify(segmentPercentiles)}`,
-        `canonicalPeerNarP50: ${canonicalPeerNarP50}`,
-        `rollingPeerMedianMap keys: ${Object.keys(rollingPeerMedianMap).length}`,
-        `-- Subject engagement calc (TEMPORARY) --`,
-        `_engDebugWindowStart: ${_engDebugWindowStart}`,
-        `_engDebugMonthsFound (${_engDebugMonthsFound.length}): ${_engDebugMonthsFound.join(", ")}`,
-        `_engDebugTotalConnects: ${_engDebugTotalConnects}`,
-        `_engDebugAvgUnits: ${_engDebugAvgUnits}`,
-        `inNetwork.length (total rows, all time): ${inNetwork.length}`,
-        `allRows.length (unfiltered, what the engagement calc now uses): ${allRows.length}`,
-      ].join("\n"),
     });
 
     // --- Flex Is For Everyone (high rent adoption) slide ---
@@ -4957,23 +4984,6 @@ export default api({
       loyaltyTitle,
       newInMonth: newInLatestMonth,
       avgPayment: avgPaymentPerResident,
-      // TEMPORARY diagnostic — remove once retention numbers are confirmed correct.
-      debugInfo: [
-        `latestCompletedMonth: ${latestCompletedMonth}`,
-        `reportingMonthStr: ${reportingMonthStr}`,
-        `cutoffStr: ${cutoffStr}`,
-        `lookback_months (raw input): ${lookback_months}`,
-        `customerMonthRows.length: ${customerMonthRows.length}`,
-        `sortedCustomerMonths: ${sortedCustomerMonths.join(", ")}`,
-        `momRetentionRates: ${JSON.stringify(momRetentionRates)}`,
-        `retentionCohortRows.length: ${retentionCohortRows.length}`,
-        `retentionCohortRows: ${JSON.stringify(retentionCohortRows)}`,
-        `trueRepeatRate (fabricated-table fallback): ${trueRepeatRate}`,
-        `cohortTrueRepeatRate: ${cohortTrueRepeatRate}`,
-        `finalTrueRepeatRate: ${finalTrueRepeatRate}`,
-        `retentionAvg: ${retentionAvg}`,
-        `loyaltyTotal: ${loyaltyTotal}`,
-      ].join("\n"),
     });
 
     // --- Dynamic slide ID allocator ---
@@ -5279,7 +5289,9 @@ export default api({
       // Same target-NAR cascade renderPortfolioProjection uses above (next real peer tier up
       // from current NAR: P50 -> P75 -> P90 -> P99+2pp), so the notes explain the same number
       // the projection slide actually shows.
-      const p25 = narPerc?.p25, p50 = canonicalPeerNarP50 ?? narPerc?.p50, p75 = narPerc?.p75, p90 = narPerc?.p90, p99 = narPerc?.p99;
+      // p50/p75 from the same resolved tier (same fix as renderPortfolioProjection above) -
+      // p90/p99 stay on narPerc's raw snapshot since no tier here resolves those two.
+      const p25 = canonicalPeerNarP25 ?? narPerc?.p25, p50 = canonicalPeerNarP50 ?? narPerc?.p50, p75 = canonicalPeerNarP75 ?? narPerc?.p75, p90 = narPerc?.p90, p99 = narPerc?.p99;
       const currentNarForTarget = latestMonth?.adoptionRate ?? 0;
       let targetNarForNotes: number;
       if (p99 != null && currentNarForTarget >= (p90 ?? Infinity)) targetNarForNotes = p99 + 0.02;

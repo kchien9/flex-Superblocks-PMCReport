@@ -479,26 +479,10 @@ export function renderPeerBenchmarks(input: {
   peerCount?: number;
   /** Which optional metric keys to show initially (null = show all). Adoption is always shown. */
   visibleMetrics?: Set<string> | null;
-  /** TEMPORARY diagnostic — shows internal pipeline counts on the slide instead of going blank
-   * when metrics is empty, so this can be inspected directly without server/Snowflake access.
-   * Remove once the empty-metrics root cause is confirmed and fixed. */
-  debugInfo?: string;
 }): SlideResult {
-  const { slideId, pmcName, segment, metrics, peerCount, visibleMetrics, debugInfo } = input;
+  const { slideId, pmcName, segment, metrics, peerCount, visibleMetrics } = input;
   const pmc = _e(pmcName);
   if (metrics.length === 0) {
-    if (debugInfo) {
-      return {
-        html: `
-  <div class="slide" id="slide-${slideId}" style="background:#fff;justify-content:center;align-items:center;">
-    <div style="max-width:600px;font-family:monospace;font-size:13px;color:#1D1D1D;background:#fff3cd;border:1px solid #ffe69c;border-radius:8px;padding:20px 24px;white-space:pre-wrap;">
-      <div style="font-weight:700;margin-bottom:8px;">DEBUG: Peer Benchmarks metrics.length === 0</div>
-      ${_e(debugInfo)}
-    </div>
-  </div>`,
-        js: "",
-      };
-    }
     return { html: "", js: "" };
   }
 
@@ -650,21 +634,6 @@ export function renderPeerBenchmarks(input: {
       `btn.classList.toggle("is-hidden",!h);};}`;
   }
 
-  // Collapsed by default (click to expand) — same pattern as the retention slide's own debug
-  // panel. This shows regardless of whether metrics is empty, unlike the blank-slide debug box
-  // above: a slide that renders FINE but with a wrong NUMBER needs its own diagnostic surfaced
-  // too, and the blank-slide branch above never runs once metrics has real content.
-  const bmDebugPanel = debugInfo ? `
-    <div style="position:absolute;bottom:8px;left:8px;right:8px;z-index:10;
-                font-family:monospace;font-size:10px;color:#1D1D1D;">
-      <div onclick="this.nextElementSibling.style.display = this.nextElementSibling.style.display === 'none' ? 'block' : 'none';"
-           style="display:inline-block;background:#fff3cd;border:1px solid #ffe69c;border-radius:6px;
-                  padding:2px 8px;cursor:pointer;font-weight:700;">DEBUG (temporary) — click to expand</div>
-      <div style="display:none;max-height:220px;overflow-y:auto;line-height:1.5;
-                  background:#fff3cd;border:1px solid #ffe69c;border-radius:6px;padding:8px 10px;
-                  white-space:pre-wrap;margin-top:2px;">${_e(debugInfo)}</div>
-    </div>` : "";
-
   const html = `<div class="slide" id="slide-${slideId}" style="background:#fff;position:relative;">
     <div class="slide-header" style="margin-bottom:8px;flex-shrink:0;">
       <div class="slide-label">PERFORMANCE BENCHMARKS</div>
@@ -686,7 +655,6 @@ export function renderPeerBenchmarks(input: {
       </div>
     </div>
     ${bmCtrlHtml}
-    ${bmDebugPanel}
   </div>`;
 
   return { html, js: bmCtrlJs };
@@ -1590,10 +1558,8 @@ export function renderRetention(input: {
   newInMonth: number;
   avgPayment: number;
   slideTitle?: string;
-  /** TEMPORARY diagnostic overlay — remove once retention numbers are confirmed correct. */
-  debugInfo?: string;
 }): SlideResult {
-  const { slideId, reportingMonth, trueRepeatRate, avgRetention, momRates, loyaltyBuckets, loyaltyTotal, loyaltyTitle, newInMonth, avgPayment, slideTitle, debugInfo } = input;
+  const { slideId, reportingMonth, trueRepeatRate, avgRetention, momRates, loyaltyBuckets, loyaltyTotal, loyaltyTitle, newInMonth, avgPayment, slideTitle } = input;
   const resolvedSlideTitle = slideTitle || "Residents use Flex their own way, but once they start, most keep coming back.";
 
   // Hero metric
@@ -1727,19 +1693,6 @@ export function renderRetention(input: {
     ? `<div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;height:100%;min-height:0;overflow:hidden;">${cohortSection}${retentionSection}</div>`
     : `<div style="display:grid;grid-template-columns:1fr;gap:14px;height:100%;min-height:0;overflow:hidden;">${retentionSection}</div>`;
 
-  // Collapsed by default (was covering the bottom ~220px of the slide -- Regular/Episodic
-  // buckets and several MoM bars were hidden behind it every time). Click to expand.
-  const debugPanel = debugInfo ? `
-    <div style="position:absolute;bottom:8px;left:8px;right:8px;z-index:10;
-                font-family:monospace;font-size:10px;color:#1D1D1D;">
-      <div onclick="this.nextElementSibling.style.display = this.nextElementSibling.style.display === 'none' ? 'block' : 'none';"
-           style="display:inline-block;background:#fff3cd;border:1px solid #ffe69c;border-radius:6px;
-                  padding:2px 8px;cursor:pointer;font-weight:700;">DEBUG (temporary) — click to expand</div>
-      <div style="display:none;max-height:220px;overflow-y:auto;line-height:1.5;
-                  background:#fff3cd;border:1px solid #ffe69c;border-radius:6px;padding:8px 10px;
-                  white-space:pre-wrap;margin-top:2px;">${_e(debugInfo)}</div>
-    </div>` : "";
-
   const html = `
   <div class="slide" id="slide-${slideId}" style="background:#fff;justify-content:flex-start;overflow:hidden;position:relative;">
     <div class="slide-header" style="margin-bottom:12px;flex-shrink:0;">
@@ -1749,7 +1702,6 @@ export function renderRetention(input: {
     ${topCardsHtml}
     <div style="height:1px;background:#eceaf2;flex-shrink:0;margin-bottom:14px;"></div>
     <div style="flex:1;min-height:0;overflow:hidden;">${bottomGrid}</div>
-    ${debugPanel}
   </div>`;
 
   return { html, js: retentionJs };
