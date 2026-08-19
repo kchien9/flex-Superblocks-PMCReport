@@ -56,9 +56,9 @@ const SEASONALITY_NOTE =
 
 export const SLIDE_TITLES: Record<number, string> = {
   1: "Cover", 2: "KPI Headline", 3: "How You Stack Up Against Peers",
-  4: "Active Households Over Time", 5: "Revenue Trend", 6: "Adoption Rate Trend",
+  4: "Active Residents Over Time", 5: "Revenue Trend", 6: "Adoption Rate Trend",
   8: "Engagement Funnel",
-  9: "Top Properties by Active Households", 10: "Top & Bottom Performers",
+  9: "Top Properties by Active Residents", 10: "Top & Bottom Performers",
   11: "Top 10 Performers", 12: "Adoption by State", 13: "Executive Summary",
   14: "Cohort Overview", 15: "Retention", 16: "Properties Over Time", 17: "Units Over Time",
   21: "Portfolio Projection", 22: "Whitespace Analysis", 23: "Integration Gap",
@@ -139,8 +139,8 @@ function notesKpis(k: SpeakerNotesKpis, monthly: SpeakerNotesMonthlyRow[]): stri
     established: `With ${k.monthsSinceLaunch} months of history, these numbers reflect a settled portfolio. Any meaningful movement — up or down — is a signal worth discussing.`,
   }[stage];
   return [
-    `${k.pmcName} is at ${pctStr(k.currentNar)} adoption this month — that's ${kStr(k.currentBillsPaid)} households actively paying rent through Flex.`,
-    `${kStr(k.currentNewSignups)} new households enrolled this month.`,
+    `${k.pmcName} is at ${pctStr(k.currentNar)} adoption this month — that's ${kStr(k.currentBillsPaid)} residents actively paying rent through Flex.`,
+    `${kStr(k.currentNewSignups)} new residents enrolled this month.`,
     ...notes,
     stageNotes,
     "If they ask what 'adoption rate' means: it's the share of units in the portfolio where a resident used Flex to pay rent this month.",
@@ -247,7 +247,7 @@ function notesQbrClose(): string[] {
 
 function notesTopProperties(): string[] {
   return [
-    "These are your top properties by active households this month.",
+    "These are your top properties by active residents this month.",
     "Call out any property that has notably improved or joined the top tier since last period — partners love to see movement.",
     "Avoid dwelling on properties not on this list. This slide is for celebrating wins.",
   ];
@@ -277,7 +277,7 @@ function notesCohortOverview(k: SpeakerNotesKpis): string[] {
 
 function notesRetention(monthly: SpeakerNotesMonthlyRow[]): string[] {
   const notes = [
-    "Retention here means: of households who paid with Flex last month, what share paid again this month?",
+    "Retention here means: of residents who paid with Flex last month, what share paid again this month?",
     "This is one of the stickiest metrics — high retention means residents have built Flex into their routine. Low retention means something is interrupting the habit.",
     "The loyalty tier breakdown (left panel) measures each resident's consistency over their full history: months they paid Flex divided by months Flex was available to them since their first payment. Perfect = every single month; Episodic = less than half.",
   ];
@@ -313,7 +313,7 @@ function notesPortfolioProjection(k: SpeakerNotesKpis, b: SpeakerNotesBenchmark)
   const notes = [
     `This slide shows what the portfolio looks like today vs. the ${pctStr(k.targetNar)} adoption target — and what it means in dollars.`,
     `Why ${pctStr(k.targetNar)} specifically: ${targetBasis} If asked 'why this number' — it's a real peer tier, not a round number picked for effect.`,
-    `Closing the gap requires roughly ${kStr(gapResidents)} more active households. That's the prize — use it to make the opportunity feel concrete, not abstract.`,
+    `Closing the gap requires roughly ${kStr(gapResidents)} more active residents. That's the prize — use it to make the opportunity feel concrete, not abstract.`,
     "Let the 'How to Get There' cards drive the conversation. Don't just show the number and move on — this is where you propose the actual plan.",
   ];
   if (k.hasNiro || k.currentNar < 0.10) {
@@ -348,7 +348,7 @@ function notesCustomerExperience(): string[] {
 function notesAdoptionOpportunities(k: SpeakerNotesKpis): string[] {
   return [
     `This slide surfaces the properties with the most headroom — below the portfolio median and sized large enough that moving them would meaningfully lift ${k.pmcName}'s overall adoption rate.`,
-    "HOW TO USE IT: Don't read the list top-to-bottom. Lead with the largest opportunity. 'If we could move [property] from X% to median, that's roughly Y more households on Flex every month.'",
+    "HOW TO USE IT: Don't read the list top-to-bottom. Lead with the largest opportunity. 'If we could move [property] from X% to median, that's roughly Y more residents on Flex every month.'",
     "WHAT DRIVES LAGGARDS: The most common causes are (1) residents don't know Flex is available — marketing isn't turned on, (2) the sign-up flow has friction specific to this PMS integration, or (3) it's a newer property still in its ramp period.",
     `Current portfolio NAR: ${pctStr(k.currentNar)}. Each property on this list is dragging that number. Moving even one from the bottom quartile to the median can shift the portfolio rate.`,
     "COACHING PROMPT: 'For the top property on this list — do you know if Flex is visible to residents there? Is it in the portal, in move-in communication?' This usually opens a property manager conversation.",
@@ -458,7 +458,7 @@ export function getNotesForSlide(
       case 2: return notesKpis(k, monthly);
       case 13: return notesExecSummary(k);
       case 3: return notesBenchmark(k, benchmark);
-      case 4: return notesTrend("Active Households", "billsPaid", k, monthly);
+      case 4: return notesTrend("Active Residents", "billsPaid", k, monthly);
       case 5: return notesTrend("Revenue", "rentPaid", k, monthly);
       case 6: return notesAdoptionTrend(k, monthly);
       case 9: case 11: return notesTopProperties();

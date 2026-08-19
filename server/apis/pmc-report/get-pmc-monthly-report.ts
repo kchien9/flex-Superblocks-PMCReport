@@ -240,6 +240,30 @@ function fmtPct(value: number): string {
   return s.endsWith(".0") ? s.slice(0, -2) + "%" : s + "%";
 }
 
+// Resident/household terminology toggle (Kevin's ask, 2026-08-19) — applied once to a fully-
+// assembled HTML document (deck or speaker notes), not threaded through every render
+// function. Ports Flask's app.py:_apply_terminology (recently made bidirectional there too).
+// Safe as a whole-word substitution: every "resident"-containing identifier/dict-key in this
+// codebase either never appears as literal text in rendered output, or is a compound
+// identifier with no word boundary at "resident(s)" (e.g. residentsAlign), so \b skips it.
+const TERM_MAP: Record<string, string> = {
+  Residents: "Households", residents: "households",
+  Resident: "Household", resident: "household",
+  RESIDENTS: "HOUSEHOLDS", RESIDENT: "HOUSEHOLD",
+};
+const TERM_MAP_REVERSE: Record<string, string> = Object.fromEntries(
+  Object.entries(TERM_MAP).map(([k, v]) => [v, k])
+);
+
+function applyTerminology(html: string, terminology: string | undefined): string {
+  const mapping = terminology === "household" ? TERM_MAP : TERM_MAP_REVERSE;
+  let out = html;
+  for (const [src, dst] of Object.entries(mapping)) {
+    out = out.replace(new RegExp(`\\b${src}\\b`, "g"), dst);
+  }
+  return out;
+}
+
 function fmtCurrency(v: number): string {
   if (v >= 1_000_000) {
     let s = (v / 1_000_000).toFixed(2).replace(/0+$/, "");
@@ -472,7 +496,7 @@ function renderExecSummary(d: ExecSummaryInput): { html: string; js: string } {
   let retentionSub = "";
   if (d.trueRepeatRate !== null) {
     retentionVal = fmtPct(d.trueRepeatRate);
-    retentionSub = "of eligible residents returned";
+    retentionSub = "of eligible residents came back";
   } else if (d.prevResidents !== null && d.prevResidents > 0) {
     const momRet = (d.currentResidents - d.currentNewSignups) / d.prevResidents;
     retentionVal = fmtPct(Math.max(0, Math.min(momRet, 1)));
@@ -582,7 +606,7 @@ function renderExecSummary(d: ExecSummaryInput): { html: string; js: string } {
             <div>
               <div style="font-size:28px;font-weight:700;color:#fff;letter-spacing:-0.02em;">${fmtCurrency(d.currentRent)}</div>
               ${heroPill}
-              ${avgPayment > 0 ? `<div style="font-size:11px;color:rgba(255,255,255,0.40);margin-top:5px;">avg $${avgPayment.toLocaleString()}/household</div>` : ""}
+              ${avgPayment > 0 ? `<div style="font-size:11px;color:rgba(255,255,255,0.40);margin-top:5px;">avg $${avgPayment.toLocaleString()}/resident</div>` : ""}
             </div>
             ${moRentSparkSvg ? `<div style="flex-shrink:0;">${moRentSparkSvg}</div>` : ""}
           </div>
@@ -847,7 +871,7 @@ function renderPortfolioProjection(p: ProjectionInput): { html: string; js: stri
       `If adoption stays exactly where it is today - your floor with no new resident growth`],
     ["Projected", projectedNar, projectedColor, projDesc],
     [targetLabel, targetNar, "#1a9e6a",
-      `Closing to ${fmtPct(targetNar)} means ${Math.round(p.totalUnits * targetNar).toLocaleString()} more active households - each adds ~$${avgRent >= 1000 ? Math.round(avgRent / 1000) + 'K' : avgRent}/month.`],
+      `Closing to ${fmtPct(targetNar)} means ${Math.round(p.totalUnits * targetNar).toLocaleString()} more active residents - each adds ~$${avgRent >= 1000 ? Math.round(avgRent / 1000) + 'K' : avgRent}/month.`],
   ];
 
   const pctEnrolled = Math.min(p.totalUnits > 0 ? (p.currentResidents / p.totalUnits) * 100 : 0, 100);
@@ -880,12 +904,12 @@ function renderPortfolioProjection(p: ProjectionInput): { html: string; js: stri
       }
     }
     if (propDelta >= 5) {
-      conText = `<strong>Adoption dipped last month</strong> - ${propDelta >= 0 ? "+" : ""}${propDelta.toLocaleString()} new properties joined, diluting the overall rate. Floor holds at today's ${fmtPct(p.currentNar)}: ${conservativeResidents.toLocaleString()} households.`;
+      conText = `<strong>Adoption dipped last month</strong> - ${propDelta >= 0 ? "+" : ""}${propDelta.toLocaleString()} new properties joined, diluting the overall rate. Floor holds at today's ${fmtPct(p.currentNar)}: ${conservativeResidents.toLocaleString()} residents.`;
     } else {
-      conText = `<strong>Adoption dipped last month</strong> - fewer residents paid through Flex. Could reflect seasonal patterns or a real signal; worth monitoring. Floor: ${conservativeResidents.toLocaleString()} households at ${fmtPct(p.currentNar)}.`;
+      conText = `<strong>Adoption dipped last month</strong> - fewer residents paid through Flex. Could reflect seasonal patterns or a real signal; worth monitoring. Floor: ${conservativeResidents.toLocaleString()} residents at ${fmtPct(p.currentNar)}.`;
     }
   } else {
-    conText = `Conservative floor: <strong>${conservativeResidents.toLocaleString()} households</strong> at today's ${fmtPct(p.currentNar)} rate - the baseline if nothing changes.`;
+    conText = `Conservative floor: <strong>${conservativeResidents.toLocaleString()} residents</strong> at today's ${fmtPct(p.currentNar)} rate - the baseline if nothing changes.`;
   }
 
   let projText: string;
@@ -900,7 +924,7 @@ function renderPortfolioProjection(p: ProjectionInput): { html: string; js: stri
   }
   projText += ` <span style="color:#a09cb0;">Assumes today's portfolio size - doesn't include any properties not yet live.</span>`;
 
-  const tgtText = `Closing to <strong>${fmtPct(targetNar)}</strong> means <strong>${gapResidents.toLocaleString()} more active households</strong> - each adds ~${fmtCurrency(avgRent)}/month.`;
+  const tgtText = `Closing to <strong>${fmtPct(targetNar)}</strong> means <strong>${gapResidents.toLocaleString()} more active residents</strong> - each adds ~${fmtCurrency(avgRent)}/month.`;
 
   const insightTexts: Record<string, string> = { Conservative: conText, Projected: projText, [targetLabel]: tgtText };
 
@@ -927,7 +951,7 @@ function renderPortfolioProjection(p: ProjectionInput): { html: string; js: stri
             <div style="font-size:12px;letter-spacing:0.1em;text-transform:uppercase;color:${labelColor};font-weight:600;margin-bottom:8px;">${label} &middot; ${fmtPct(nar)} adoption</div>
             <div style="font-size:15px;color:#a09cb0;margin-bottom:0;line-height:1.5;">${tileInsight}</div>
             <div style="margin-top:28px;padding-top:8px;">
-              <div style="font-size:15px;color:#524e5b;margin-bottom:10px;">${residents.toLocaleString()} active households</div>
+              <div style="font-size:15px;color:#524e5b;margin-bottom:10px;">${residents.toLocaleString()} active residents</div>
               <div style="font-size:52px;font-weight:400;color:${color};letter-spacing:-0.04em;line-height:1;font-family:'ABCDiatype',sans-serif;">${fmtCurrency(monthlyRent)}</div>
               <div style="font-size:13px;color:#a09cb0;margin-top:8px;">monthly rent collected</div>
             </div>
@@ -1747,6 +1771,9 @@ export default api({
     // call-site type (breaks QBR/new_logo callers that don't pass it); restored, with the
     // fallback handled at the derivation site instead (`growth_slides ?? "auto"`).
     growth_slides: z.enum(["auto", "include", "exclude"]).optional(),
+    // Resident/household terminology, every deck mode (Kevin's ask, 2026-08-19). Plain
+    // optional like growth_slides above — same .default() call-site-required gotcha.
+    terminology: z.enum(["resident", "household"]).optional(),
   }),
 
   output: z.object({
@@ -1755,7 +1782,7 @@ export default api({
     notes_html: z.string().optional(),
   }),
 
-  async run(ctx, { pmc_name, second_pmc, report_name, lookback_months, deck_mode, adoption_target, testimonials, total_portfolio_units, expansion_slides, presenting_mode, comparison_months, growth_slides }) {
+  async run(ctx, { pmc_name, second_pmc, report_name, lookback_months, deck_mode, adoption_target, testimonials, total_portfolio_units, expansion_slides, presenting_mode, comparison_months, growth_slides, terminology }) {
     // Compute bp_safe_cutoff
     const today = new Date();
     const dayOfMonth = today.getDate();
@@ -4447,7 +4474,7 @@ export default api({
       const reportYear = yearOnly(latestCompletedMonth);
       const pdfFilename = pmc_name.replace(/[^a-zA-Z0-9]/g, "_") + "_launch.pdf";
 
-      const html = buildDeckHtml({
+      const html = applyTerminology(buildDeckHtml({
         slides: nlSlides.join("\n"),
         pmc_name,
         report_month: reportMonth,
@@ -4455,7 +4482,7 @@ export default api({
         slide_count: nlCount,
         pdf_filename: pdfFilename,
         extra_js: nlJs,
-      });
+      }), terminology);
 
       return { html, empty: false };
     }
@@ -4795,7 +4822,7 @@ export default api({
       const reportYear = yearOnly(latestCompletedMonth);
       const pdfFilename = displayName.replace(/[^a-zA-Z0-9]/g, "_") + "_expansion.pdf";
 
-      const html = buildDeckHtml({
+      const html = applyTerminology(buildDeckHtml({
         slides: expSlidesRenumbered.join("\n"),
         pmc_name: displayName,
         report_month: reportMonth,
@@ -4803,7 +4830,7 @@ export default api({
         slide_count: expSlidesRenumbered.length,
         pdf_filename: pdfFilename,
         extra_js: expJs,
-      });
+      }), terminology);
 
       // --- Speaker notes ---
       let expNotesHtml: string | undefined;
@@ -4836,7 +4863,10 @@ export default api({
           month: m.month, billsPaid: m.billsPaid, units: m.units, rentPaid: m.rentPaid,
           newSignups: m.newSignups, propertyCount: m.propertyCount,
         }));
-        expNotesHtml = buildExpansionSpeakerNotesHtml(expRenderedKeys, expNotesKpis, expNotesMonthly, expNotesBenchmark);
+        expNotesHtml = applyTerminology(
+          buildExpansionSpeakerNotesHtml(expRenderedKeys, expNotesKpis, expNotesMonthly, expNotesBenchmark),
+          terminology
+        );
       } catch (e) {
         console.warn(`[PMC Report] expansion speaker notes generation failed for ${pmc_name}: ${e instanceof Error ? e.message : String(e)}`);
       }
@@ -5405,7 +5435,7 @@ export default api({
     const reportYear = yearOnly(latestCompletedMonth);
     const pdfFilename = displayName.replace(/[^a-zA-Z0-9]/g, "_") + "_deck.pdf";
 
-    const html = buildDeckHtml({
+    const html = applyTerminology(buildDeckHtml({
       slides: slidesConcatenated,
       pmc_name: displayName,
       report_month: reportMonth,
@@ -5413,7 +5443,7 @@ export default api({
       slide_count: slidesOrdered.length, // actual number of rendered slides
       pdf_filename: pdfFilename,
       extra_js: extraJs,
-    });
+    }), terminology);
 
     // --- Speaker notes (downloaded client-side as a data URI, same pattern as the deck) ---
     let notesHtml: string | undefined;
@@ -5461,7 +5491,10 @@ export default api({
       // `slidesOrdered` array above) — notes are keyed by the real Flask slide ID, not by
       // this deck's own renumbered document position.
       const qbrSlideIdSequence = [1, 13, 56, 54, 6, 21, 14, 12, 39, 15, 26, 50, 44, 58, 34, 57, 47];
-      notesHtml = buildSpeakerNotesHtml(qbrSlideIdSequence, notesKpis, notesMonthly, notesBenchmark);
+      notesHtml = applyTerminology(
+        buildSpeakerNotesHtml(qbrSlideIdSequence, notesKpis, notesMonthly, notesBenchmark),
+        terminology
+      );
     } catch (e) {
       console.warn(`[PMC Report] speaker notes generation failed for ${pmc_name}: ${e instanceof Error ? e.message : String(e)}`);
     }

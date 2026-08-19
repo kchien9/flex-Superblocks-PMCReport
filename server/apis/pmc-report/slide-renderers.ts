@@ -1594,7 +1594,7 @@ export function renderRetention(input: {
   const heroVal = trueRepeatRate !== null ? trueRepeatRate : avgRetention;
   const heroLabel = trueRepeatRate !== null ? "TRUE REPEAT RATE" : "MONTH-OVER-MONTH RETENTION";
   const heroSub = trueRepeatRate !== null
-    ? "of eligible households came back"
+    ? "of eligible residents came back"
     : `avg over ${momRates.length} months`;
   const heroColor = heroVal >= 0.80 ? "#1a9e6a" : heroVal >= 0.65 ? "#d97706" : "#dc5050";
 
