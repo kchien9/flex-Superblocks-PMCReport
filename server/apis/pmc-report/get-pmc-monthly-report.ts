@@ -4863,8 +4863,15 @@ export default api({
           month: m.month, billsPaid: m.billsPaid, units: m.units, rentPaid: m.rentPaid,
           newSignups: m.newSignups, propertyCount: m.propertyCount,
         }));
+        // Property Reference tab (Kevin's catch) — same propertySnapshot every property-level
+        // slide in this deck already reads from.
+        const expNotesPropertySnapshot = propertySnapshot.map((p) => ({
+          propertyName: p.propertyName, units: p.units, billsPaid: p.billsPaid,
+          newSignups: p.newSignups, adoptionRate: p.adoptionRate, rentPaid: p.rentPaid,
+          cumRent: p.cumRent,
+        }));
         expNotesHtml = applyTerminology(
-          buildExpansionSpeakerNotesHtml(expRenderedKeys, expNotesKpis, expNotesMonthly, expNotesBenchmark),
+          buildExpansionSpeakerNotesHtml(expRenderedKeys, expNotesKpis, expNotesMonthly, expNotesBenchmark, expNotesPropertySnapshot),
           terminology
         );
       } catch (e) {
@@ -5491,8 +5498,16 @@ export default api({
       // `slidesOrdered` array above) — notes are keyed by the real Flask slide ID, not by
       // this deck's own renumbered document position.
       const qbrSlideIdSequence = [1, 13, 56, 54, 6, 21, 14, 12, 39, 15, 26, 50, 44, 58, 34, 57, 47];
+      // Property Reference tab (Kevin's catch) — same propertySnapshot every property-level
+      // slide in this deck already reads from. preMeetingFlags stays unwired (a separate,
+      // pre-existing gap, not touched here).
+      const qbrNotesPropertySnapshot = propertySnapshot.map((p) => ({
+        propertyName: p.propertyName, units: p.units, billsPaid: p.billsPaid,
+        newSignups: p.newSignups, adoptionRate: p.adoptionRate, rentPaid: p.rentPaid,
+        cumRent: p.cumRent,
+      }));
       notesHtml = applyTerminology(
-        buildSpeakerNotesHtml(qbrSlideIdSequence, notesKpis, notesMonthly, notesBenchmark),
+        buildSpeakerNotesHtml(qbrSlideIdSequence, notesKpis, notesMonthly, notesBenchmark, undefined, qbrNotesPropertySnapshot),
         terminology
       );
     } catch (e) {

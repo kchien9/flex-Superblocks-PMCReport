@@ -5,11 +5,14 @@
  * "Slide Deck" download pattern (returned as an HTML string, downloaded client-side as a
  * data URI — no server-side file storage needed).
  *
- * Not yet ported from Flask: the "Property Reference" internal tab (tier/approval-rate table
- * — needs fields not yet threaded into this port's property snapshot) and the cohort
- * standout-segment insight callouts (detect_standout_segments/pull_cohort_deal_tags — a
- * separate analysis pass Flask runs before notes generation). Both are safe, additive
- * follow-ups — their absence just means a slightly shorter notes doc, not a wrong one.
+ * Property Reference tab (Kevin's catch, 2026-08-19): ported with 7 of Flask's 9 columns —
+ * Property, Units, Paying Residents, New Signups, Adoption, This Month Rent, Total Rent Paid.
+ * KNOWN GAP: Tier and Approval Rate are NOT included — those need current_tier/cum_approvals/
+ * cum_applications, which this report's property snapshot doesn't pull anywhere today
+ * (confirmed via full-repo grep). Adding them is a real, separate follow-up (new query), not a
+ * quick wire-up. Still not ported: the cohort standout-segment insight callouts
+ * (detectStandoutSegments/pullCohortDealTags — a separate analysis pass Flask runs before
+ * notes generation) — a safe, additive follow-up.
  */
 
 function _e(s: string): string {
@@ -487,6 +490,126 @@ export function getNotesForSlide(
   }
 }
 
+// ── Property Reference tab (internal-only, never shown to the partner) ─────────
+// Port of Flask's _build_property_reference_table (generator/speaker_notes.py:793) — 7 of its
+// 9 columns; see the file-level KNOWN GAP note at the top for Tier/Approval Rate.
+
+interface PropertyReferenceRow {
+  propertyName: string;
+  units: number;
+  billsPaid: number;
+  newSignups: number;
+  adoptionRate: number;
+  rentPaid: number;
+  cumRent?: number;
+}
+
+function buildPropertyReferenceTable(snapshot: PropertyReferenceRow[] | undefined): string {
+  if (!snapshot || snapshot.length === 0) {
+    return `<div style="color:#a09cb0;font-size:13px;">No property data available.</div>`;
+  }
+
+  const rows = [...snapshot]
+    .sort((a, b) => b.billsPaid - a.billsPaid)
+    .map((p) => {
+      const narColor = p.adoptionRate >= 0.20 ? "#1a9e6a" : p.adoptionRate >= 0.10 ? "#d97706" : "#dc5050";
+      return `
+        <tr>
+          <td data-sort="${_e(p.propertyName)}" style="padding:7px 10px;font-size:12px;">${_e(p.propertyName)}</td>
+          <td data-sort="${p.units}" style="padding:7px 10px;font-size:12px;text-align:right;">${p.units.toLocaleString()}</td>
+          <td data-sort="${p.billsPaid}" style="padding:7px 10px;font-size:12px;text-align:right;">${p.billsPaid.toLocaleString()}</td>
+          <td data-sort="${p.newSignups}" style="padding:7px 10px;font-size:12px;text-align:right;">${p.newSignups.toLocaleString()}</td>
+          <td data-sort="${p.adoptionRate}" style="padding:7px 10px;font-size:12px;text-align:right;font-weight:700;color:${narColor};">${pctStr(p.adoptionRate)}</td>
+          <td data-sort="${p.rentPaid}" style="padding:7px 10px;font-size:12px;text-align:right;">$${kStr(p.rentPaid)}</td>
+          <td data-sort="${p.cumRent ?? p.rentPaid}" style="padding:7px 10px;font-size:12px;text-align:right;color:#6A3DB8;">$${kStr(p.cumRent ?? p.rentPaid)}</td>
+        </tr>`;
+    })
+    .join("");
+
+  const cols = ["Property", "Units", "Paying Residents", "New Signups", "Adoption", "This Month Rent", "Total Rent Paid"];
+  const thHtml = cols.map((c, i) => `
+    <th onclick="flexNotesSortTable(${i})" id="pr-th-${i}"
+        style="padding:7px 10px;text-align:${i === 0 ? "left" : "right"};
+               font-size:10px;color:#524e5b;text-transform:uppercase;letter-spacing:0.08em;
+               cursor:pointer;user-select:none;white-space:nowrap;">
+      ${c}<span id="pr-arrow-${i}" style="display:inline-block;width:12px;"></span>
+    </th>`).join("");
+
+  return `
+    <div style="margin-bottom:16px;background:#fef2f2;border:1px solid #fca5a5;border-left:4px solid #dc2626;
+                border-radius:8px;padding:12px 16px;font-size:12px;color:#7f1d1d;">
+      <strong>Internal reference only</strong> — never shown to the partner.
+    </div>
+    <div style="font-size:11px;color:#a09cb0;margin-bottom:10px;">Click a column header to sort.</div>
+    <div style="overflow-x:auto;">
+      <table style="width:100%;border-collapse:collapse;">
+        <thead><tr id="pr-thead" style="border-bottom:2px solid #eceaf2;">${thHtml}</tr></thead>
+        <tbody id="pr-tbody">${rows}</tbody>
+      </table>
+    </div>
+    <script>
+    function flexNotesSortTable(col) {
+      var tbody = document.getElementById('pr-tbody'); if (!tbody) return;
+      var rows = Array.prototype.slice.call(tbody.querySelectorAll('tr'));
+      var thead = document.getElementById('pr-thead');
+      var prevCol = thead.getAttribute('data-sort-col'), prevDir = thead.getAttribute('data-sort-dir');
+      var asc = !(String(col) === prevCol && prevDir === 'asc');
+      rows.sort(function(a, b) {
+        var av = a.children[col].getAttribute('data-sort'), bv = b.children[col].getAttribute('data-sort');
+        var an = parseFloat(av), bn = parseFloat(bv);
+        var cmp = (!isNaN(an) && !isNaN(bn)) ? (an - bn) : String(av).localeCompare(String(bv));
+        return asc ? cmp : -cmp;
+      });
+      rows.forEach(function(r) { tbody.appendChild(r); });
+      thead.setAttribute('data-sort-col', col);
+      thead.setAttribute('data-sort-dir', asc ? 'asc' : 'desc');
+      for (var i = 0; i < ${cols.length}; i++) {
+        var el = document.getElementById('pr-arrow-' + i);
+        if (el) el.textContent = (i === col) ? (asc ? '▲' : '▼') : '';
+      }
+    }
+    </script>`;
+}
+
+// Tab bar + tab-content wrapper shared by both speaker-notes builders below — port of Flask's
+// notes-tab-bar/notes-tab-content CSS + flexNotesTab() JS (generator/speaker_notes.py:961-1010).
+function wrapWithPropertyReferenceTabs(talkTrackHtml: string, propertyReferenceHtml: string): string {
+  return `
+  <div class="notes-tab-bar">
+    <button class="notes-tab-btn is-active" id="notes-tab-btn-talktrack" onclick="flexNotesTab('talktrack')">Talk Track</button>
+    <button class="notes-tab-btn" id="notes-tab-btn-propref" onclick="flexNotesTab('propref')">Property Reference</button>
+  </div>
+  <div class="notes-tab-content is-active" id="notes-tab-talktrack">
+    ${talkTrackHtml}
+  </div>
+  <div class="notes-tab-content" id="notes-tab-propref">
+    ${propertyReferenceHtml}
+  </div>
+  <script>
+  function flexNotesTab(name) {
+    ['talktrack', 'propref'].forEach(function(n) {
+      document.getElementById('notes-tab-' + n).classList.toggle('is-active', n === name);
+      document.getElementById('notes-tab-btn-' + n).classList.toggle('is-active', n === name);
+    });
+  }
+  </script>`;
+}
+
+const NOTES_TAB_STYLE = `
+  .notes-tab-bar { display: flex; gap: 8px; margin-bottom: 24px; }
+  .notes-tab-btn {
+    padding: 8px 16px; border-radius: 7px; border: 1px solid #eceaf2; background: #fff;
+    color: #524e5b; font-size: 13px; font-weight: 600; cursor: pointer;
+    font-family: 'Helvetica Neue', Arial, sans-serif;
+  }
+  .notes-tab-btn.is-active { background: #8d70ee; border-color: #8d70ee; color: #fff; }
+  .notes-tab-content { display: none; }
+  .notes-tab-content.is-active { display: block; }
+  @media print {
+    .notes-tab-bar { display: none; }
+    .notes-tab-content { display: block !important; }
+  }`;
+
 // ── Expansion deck notes dispatch ────────────────────────────────────────────
 // Expansion's own slide keys (get-pmc-monthly-report.ts's EXPANSION_SLIDE_ORDER) are strings,
 // not the numeric Flask IDs above — and critically, several numeric IDs mean something
@@ -547,6 +670,7 @@ export function buildExpansionSpeakerNotesHtml(
   k: SpeakerNotesKpis,
   monthly: SpeakerNotesMonthlyRow[],
   benchmark: SpeakerNotesBenchmark,
+  propertySnapshot?: PropertyReferenceRow[],
 ): string {
   const pmc = _e(k.pmcName);
   const reportMonth = monthStr(k.reportingMonth);
@@ -577,6 +701,9 @@ export function buildExpansionSpeakerNotesHtml(
     </div>`);
   }
 
+  const talkTrackHtml = sections.join("\n");
+  const propertyReferenceHtml = buildPropertyReferenceTable(propertySnapshot);
+
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -593,6 +720,7 @@ export function buildExpansionSpeakerNotesHtml(
     margin-top: 6px;
   }
   @media print { .section { page-break-inside: avoid; } }
+  ${NOTES_TAB_STYLE}
 </style>
 </head>
 <body>
@@ -607,7 +735,7 @@ export function buildExpansionSpeakerNotesHtml(
       Confidential &mdash; for internal use only. Print before the meeting or keep open on a second screen.
     </div>
   </div>
-  ${sections.join("\n")}
+  ${wrapWithPropertyReferenceTabs(talkTrackHtml, propertyReferenceHtml)}
 </body>
 </html>`;
 }
@@ -620,6 +748,7 @@ export function buildSpeakerNotesHtml(
   monthly: SpeakerNotesMonthlyRow[],
   benchmark: SpeakerNotesBenchmark,
   preMeetingFlags?: string[],
+  propertySnapshot?: PropertyReferenceRow[],
 ): string {
   const pmc = _e(k.pmcName);
   const reportMonth = monthStr(k.reportingMonth);
@@ -657,6 +786,9 @@ export function buildSpeakerNotesHtml(
        </div>`
     : "";
 
+  const talkTrackHtml = `${preMeetingHtml}\n${sections.join("\n")}`;
+  const propertyReferenceHtml = buildPropertyReferenceTable(propertySnapshot);
+
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -673,6 +805,7 @@ export function buildSpeakerNotesHtml(
     margin-top: 6px;
   }
   @media print { .section { page-break-inside: avoid; } }
+  ${NOTES_TAB_STYLE}
 </style>
 </head>
 <body>
@@ -687,8 +820,7 @@ export function buildSpeakerNotesHtml(
       Confidential &mdash; for internal use only. Print before the meeting or keep open on a second screen.
     </div>
   </div>
-  ${preMeetingHtml}
-  ${sections.join("\n")}
+  ${wrapWithPropertyReferenceTabs(talkTrackHtml, propertyReferenceHtml)}
 </body>
 </html>`;
 }
