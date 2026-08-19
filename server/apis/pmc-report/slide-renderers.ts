@@ -466,8 +466,11 @@ const METRIC_META: Record<string, MetricMeta> = {
   },
   SIGNUP_TIMING: {
     label: "Time to First Sign-Up",
-    definition: "Avg months from property rollout to first resident bill connection – trailing 12 months",
-    format: (v) => `${v.toFixed(1)} mo`,
+    // Days, not months (Kevin's catch) - real day-level rollout/connection timestamps from
+    // RENTERS, not the old BP_MONTH-granularity calc that made every same-month result read
+    // as an uninformative "0.0 months" regardless of whether it took 1 day or 29.
+    definition: "Avg days from property rollout to first resident bill connection – trailing 12 months",
+    format: (v) => `${Math.round(v)} day${Math.round(v) === 1 ? "" : "s"}`,
   },
 };
 

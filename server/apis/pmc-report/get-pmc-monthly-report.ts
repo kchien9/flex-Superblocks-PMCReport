@@ -2391,7 +2391,12 @@ export default api({
           return [] as NetworkPoolRow[];
         })();
 
-    const [metricsRows, dqShieldedRows, yearlyRentBillsRows, trendRawRows, retentionCohortRows, customerMonthRows] = await Promise.all([
+    const SubjectSignupTimingSchema = z.object({
+      PROPERTY_NAME: z.string(),
+      ROLLOUT_DATE: z.string(),
+      FIRST_CONNECTED_AT: z.string(),
+    });
+    const [metricsRows, dqShieldedRows, yearlyRentBillsRows, trendRawRows, retentionCohortRows, customerMonthRows, subjectSignupTimingRows] = await Promise.all([
       ctx.integrations.snowflake_sso.query(
         `SELECT TO_VARCHAR(BP_MONTH, 'YYYY-MM-DD') AS BP_MONTH, NAR, SEGMENT_NAR_AVG,
                 BILLS_PAID, BILLS_PAID_NEW, BILLS_PAID_REPEAT, BILLS_PAID_PREV_MONTH,
@@ -2597,6 +2602,33 @@ export default api({
         [pmc_name, reportingMonthStr, pmc_name, Math.max(3, lookback_months), cutoffStr, cutoffStr],
         { label: "Fetch raw (customer, month) pairs for MoM retention set-intersection" }
       ).catch(() => [] as { CUSTOMER_PUBLIC_ID: string; BP_MONTH: string }[]),
+      // Real DAY-level rollout-to-first-signup, replacing the old BP_MONTH-granularity calc
+      // (Kevin's catch: "0.0 months" from same-BP-month rollout+connection told you nothing;
+      // the real number for the one qualifying property here is 3 days, not 0). RENTERS is
+      // resident-level with real timestamps (BILL_CONNECTED_AT_UTC, RESIDENT_PROPERTY_ROLLOUT_
+      // DATE) - PROPERTY_BP_MONTH_STATS only has BP_MONTH, monthly granularity, no finer.
+      // BILL_CONNECTED_AT_UTC >= rollout date is NOT redundant - confirmed real and necessary:
+      // without it, residents who moved from an EARLIER Flex-connected property carry their
+      // original connection timestamp (one real case: dated 2024, two years before this
+      // property even rolled out in 2026), which would make "days to first sign-up" go
+      // negative or nonsensically large instead of reflecting this property's own onboarding.
+      ctx.integrations.snowflake_sso.query(
+        `SELECT
+            RESIDENT_PROPERTY_NAME AS PROPERTY_NAME,
+            TO_VARCHAR(RESIDENT_PROPERTY_ROLLOUT_DATE, 'YYYY-MM-DD') AS ROLLOUT_DATE,
+            TO_VARCHAR(MIN(BILL_CONNECTED_AT_UTC), 'YYYY-MM-DD"T"HH24:MI:SS') AS FIRST_CONNECTED_AT
+         FROM PRODUCTION.ANALYTICS.RENTERS
+         WHERE RESIDENT_PMC_NAME = ?
+           AND RESIDENT_PROPERTY_ROLLOUT_DATE IS NOT NULL
+           AND RESIDENT_PROPERTY_ROLLOUT_DATE >= DATEADD('month', -12, ?::DATE)
+           AND RESIDENT_PROPERTY_ROLLOUT_DATE < ?::DATE
+           AND BILL_CONNECTED_AT_UTC IS NOT NULL
+           AND BILL_CONNECTED_AT_UTC >= RESIDENT_PROPERTY_ROLLOUT_DATE::TIMESTAMP_NTZ
+         GROUP BY RESIDENT_PROPERTY_NAME, RESIDENT_PROPERTY_ROLLOUT_DATE`,
+        SubjectSignupTimingSchema,
+        [pmc_name, cutoffStr, cutoffStr],
+        { label: "Fetch real day-level rollout-to-first-signup timing (RENTERS)" }
+      ).catch((err) => { console.error("[SUBJECT SIGNUP TIMING QUERY FAILED]", String(err)); return [] as z.infer<typeof SubjectSignupTimingSchema>[]; }),
     ]);
 
     // --- Fire slow secondary queries in parallel ---
@@ -3605,15 +3637,15 @@ export default api({
              AND t.PREVIOUS_MONTH_CHARGED_USERS_COUNT > 0
            GROUP BY t.PMC_NAME
          ),
-         -- Time to First Sign-Up: avg months from a property's rollout to its first NEW BILL
+         -- Time to First Sign-Up: avg DAYS (not months - Kevin's catch, see subjectSignupTimingValue
+         -- above for the full reasoning) from a property's rollout to its first NEW BILL
          -- CONNECTION (not first payment). A bill connection is the "expressed interest /
          -- opted in" event -- a real signal distinct from payment, and NOT gated by the BP
-         -- billing cycle the way payment is: a property rolling out on the 2nd of a month can
-         -- still make that month's bill run, one rolling out on the 28th can't, purely by
-         -- calendar luck that has nothing to do with marketing/ops quality. First-payment
-         -- inherits that noise; first-bill-connection doesn't. Independent of peer_current/
-         -- peer_repeat above (doesn't need the subject's units), so it's its own CTE chain
-         -- rather than joining into theirs.
+         -- billing cycle the way payment is. RENTERS (resident-level, real timestamps) replaces
+         -- PROPERTY_BP_MONTH_STATS (BP_MONTH granularity only) as the data source here, same as
+         -- the subject-side query. BILL_CONNECTED_AT_UTC >= rollout date excludes residents who
+         -- carry a connection timestamp from an earlier Flex-connected property - confirmed real
+         -- necessary guard, not defensive-only (see subjectSignupTimingRows' query comment).
          signup_timing AS (
             -- Scoped to properties rolled out in the trailing 12 months, not a PMC's entire
             -- history -- Wellington joined 5 years ago, so a lifetime average would be
@@ -3621,20 +3653,23 @@ export default api({
             -- ops get NEW properties live today. Matches the same trailing-12mo window every
             -- other metric on this slide (Engagement, Repeat Rate) already uses, for the same
             -- "how do things look now" reason.
-            SELECT PMC_NAME, PROPERTY_NAME, ROLLOUT_MONTH,
-                   MIN(CASE WHEN NEW_BILL_CONNECTIONS_PROPERTY > 0 THEN BP_MONTH END) AS FIRST_CONNECTED_MONTH
-            FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS
-            WHERE PMC_NAME IN (${lockedPeers.map(() => "?").join(", ")})
-              AND ROLLOUT_MONTH IS NOT NULL
-              AND ROLLOUT_MONTH >= DATEADD('month', -12, ?::DATE)
-              AND BP_MONTH >= ROLLOUT_MONTH
-              AND BP_MONTH < ?
-            GROUP BY PMC_NAME, PROPERTY_NAME, ROLLOUT_MONTH
+            SELECT
+               RESIDENT_PMC_NAME AS PMC_NAME,
+               RESIDENT_PROPERTY_NAME AS PROPERTY_NAME,
+               RESIDENT_PROPERTY_ROLLOUT_DATE AS ROLLOUT_DATE,
+               MIN(BILL_CONNECTED_AT_UTC) AS FIRST_CONNECTED_AT
+            FROM PRODUCTION.ANALYTICS.RENTERS
+            WHERE RESIDENT_PMC_NAME IN (${lockedPeers.map(() => "?").join(", ")})
+              AND RESIDENT_PROPERTY_ROLLOUT_DATE IS NOT NULL
+              AND RESIDENT_PROPERTY_ROLLOUT_DATE >= DATEADD('month', -12, ?::DATE)
+              AND RESIDENT_PROPERTY_ROLLOUT_DATE < ?::DATE
+              AND BILL_CONNECTED_AT_UTC IS NOT NULL
+              AND BILL_CONNECTED_AT_UTC >= RESIDENT_PROPERTY_ROLLOUT_DATE::TIMESTAMP_NTZ
+            GROUP BY RESIDENT_PMC_NAME, RESIDENT_PROPERTY_NAME, RESIDENT_PROPERTY_ROLLOUT_DATE
          ),
          signup_timing_pmc AS (
-            SELECT PMC_NAME, AVG(DATEDIFF('month', ROLLOUT_MONTH, FIRST_CONNECTED_MONTH)) AS AVG_MONTHS_TO_SIGNUP
+            SELECT PMC_NAME, AVG(DATEDIFF('day', ROLLOUT_DATE, FIRST_CONNECTED_AT)) AS AVG_DAYS_TO_SIGNUP
             FROM signup_timing
-            WHERE FIRST_CONNECTED_MONTH IS NOT NULL
             GROUP BY PMC_NAME
          )
          SELECT 'NAR' AS METRIC,
@@ -3661,9 +3696,9 @@ export default api({
          WHERE ENG_PER_100 IS NOT NULL
          UNION ALL
          SELECT 'SIGNUP_TIMING' AS METRIC,
-                PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY AVG_MONTHS_TO_SIGNUP) AS P25,
-                PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY AVG_MONTHS_TO_SIGNUP) AS P50,
-                PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY AVG_MONTHS_TO_SIGNUP) AS P75,
+                PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY AVG_DAYS_TO_SIGNUP) AS P25,
+                PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY AVG_DAYS_TO_SIGNUP) AS P50,
+                PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY AVG_DAYS_TO_SIGNUP) AS P75,
                 NULL AS P90, NULL AS P99, NULL AS PMC_VALUE
          FROM signup_timing_pmc
          UNION ALL
@@ -3884,36 +3919,26 @@ export default api({
       _engDebugAvgUnits = engAvgUnitsRecent;
       _engDebugMonthsFound = [...engUnitsByMonth.keys()].sort();
       _engDebugWindowStart = engWindowStart;
-      // Same "first bill connection" definition as the peer query's signup_timing CTE (not
-      // first payment — a bill connection isn't gated by the monthly BP cycle the way a
-      // payment is, so it isolates real marketing/ops speed from calendar-alignment luck), and
-      // the same trailing-12mo-rollout scope: Wellington joined 5 years ago, so an all-time
-      // average would be dominated by ancient rollouts and say nothing about how fast NEW
-      // properties get live today.
+      // Real days (not months) from rollout to first resident bill connection - subjectSignupTimingRows
+      // is already scoped to the trailing 12 months and already excludes carried-over history
+      // from a prior property (BILL_CONNECTED_AT_UTC >= rollout date, enforced in the query
+      // itself). "Days" not "months" was Kevin's catch - a same-BP-month rollout+connection
+      // used to always read as "0.0 months" regardless of whether that meant 1 day or 29.
       const subjectSignupTimingValue = (() => {
         const [cy, cm] = cutoffStr.split("-").map(Number);
-        const rolloutCutoff12mo = new Date(cy, cm - 1 - 12, 1).toISOString().slice(0, 10);
-        const byProp = new Map<string, { rollout: string | null; firstConnected: string | null }>();
-        for (const r of trendRawRows) {
-          const entry = byProp.get(r.PROPERTY_NAME) ?? { rollout: r.ROLLOUT_MONTH, firstConnected: null };
-          if (!entry.rollout) entry.rollout = r.ROLLOUT_MONTH;
-          if ((r.NEW_BILL_CONNECTIONS_PROPERTY ?? 0) > 0 && r.ROLLOUT_MONTH && r.BP_MONTH >= r.ROLLOUT_MONTH) {
-            if (!entry.firstConnected || r.BP_MONTH < entry.firstConnected) entry.firstConnected = r.BP_MONTH;
-          }
-          byProp.set(r.PROPERTY_NAME, entry);
-        }
-        const monthsList: number[] = [];
+        const daysList: number[] = [];
         let mostRecentContributingRollout: string | null = null;
-        for (const { rollout, firstConnected } of byProp.values()) {
-          if (!rollout || !firstConnected || rollout < rolloutCutoff12mo) continue;
-          const [ry, rm] = rollout.split("-").map(Number);
-          const [cyy, cmm] = firstConnected.split("-").map(Number);
-          monthsList.push((cyy - ry) * 12 + (cmm - rm));
-          if (!mostRecentContributingRollout || rollout > mostRecentContributingRollout) {
-            mostRecentContributingRollout = rollout;
+        for (const r of subjectSignupTimingRows) {
+          const rolloutMs = new Date(r.ROLLOUT_DATE + "T00:00:00Z").getTime();
+          const connectedMs = new Date(r.FIRST_CONNECTED_AT.replace(" ", "T") + "Z").getTime();
+          if (Number.isNaN(rolloutMs) || Number.isNaN(connectedMs)) continue;
+          const days = Math.round((connectedMs - rolloutMs) / 86_400_000);
+          daysList.push(Math.max(0, days));
+          if (!mostRecentContributingRollout || r.ROLLOUT_DATE > mostRecentContributingRollout) {
+            mostRecentContributingRollout = r.ROLLOUT_DATE;
           }
         }
-        if (monthsList.length === 0) return null;
+        if (daysList.length === 0) return null;
         // Gate on recency (Kevin's catch): this metric measures whichever cohort happens to be
         // in the trailing-12mo window, which can be a single rollout from 10+ months ago -
         // stale data about how onboarding USED to go, not a live signal about how it's going
@@ -3924,7 +3949,7 @@ export default api({
         if (!mostRecentContributingRollout || mostRecentContributingRollout < recentEnoughCutoff) {
           return null;
         }
-        return monthsList.reduce((s, v) => s + v, 0) / monthsList.length;
+        return daysList.reduce((s, v) => s + v, 0) / daysList.length;
       })();
       // Flask: pmc_penetration = min(enrolled_units / total_company_units, 1.0) — capped so a
       // stale/undersized total-company-units figure can't produce an impossible >100%.
