@@ -283,7 +283,15 @@ function sparklineSvg(values: (number | null)[], color = "#6A3DB8", w = 64, h = 
 
 // --- HTML Slide Renderers ---
 
-function renderCover(kpis: { pmcName: string; reportingMonth: string; partnerSince: string | null; propertyCount: number }): string {
+function renderCover(kpis: { pmcName: string; reportingMonth: string; partnerSince: string | null; propertyCount: number; firstMonth: string | null }): string {
+  // Reporting Period tile - was entirely missing (Flask's render_cover has a 3rd tile here:
+  // generator/slides.py:91-92, period_range = first_month label - reporting_month label).
+  // firstMonth is the earliest month in this report's own lookback window (monthlyTotals[0]),
+  // same source Flask uses (kpis["first_month"] = monthly["bp_month"].iloc[0]) - not the
+  // lifetime/since-inception window, which is a different, unbounded query (Kevin's catch).
+  const periodRange = kpis.firstMonth
+    ? `${monthLabel(kpis.firstMonth)} – ${monthLabel(kpis.reportingMonth)}`
+    : monthLabel(kpis.reportingMonth);
   return `
   <div class="slide active" id="slide-1" style="background:#2C194D;justify-content:center;align-items:flex-start;">
     <div style="font-size:11px;letter-spacing:0.18em;text-transform:uppercase;color:#DDC6F9;margin-bottom:20px;font-weight:600;font-family:'ABCDiatype',sans-serif;">Flex Performance Review</div>
@@ -294,6 +302,8 @@ function renderCover(kpis: { pmcName: string; reportingMonth: string; partnerSin
            <div style="font-size:16px;font-weight:600;color:rgba(255,255,255,0.85);font-family:'ABCDiatype',sans-serif;">${monthLabel(kpis.partnerSince)}</div></div>
       <div><div style="font-size:10px;letter-spacing:0.14em;text-transform:uppercase;color:rgba(255,255,255,0.28);margin-bottom:6px;font-family:'ABCDiatype',sans-serif;">Properties Active</div>
            <div style="font-size:16px;font-weight:600;color:rgba(255,255,255,0.85);font-family:'ABCDiatype',sans-serif;">${kpis.propertyCount}</div></div>
+      <div><div style="font-size:10px;letter-spacing:0.14em;text-transform:uppercase;color:rgba(255,255,255,0.28);margin-bottom:6px;font-family:'ABCDiatype',sans-serif;">Reporting Period</div>
+           <div style="font-size:16px;font-weight:600;color:rgba(255,255,255,0.85);font-family:'ABCDiatype',sans-serif;">${periodRange}</div></div>
     </div>
     <div style="position:absolute;right:100px;top:50%;transform:translateY(-50%);width:380px;height:380px;border-radius:50%;background:radial-gradient(circle,rgba(106,61,184,0.22) 0%,transparent 68%);"></div>
     <div style="position:absolute;bottom:60px;right:80px;font-size:28px;font-weight:500;letter-spacing:-0.04em;color:rgba(255,255,255,0.15);font-family:'ABCDiatype',sans-serif;">flex</div>
@@ -2387,10 +2397,16 @@ export default api({
              FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS
              WHERE PMC_NAME = ?
                AND BP_MONTH < ?
-               AND IS_IN_NETWORK = TRUE
              GROUP BY 1
              ORDER BY 1
              LIMIT 50`,
+            // No IS_IN_NETWORK filter - matches Flask's pull_yearly_rent_bills exactly (deliberately
+            // unfiltered, same "true history" convention as lifetime_rent). Confirmed real: this
+            // filter dropped 6 properties' historical rent/bills for months they were later
+            // deactivated/transferred out of - $10.9K/6 bills in 2024, $5.5K/3 bills in 2025 -
+            // silently shrinking a lifetime total that was genuinely guaranteed and paid at the
+            // time. A property's CURRENT network status has no bearing on whether past history
+            // happened (Kevin's catch: Flask showed $12.43M/7,239 bills, this showed $12.4M/7,230).
             YearlyRentBillsSchema,
             [cutoffMonthNum, cutoffMonthNum, cutoffMonthNum, pmc_name, cutoffStr],
             { label: "Fetch since-inception yearly totals (unbounded)" }
@@ -3207,6 +3223,7 @@ export default api({
       reportingMonth: latestCompletedMonth,
       partnerSince,
       propertyCount: uniqueProperties.size,
+      firstMonth: monthlyTotals.length > 0 ? monthlyTotals[0].month : null,
     };
 
     // --- Compute KPI slide data ---
