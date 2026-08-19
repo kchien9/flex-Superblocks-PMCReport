@@ -3481,6 +3481,26 @@ export default api({
       { label: "Peer-candidate geo profile for tier matching (PMC x state grain, unsampled)" }
     ).catch(() => [] as z.infer<typeof PeerCandidateProfileSchema>[]);
 
+    // For Expansion decks, peer-match against the FULL TARGET portfolio size instead of the
+    // current enrolled size when the target is larger — every slide in the deck must agree on
+    // one peer group (Flask app.py:1608-1668, Kevin's call 2026-08-08/2026-08-19: "make clark
+    // re derive full target portfolio to match flask"). Resolved here, before the peer-matching
+    // ladder below runs (lockedPeers/segmentPercentiles/canonicalPeerNarP50/stageBenchmarksMap
+    // all key off subjectUnits, set from this), rather than at the later expTotalPortfolio call
+    // site — subjectPortfolioTotalPromise already fired at the top of this function, so
+    // resolving it here costs nothing extra. Reused (not recomputed) at the later
+    // expTotalPortfolio site. Declared at this scope (not inside the `if` below) so both sites
+    // can see it.
+    let expTotalPortfolioEarly: number | null = null;
+    if (deck_mode === "expansion") {
+      expTotalPortfolioEarly = total_portfolio_units || null;
+      if (!expTotalPortfolioEarly) {
+        const [expPortfolioRow] = await subjectPortfolioTotalPromise;
+        const acctUnits = expPortfolioRow?.TOTAL_COMPANY_UNITS ?? 0;
+        expTotalPortfolioEarly = acctUnits > 0 ? acctUnits : (latestMonth?.units ?? 0);
+      }
+    }
+
     if (peerCandidateRows.length > 0) {
       // Step 1: Aggregate to PMC level for peer matching. avgRent is bills-weighted (summed
       // rent / summed bills) — matching Flask's per_pmc_totals (generator/data.py:4118-4121)
@@ -3513,7 +3533,12 @@ export default api({
       // instead of an unconditional max() (a subject genuinely split ~35/35/30 across 3 states
       // has no real single-state identity and should fall through to region/footprint, not get
       // matched to peers who happen to share its barely-largest state).
-      const subjectUnits = latestRows.reduce((s, r) => s + r.PROPERTY_UNIT_COUNT, 0);
+      const enrolledUnitsForMatching = latestRows.reduce((s, r) => s + r.PROPERTY_UNIT_COUNT, 0);
+      // Use the target portfolio size (resolved above) instead of the current enrolled size
+      // when it's larger — see the comment at expTotalPortfolioEarly's declaration above.
+      const subjectUnits = (expTotalPortfolioEarly != null && expTotalPortfolioEarly > enrolledUnitsForMatching)
+        ? expTotalPortfolioEarly
+        : enrolledUnitsForMatching;
       const subjectBills = latestRows.reduce((s, r) => s + r.BILLS_PAID, 0);
       const subjectRent = latestRows.reduce((s, r) => s + r.RENT_PAID, 0);
       const subjectAvgRent = subjectBills > 0 ? subjectRent / subjectBills : 0;
@@ -4508,8 +4533,9 @@ export default api({
       // if the caller didn't provide one — mirrors Flask's list_expansion_candidates SFDC lookup
       // (generator/data.py:343, PRODUCTION.SALES.DIM_SALES_ACCOUNTS). NOT
       // HUBSPOT_DEAL_TOTAL_COMPANY_UNITS — same noisy-field reasoning as the QBR Portfolio
-      // Penetration fix above; reuses the same already-fired query rather than a second one.
-      let expTotalPortfolio = total_portfolio_units;
+      // Penetration fix above. Reuses expTotalPortfolioEarly (resolved above, before the peer-
+      // matching ladder ran) rather than re-deriving it here — same value, already computed.
+      let expTotalPortfolio = expTotalPortfolioEarly ?? total_portfolio_units;
       if (!expTotalPortfolio) {
         const [expPortfolioRow] = await subjectPortfolioTotalPromise;
         const acctUnits = expPortfolioRow?.TOTAL_COMPANY_UNITS ?? 0;
