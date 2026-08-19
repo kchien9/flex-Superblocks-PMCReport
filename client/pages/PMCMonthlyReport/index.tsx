@@ -64,6 +64,7 @@ export default function PMCMonthlyReportPage() {
       total_portfolio_units: 0,
       presenting_mode: state.delivery === "presenting",
       comparison_months: state.comparison_months ?? 1,
+      growth_slides: "auto" as const,
     };
     lastArgsRef.current = args;
     try {

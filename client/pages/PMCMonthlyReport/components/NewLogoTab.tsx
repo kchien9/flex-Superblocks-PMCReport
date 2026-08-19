@@ -213,7 +213,7 @@ export function NewLogoTab({ generating, onGenerate }: NewLogoTabProps) {
       {/* Auto-populated overrides */}
       <div>
         <div className="flex items-baseline gap-1 mb-1.5">
-          <label className="block text-xs font-medium text-gray-600">Total Units</label>
+          <label className="block text-sm font-medium text-gray-700">Total Units</label>
           <span className="text-[10px] text-gray-400">override — auto-fills from Salesforce</span>
         </div>
         <input type="number" value={totalUnits} onChange={(e) => setTotalUnits(e.target.value)} placeholder="—" className={inputCls} />
@@ -221,7 +221,7 @@ export function NewLogoTab({ generating, onGenerate }: NewLogoTabProps) {
 
       <div>
         <div className="flex items-baseline gap-1 mb-1.5">
-          <label className="block text-xs font-medium text-gray-600">State(s)</label>
+          <label className="block text-sm font-medium text-gray-700">State(s)</label>
           <span className="text-[10px] text-gray-400">auto-derived from property list upload</span>
         </div>
         {propertyListFile ? (
@@ -239,14 +239,14 @@ export function NewLogoTab({ generating, onGenerate }: NewLogoTabProps) {
       {/* Dropdowns */}
       <div className="grid grid-cols-2 gap-3">
         <div>
-          <label className="block text-xs font-medium text-gray-600 mb-1.5">Portfolio Type</label>
+          <label className="block text-sm font-medium text-gray-700 mb-1.5">Portfolio Type</label>
           <select value={portfolioType} onChange={(e) => setPortfolioType(e.target.value)} className={selectCls}>
             <option value="multi_family">Multi Family</option>
             <option value="single_family">Single Family</option>
           </select>
         </div>
         <div>
-          <label className="block text-xs font-medium text-gray-600 mb-1.5">Property Type</label>
+          <label className="block text-sm font-medium text-gray-700 mb-1.5">Property Type</label>
           <select value={propertyType} onChange={(e) => setPropertyType(e.target.value)} className={selectCls}>
             <option value="conventional">Conventional</option>
             <option value="affordable">Affordable/HUD</option>
@@ -259,7 +259,7 @@ export function NewLogoTab({ generating, onGenerate }: NewLogoTabProps) {
 
       <div>
         <div className="flex items-baseline gap-1 mb-1.5">
-          <label className="block text-xs font-medium text-gray-600">Portfolio Footprint</label>
+          <label className="block text-sm font-medium text-gray-700">Portfolio Footprint</label>
           <span className="text-[10px] text-gray-400">optional — auto-derived from state(s)</span>
         </div>
         <select value={portfolioFootprint} onChange={(e) => setPortfolioFootprint(e.target.value)} className={selectCls}>
@@ -273,7 +273,7 @@ export function NewLogoTab({ generating, onGenerate }: NewLogoTabProps) {
 
       <div>
         <div className="flex items-baseline gap-1 mb-1.5">
-          <label className="block text-xs font-medium text-gray-600">Avg Monthly Rent</label>
+          <label className="block text-sm font-medium text-gray-700">Avg Monthly Rent</label>
           <span className="text-[10px] text-gray-400">optional — defaults to matched peer group's median</span>
         </div>
         <input type="number" min={0} value={avgMonthlyRent} onChange={(e) => setAvgMonthlyRent(e.target.value)} placeholder="Peer median"
@@ -283,7 +283,7 @@ export function NewLogoTab({ generating, onGenerate }: NewLogoTabProps) {
       {/* Property List Upload */}
       <div>
         <div className="flex items-baseline gap-2 mb-1.5">
-          <label className="block text-xs font-medium text-gray-600">Property List</label>
+          <label className="block text-sm font-medium text-gray-700">Property List</label>
           <span className="text-[10px] text-gray-400">optional</span>
         </div>
         {propertyListFile ? (
@@ -315,9 +315,12 @@ export function NewLogoTab({ generating, onGenerate }: NewLogoTabProps) {
       </Section>
 
       {/* Delivery */}
-      <div className="flex items-center justify-between">
-        <label className="text-xs font-medium text-gray-600">Delivery</label>
-        <ToggleGroup options={[{ value: "sharing", label: "Sharing" }, { value: "presenting", label: "Presenting" }]} value={delivery} onChange={setDelivery} />
+      <div>
+        <div className="flex items-center justify-between">
+          <label className="text-sm font-medium text-gray-700">Delivery</label>
+          <ToggleGroup options={[{ value: "sharing", label: "Sharing" }, { value: "presenting", label: "Presenting" }]} value={delivery} onChange={setDelivery} />
+        </div>
+        <p className="text-[11px] text-gray-400 mt-1">Are you emailing this deck or presenting it live? Controls formatting.</p>
       </div>
 
       {/* Generate */}

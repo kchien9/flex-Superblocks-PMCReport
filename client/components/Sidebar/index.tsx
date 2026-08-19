@@ -197,10 +197,10 @@ export default function Sidebar() {
           className={`flex items-center gap-3 px-3 py-2 rounded-md text-sm font-normal transition-colors w-full text-left
             ${location.pathname === "/pmc-monthly-report" ? "bg-white/15 border-l-2 border-white text-white" : "text-white/80 border-l-2 border-transparent hover:bg-white/[0.08]"}
           `}
-          title={collapsed ? "PMC Report" : undefined}
+          title={collapsed ? "PMC Automated Reporting" : undefined}
         >
           <Icon icon="file-bar-chart" className="w-4 h-4 flex-shrink-0 text-white" />
-          {!collapsed && <span className="whitespace-nowrap">PMC Report</span>}
+          {!collapsed && <span className="whitespace-nowrap">PMC Reporting</span>}
         </button>
 
         {/* ADMIN section - only shown if user has admin access */}

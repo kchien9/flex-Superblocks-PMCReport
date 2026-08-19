@@ -66,6 +66,7 @@ export function ResultsPanel({ generating, reportData, delivery, deckLabel, erro
           <div className="mt-2 text-center">
             <p className="text-sm text-[#6A3DB8] font-medium">Still working — crunching {elapsedSec}s of data</p>
             <p className="text-xs text-gray-400 mt-1">Large portfolios take longer. Hang tight.</p>
+            <p className="text-xs text-gray-400 mt-2">If it times out, try again. If it still doesn't work, flag to RevOps.</p>
           </div>
         )}
       </div>
@@ -90,6 +91,7 @@ export function ResultsPanel({ generating, reportData, delivery, deckLabel, erro
                   ? "The request timed out — this PMC may have too much data to process in the allowed window. Try selecting fewer slides or a smaller lookback period."
                   : message}
               </p>
+              <p className="text-xs text-gray-400 mt-2">If it keeps failing after a retry, flag to RevOps.</p>
             </div>
           </div>
           {onRetry && (

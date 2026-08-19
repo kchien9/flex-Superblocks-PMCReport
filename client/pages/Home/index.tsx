@@ -48,8 +48,8 @@ const modules: ModuleDefinition[] = [
   },
   {
     icon: "file-bar-chart",
-    name: "PMC Report",
-    description: "Generate monthly performance reports for property management companies.",
+    name: "PMC Automated Reporting",
+    description: "Generate full performance reports for partners, reports for expansion opportunities, and prospect reporting.",
     path: "/pmc-monthly-report",
   },
 ];

@@ -124,7 +124,7 @@ export function QBRTab({ pmcNames, pmcLoading, generating, onGenerate }: QBRTabP
     <div className="space-y-4">
       {/* Report Basis Toggle */}
       <div className="flex items-center justify-between">
-        <label className="text-xs font-medium text-gray-600">Report Basis</label>
+        <label className="text-sm font-medium text-gray-700">Report Basis</label>
         <ToggleGroup
           options={[
             { value: "pmc", label: "PMC" },
@@ -166,7 +166,7 @@ export function QBRTab({ pmcNames, pmcLoading, generating, onGenerate }: QBRTabP
           ) : (
             <div className="border border-gray-100 rounded-[4px] p-3 space-y-2">
               <div className="flex items-center justify-between">
-                <span className="text-xs font-medium text-gray-600">Cross-PMC Properties</span>
+                <span className="text-sm font-medium text-gray-700">Cross-PMC Properties</span>
                 {propertyIds.length === 0 && (
                   <button type="button" onClick={() => setShowCrossPMC(false)} className="text-[10px] text-gray-400 hover:text-gray-600">close</button>
                 )}
@@ -183,7 +183,7 @@ export function QBRTab({ pmcNames, pmcLoading, generating, onGenerate }: QBRTabP
           <OwnershipGroupProperties propertyIds={propertyIds} onPropertyIdsChange={setPropertyIds} reportName={ownershipReportName} onReportNameChange={setOwnershipReportName} hasPmcSelected={false} />
           {/* Always show Report Name in ownership mode */}
           <div>
-            <label className="block text-xs font-medium text-gray-600 mb-1.5">Report Name (deck cover label)</label>
+            <label className="block text-sm font-medium text-gray-700 mb-1.5">Report Name (deck cover label)</label>
             <input type="text" value={ownershipReportName} onChange={(e) => setOwnershipReportName(e.target.value)} placeholder="e.g. Avenue5 Ownership Group"
               className={inputCls} />
           </div>
@@ -193,24 +193,36 @@ export function QBRTab({ pmcNames, pmcLoading, generating, onGenerate }: QBRTabP
       {/* Toggles */}
       <div className="space-y-3">
         <div className="flex items-center justify-between">
-          <label className="text-xs font-medium text-gray-600">Review Period</label>
+          <label className="text-sm font-medium text-gray-700">Review Period</label>
           <ToggleGroup options={[{ value: "full", label: "Full" }, { value: "quarter", label: "Quarter" }, { value: "ytd", label: "YTD" }]} value={reviewPeriod} onChange={setReviewPeriod} />
         </div>
-        <div className="flex items-center justify-between">
-          <label className="text-xs font-medium text-gray-600">Delivery</label>
-          <ToggleGroup options={[{ value: "sharing", label: "Sharing" }, { value: "presenting", label: "Presenting" }]} value={delivery} onChange={setDelivery} />
+        <div>
+          <div className="flex items-center justify-between">
+            <label className="text-sm font-medium text-gray-700">Delivery</label>
+            <ToggleGroup options={[{ value: "sharing", label: "Sharing" }, { value: "presenting", label: "Presenting" }]} value={delivery} onChange={setDelivery} />
+          </div>
+          <p className="text-[11px] text-gray-400 mt-1">Are you emailing this deck or presenting it live? Controls formatting.</p>
         </div>
-        <div className="flex items-center justify-between">
-          <label className="text-xs font-medium text-gray-600">Terminology</label>
-          <ToggleGroup options={[{ value: "resident", label: "Resident" }, { value: "household", label: "Household" }]} value={terminology} onChange={setTerminology} />
+        <div>
+          <div className="flex items-center justify-between">
+            <label className="text-sm font-medium text-gray-700">Terminology</label>
+            <ToggleGroup options={[{ value: "resident", label: "Resident" }, { value: "household", label: "Household" }]} value={terminology} onChange={setTerminology} />
+          </div>
+          <p className="text-[11px] text-gray-400 mt-1">Do you want to refer to paying users as "residents" or "households"?</p>
         </div>
-        <div className="flex items-center justify-between">
-          <label className="text-xs font-medium text-gray-600">Include D2C Marketing Language</label>
-          <ToggleGroup options={[{ value: "yes", label: "Yes" }, { value: "no", label: "No" }]} value={d2cMarketing} onChange={setD2cMarketing} />
+        <div>
+          <div className="flex items-center justify-between">
+            <label className="text-sm font-medium text-gray-700">Include D2C Marketing Language</label>
+            <ToggleGroup options={[{ value: "yes", label: "Yes" }, { value: "no", label: "No" }]} value={d2cMarketing} onChange={setD2cMarketing} />
+          </div>
+          <p className="text-[11px] text-gray-400 mt-1">Should the deck include references to their D2C-enabled properties?</p>
         </div>
-        <div className="flex items-center justify-between">
-          <label className="text-xs font-medium text-gray-600">Compare deltas to</label>
-          <ToggleGroup options={[{ value: "1", label: "1 mo" }, { value: "3", label: "3 mo" }, { value: "6", label: "6 mo" }, { value: "12", label: "12 mo" }]} value={String(comparisonMonths)} onChange={(v) => setComparisonMonths(parseInt(v))} />
+        <div>
+          <div className="flex items-center justify-between">
+            <label className="text-sm font-medium text-gray-700">Compare deltas to</label>
+            <ToggleGroup options={[{ value: "1", label: "1 mo" }, { value: "3", label: "3 mo" }, { value: "6", label: "6 mo" }, { value: "12", label: "12 mo" }]} value={String(comparisonMonths)} onChange={(v) => setComparisonMonths(parseInt(v))} />
+          </div>
+          <p className="text-[11px] text-gray-400 mt-1">The slide computes changes vs. historical metrics — what time frame do you want to compare against?</p>
         </div>
       </div>
 
@@ -239,6 +251,7 @@ export function QBRTab({ pmcNames, pmcLoading, generating, onGenerate }: QBRTabP
 
       {/* What's New at Flex */}
       <StaticSection title="What's New at Flex">
+        <p className="text-[11px] text-gray-400 mb-2">Use this box to share product updates or what's new at Flex.</p>
         <textarea value={whatsNewText} onChange={(e) => setWhatsNewText(e.target.value)} placeholder="Rough bullets — AI polishes into partner-facing copy" rows={3}
           className="w-full px-3 py-2 text-sm border border-gray-200 rounded-[4px] focus:outline-none focus:ring-2 focus:ring-[#6A3DB8]/30 focus:border-[#6A3DB8] resize-y" />
         <label className="flex items-center gap-2 mt-2 px-3 py-2 text-xs text-[#6A3DB8] border border-[#6A3DB8]/30 rounded-[4px] cursor-pointer hover:bg-[#EEE2FC] transition-colors w-fit">
@@ -253,7 +266,7 @@ export function QBRTab({ pmcNames, pmcLoading, generating, onGenerate }: QBRTabP
           {reportBasis === "pmc" && (
             <div>
               <div className="flex items-baseline gap-2 mb-1.5">
-                <label className="block text-xs font-medium text-gray-600">Report Name</label>
+                <label className="block text-sm font-medium text-gray-700">Report Name</label>
                 <span className="text-[10px] text-gray-400">optional</span>
               </div>
               <input type="text" value={reportName} onChange={(e) => setReportName(e.target.value)} placeholder="Override the PMC name on the deck"
@@ -262,7 +275,7 @@ export function QBRTab({ pmcNames, pmcLoading, generating, onGenerate }: QBRTabP
           )}
           <div>
             <div className="flex items-baseline gap-1 mb-1.5">
-              <label className="block text-xs font-medium text-gray-600">Total Company Units</label>
+              <label className="block text-sm font-medium text-gray-700">Total Company Units</label>
               <span className="text-[10px] text-gray-400">optional</span>
             </div>
             <input type="number" min={0} value={totalCompanyUnits} onChange={(e) => setTotalCompanyUnits(e.target.value)} placeholder="—"
@@ -270,7 +283,7 @@ export function QBRTab({ pmcNames, pmcLoading, generating, onGenerate }: QBRTabP
           </div>
           <div>
             <div className="flex items-baseline gap-2 mb-1.5">
-              <label className="block text-xs font-medium text-gray-600">Partner Since Override</label>
+              <label className="block text-sm font-medium text-gray-700">Partner Since Override</label>
               <span className="text-[10px] text-gray-400">optional</span>
             </div>
             <input type="month" value={partnerSinceOverride} onChange={(e) => setPartnerSinceOverride(e.target.value)}

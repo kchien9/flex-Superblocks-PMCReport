@@ -69,7 +69,7 @@ export function ExpansionTab({ pmcNames, pmcLoading, generating, onGenerate }: E
       selected_metrics: selectedMetrics,
       testimonials,
     });
-  }, [selectedPMC, totalPortfolioUnits, propertyIds, ownershipReportName, reviewPeriod, comparisonMonths, delivery, selectedSlides, selectedMetrics, testimonials, onGenerate]);
+  }, [selectedPMC, totalPortfolioUnits, propertyIds, ownershipReportName, reviewPeriod, comparisonMonths, delivery, growthSlides, selectedSlides, selectedMetrics, testimonials, onGenerate]);
 
   const inputCls = "w-full px-3 py-2 text-sm border border-gray-200 rounded-[4px] focus:outline-none focus:ring-2 focus:ring-[#6A3DB8]/30 focus:border-[#6A3DB8]";
 
@@ -84,7 +84,7 @@ export function ExpansionTab({ pmcNames, pmcLoading, generating, onGenerate }: E
       {/* Total Portfolio Units */}
       <div>
         <div className="flex items-baseline gap-1 mb-1.5">
-          <label className="block text-xs font-medium text-gray-600">Total Portfolio Units</label>
+          <label className="block text-sm font-medium text-gray-700">Total Portfolio Units</label>
           <span className="text-[10px] text-gray-400">override — auto-fills from Salesforce</span>
         </div>
         <input type="number" min={0} value={totalPortfolioUnits} onChange={(e) => setTotalPortfolioUnits(e.target.value)}
@@ -101,7 +101,7 @@ export function ExpansionTab({ pmcNames, pmcLoading, generating, onGenerate }: E
       ) : (
         <div className="border border-gray-100 rounded-[4px] p-3 space-y-2">
           <div className="flex items-center justify-between">
-            <span className="text-xs font-medium text-gray-600">Cross-PMC Properties</span>
+            <span className="text-sm font-medium text-gray-700">Cross-PMC Properties</span>
             {propertyIds.length === 0 && (
               <button type="button" onClick={() => setShowCrossPMC(false)} className="text-[10px] text-gray-400 hover:text-gray-600">close</button>
             )}
@@ -127,20 +127,29 @@ export function ExpansionTab({ pmcNames, pmcLoading, generating, onGenerate }: E
       {/* Toggles */}
       <div className="space-y-3">
         <div className="flex items-center justify-between">
-          <label className="text-xs font-medium text-gray-600">Review Period</label>
+          <label className="text-sm font-medium text-gray-700">Review Period</label>
           <ToggleGroup options={[{ value: "full", label: "Full" }, { value: "quarter", label: "Quarter" }, { value: "ytd", label: "YTD" }]} value={reviewPeriod} onChange={setReviewPeriod} />
         </div>
-        <div className="flex items-center justify-between">
-          <label className="text-xs font-medium text-gray-600">Compare deltas to</label>
-          <ToggleGroup options={[{ value: "1", label: "1 mo" }, { value: "3", label: "3 mo" }, { value: "6", label: "6 mo" }, { value: "12", label: "12 mo" }]} value={String(comparisonMonths)} onChange={(v) => setComparisonMonths(parseInt(v))} />
+        <div>
+          <div className="flex items-center justify-between">
+            <label className="text-sm font-medium text-gray-700">Compare deltas to</label>
+            <ToggleGroup options={[{ value: "1", label: "1 mo" }, { value: "3", label: "3 mo" }, { value: "6", label: "6 mo" }, { value: "12", label: "12 mo" }]} value={String(comparisonMonths)} onChange={(v) => setComparisonMonths(parseInt(v))} />
+          </div>
+          <p className="text-[11px] text-gray-400 mt-1">The slide computes changes vs. historical metrics — what time frame do you want to compare against?</p>
         </div>
-        <div className="flex items-center justify-between">
-          <label className="text-xs font-medium text-gray-600">Delivery</label>
-          <ToggleGroup options={[{ value: "sharing", label: "Sharing" }, { value: "presenting", label: "Presenting" }]} value={delivery} onChange={setDelivery} />
+        <div>
+          <div className="flex items-center justify-between">
+            <label className="text-sm font-medium text-gray-700">Delivery</label>
+            <ToggleGroup options={[{ value: "sharing", label: "Sharing" }, { value: "presenting", label: "Presenting" }]} value={delivery} onChange={setDelivery} />
+          </div>
+          <p className="text-[11px] text-gray-400 mt-1">Are you emailing this deck or presenting it live? Controls formatting.</p>
         </div>
-        <div className="flex items-center justify-between">
-          <label className="text-xs font-medium text-gray-600">Growth trend slides</label>
-          <ToggleGroup options={[{ value: "auto", label: "Auto" }, { value: "include", label: "Include" }, { value: "exclude", label: "Exclude" }]} value={growthSlides} onChange={setGrowthSlides} />
+        <div>
+          <div className="flex items-center justify-between">
+            <label className="text-sm font-medium text-gray-700">Growth trend slides</label>
+            <ToggleGroup options={[{ value: "auto", label: "Auto" }, { value: "include", label: "Include" }, { value: "exclude", label: "Exclude" }]} value={growthSlides} onChange={setGrowthSlides} />
+          </div>
+          <p className="text-[11px] text-gray-400 mt-1">Auto-included for SMB, off for MM+ by default. Use this toggle to override and force-include or remove the trend slides. Include if you want to highlight historic performance.</p>
         </div>
       </div>
 
