@@ -283,7 +283,7 @@ function sparklineSvg(values: (number | null)[], color = "#6A3DB8", w = 64, h = 
 
 // --- HTML Slide Renderers ---
 
-function renderCover(kpis: { pmcName: string; reportingMonth: string; partnerSince: string | null; propertyCount: number; firstMonth: string | null }): string {
+function renderCover(kpis: { pmcName: string; reportingMonth: string; partnerSince: string | null; propertyCount: number; firstMonth: string | null; isExpansion?: boolean }): string {
   // Reporting Period tile - was entirely missing (Flask's render_cover has a 3rd tile here:
   // generator/slides.py:91-92, period_range = first_month label - reporting_month label).
   // firstMonth is the earliest month in this report's own lookback window (monthlyTotals[0]),
@@ -292,15 +292,22 @@ function renderCover(kpis: { pmcName: string; reportingMonth: string; partnerSin
   const periodRange = kpis.firstMonth
     ? `${monthLabel(kpis.firstMonth)} – ${monthLabel(kpis.reportingMonth)}`
     : monthLabel(kpis.reportingMonth);
+  // Deck label / props label vary by mode (Flask render_cover, generator/slides.py:53-67).
+  // Only branching on is_expansion here (Kevin's catch) — Flask's third branch, is_pitch_mode
+  // ("Flex Integration Opportunity" / OON-specific props label), belongs to a genuinely
+  // different deck (Flask's separate pitch_mode/PITCH_SLIDE_ORDER flow) with no Superblocks
+  // equivalent wired through this function yet — left as the existing default, not touched here.
+  const deckLabel = kpis.isExpansion ? "Portfolio Expansion Opportunity" : "Flex Performance Review";
+  const propsLabel = kpis.isExpansion ? "Properties on Flex" : "Properties Active";
   return `
   <div class="slide active" id="slide-1" style="background:#2C194D;justify-content:center;align-items:flex-start;">
-    <div style="font-size:11px;letter-spacing:0.18em;text-transform:uppercase;color:#DDC6F9;margin-bottom:20px;font-weight:600;font-family:'ABCDiatype',sans-serif;">Flex Performance Review</div>
+    <div style="font-size:11px;letter-spacing:0.18em;text-transform:uppercase;color:#DDC6F9;margin-bottom:20px;font-weight:600;font-family:'ABCDiatype',sans-serif;">${deckLabel}</div>
     <div style="font-size:76px;font-weight:500;line-height:1.0;color:#fff;margin-bottom:12px;letter-spacing:-0.02em;font-family:'ABCDiatype',sans-serif;">${kpis.pmcName}</div>
     <div style="font-size:22px;font-weight:400;color:rgba(255,255,255,0.45);margin-bottom:72px;font-family:'ABCDiatype',sans-serif;">${monthLabel(kpis.reportingMonth)}</div>
     <div style="display:flex;gap:52px;">
       <div><div style="font-size:10px;letter-spacing:0.14em;text-transform:uppercase;color:rgba(255,255,255,0.28);margin-bottom:6px;font-family:'ABCDiatype',sans-serif;">Partner Since</div>
            <div style="font-size:16px;font-weight:600;color:rgba(255,255,255,0.85);font-family:'ABCDiatype',sans-serif;">${monthLabel(kpis.partnerSince)}</div></div>
-      <div><div style="font-size:10px;letter-spacing:0.14em;text-transform:uppercase;color:rgba(255,255,255,0.28);margin-bottom:6px;font-family:'ABCDiatype',sans-serif;">Properties Active</div>
+      <div><div style="font-size:10px;letter-spacing:0.14em;text-transform:uppercase;color:rgba(255,255,255,0.28);margin-bottom:6px;font-family:'ABCDiatype',sans-serif;">${propsLabel}</div>
            <div style="font-size:16px;font-weight:600;color:rgba(255,255,255,0.85);font-family:'ABCDiatype',sans-serif;">${kpis.propertyCount}</div></div>
       <div><div style="font-size:10px;letter-spacing:0.14em;text-transform:uppercase;color:rgba(255,255,255,0.28);margin-bottom:6px;font-family:'ABCDiatype',sans-serif;">Reporting Period</div>
            <div style="font-size:16px;font-weight:600;color:rgba(255,255,255,0.85);font-family:'ABCDiatype',sans-serif;">${periodRange}</div></div>
@@ -1735,8 +1742,11 @@ export default api({
     comparison_months: z.number().int().optional().default(1),
     // Growth trend slides (residents_units/adoption_trend/cohort_overview) override.
     // "auto" preserves the SMB-only default; "include"/"exclude" force the segment veto
-    // either way regardless of is_smb.
-    growth_slides: z.enum(["auto", "include", "exclude"]).optional().default("auto"),
+    // either way. Plain optional (not .default()) like expansion_slides above — a concurrent
+    // edit changed this to .default("auto"), which makes the field REQUIRED in the generated
+    // call-site type (breaks QBR/new_logo callers that don't pass it); restored, with the
+    // fallback handled at the derivation site instead (`growth_slides ?? "auto"`).
+    growth_slides: z.enum(["auto", "include", "exclude"]).optional(),
   }),
 
   output: z.object({
@@ -3336,6 +3346,16 @@ export default api({
       return modeTeam === "SMB Manager";
     })();
 
+    // Growth trend slides (residents_units/adoption_trend/cohort_overview) override —
+    // "auto" preserves the is_smb-only default above; "include"/"exclude" let an AE force
+    // the segment veto either way. Derived here (not inline at each gate) since it's needed
+    // by renderExecSummary's showSparklines below, ahead of where activeOrder is built.
+    // (Restored 2026-08-19 — a concurrent Superblocks-side edit reverted this derivation back
+    // to a plain is_smb check in the sparkline ternary below; re-synced with the same fix in
+    // flex-pmc-reports.)
+    const showGrowthSlides =
+      growth_slides === "include" || ((growth_slides ?? "auto") === "auto" && is_smb);
+
     // --- Auto-derive evidence_type from property-level avg rent ---
     // Python logic: median of per-property (rent_paid / bills_paid); if < $950 → "affordable"
     let evidence_type: "high_rent" | "affordable" = "high_rent";
@@ -4237,11 +4257,18 @@ export default api({
       dqSinceComparison: dqSinceComparison != null && dqSinceComparison > 0 ? dqSinceComparison : null,
       slideId: 2,
       // Flask: QBR always show_sparklines=False (hardcoded, unconditional).
-      // Expansion: show_sparklines = not (is_smb and 54 in active_exp_order).
-      // Since slide 54 = "residents_units", suppress sparklines on expansion when SMB
-      // and that slide is included (it renders the same data as a full chart).
+      // Expansion: show_sparklines = not (_show_growth and 54 in active_exp_order).
+      // Since slide 54 = "residents_units", suppress sparklines on expansion when the growth
+      // trend slides are showing (SMB by default, or forced via growth_slides="include") and
+      // that slide specifically is included (it renders the same data as a full chart).
+      // An empty expansion_slides array means "no filter" (all slides included) per the
+      // activeOrder build below — match that semantics here rather than treating [] as "off".
       showSparklines: deck_mode === "qbr" ? false
-        : deck_mode === "expansion" ? !(is_smb && (expansion_slides?.includes("residents_units") ?? true))
+        : deck_mode === "expansion" ? !(showGrowthSlides && (
+            expansion_slides && expansion_slides.length > 0
+              ? expansion_slides.includes("residents_units")
+              : true
+          ))
         : false,
       vsLabel,
     });
@@ -4441,11 +4468,11 @@ export default api({
         "expansion_case_close",
       ];
 
-      // Growth trend slides gate — by default SMB-only; caller can force include/exclude.
+      // Growth trend slides are gated by showGrowthSlides (derived earlier, right after
+      // is_smb) rather than a bare is_smb check — "auto" keeps the SMB-only default,
+      // "include"/"exclude" override it. Also feeds the exec-tile sparkline suppression
+      // above, which is why it's derived once, early, instead of redeclared here.
       const GROWTH_TREND_SLIDES = new Set(["residents_units", "adoption_trend", "cohort_overview"]);
-      const showGrowthSlides = growth_slides === "include" ? true
-        : growth_slides === "exclude" ? false
-        : is_smb; // "auto" — original SMB-only behavior
 
       // Build active order: filter by expansion_slides if provided, then
       // force-append expansion_case_close at the end regardless of selection
@@ -4597,11 +4624,18 @@ export default api({
           }
 
           case "delinquency": {
+            // This slide is deliberately independent of the report's own Full/Quarter/YTD
+            // period (matches Flask's render_delinquency, generator/slides.py:3309-3325) —
+            // always a trailing-12-months-or-full-tenure headline. windowMonths used to be
+            // lookback_months, which made this slide silently follow Quarter/YTD even though
+            // its own label never did — the same "$ doesn't match its own label" bug class
+            // Kevin caught on the exec tile, just introduced from the other direction. Dropped
+            // lifetimeShielded entirely — renderDelinquency now computes its own windowed sum
+            // from `months` + `windowMonths` internally, so it can't drift from its own label.
             const r = renderDelinquency({
               slideId: slideNum,
               months: dqMonths,
-              lifetimeShielded: lifetimeDqShielded,
-              windowMonths: lookback_months,
+              windowMonths: Math.min(dqMonths.length, 12),
             });
             pushSlide(sid, r);
             break;
@@ -4632,8 +4666,13 @@ export default api({
               // Canonical value — every slide showing a peer-median NAR must read from this same
               // one (see the rule at its declaration above), or a PMC can see two different
               // "peer median" numbers in the same deck (this slide vs. Peer Benchmarks/Case Close).
+              // p75Nar was missing this same fallback (Kevin's catch) — p50/p75 must move
+              // together from the same resolved tier, same fix as every other read site in
+              // this file. KNOWN REMAINING GAP: Flask re-derives this slide's whole peer cohort
+              // at the full target portfolio size (app.py:1608-1668), not the current-enrolled
+              // size these values are still scoped to here — that re-derivation isn't done yet.
               p50Nar: canonicalPeerNarP50 ?? expNarPerc?.p50,
-              p75Nar: expNarPerc?.p75,
+              p75Nar: canonicalPeerNarP75 ?? expNarPerc?.p75,
             });
             pushSlide(sid, r);
             break;
@@ -4750,7 +4789,8 @@ export default api({
         const expNotesBenchmark: SpeakerNotesBenchmark = {
           benchmarkNar: canonicalPeerNarP50 ?? segmentNarAvg ?? 0.085,
           p50Nar: canonicalPeerNarP50 ?? expNarPerc?.p50 ?? null,
-          p75Nar: expNarPerc?.p75 ?? null,
+          // Same missing-fallback fix as the Portfolio Gap slide's p75Nar above.
+          p75Nar: canonicalPeerNarP75 ?? expNarPerc?.p75 ?? null,
         };
         const expNotesMonthly: SpeakerNotesMonthlyRow[] = monthlyTotals.map((m) => ({
           month: m.month, billsPaid: m.billsPaid, units: m.units, rentPaid: m.rentPaid,
@@ -4994,11 +5034,11 @@ export default api({
       alltimeResidentRents: alltimeResidentRents.length >= 4 ? alltimeResidentRents : undefined,
     });
 
-    // --- Delinquency Protection slide ---
+    // --- Delinquency Protection slide --- (windowed internally now, see the Expansion call
+    // site's comment above for why lifetimeShielded is no longer passed in)
     const delinquencyResult = renderDelinquency({
       slideId: 13,
       months: dqMonths,
-      lifetimeShielded: lifetimeDqShielded,
       windowMonths: Math.min(dqMonths.length, 12),
     });
 

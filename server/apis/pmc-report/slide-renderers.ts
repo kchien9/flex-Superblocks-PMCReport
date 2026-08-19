@@ -20,7 +20,10 @@ function fmtCurrency(n: number): string {
 }
 
 function fmtPct(n: number): string {
-  return `${(n * 100).toFixed(1)}%`;
+  // Drop the trailing ".0" on a whole-number percent (Kevin's catch: "85%", not "85.0%") -
+  // same fix as get-pmc-monthly-report.ts's own fmtPct, just never ported to this file.
+  const s = (n * 100).toFixed(1);
+  return s.endsWith(".0") ? s.slice(0, -2) + "%" : s + "%";
 }
 
 export function monthLabel(ym: string): string {
@@ -474,6 +477,11 @@ const METRIC_META: Record<string, MetricMeta> = {
   },
 };
 
+// Display order for the Peer Benchmarks slide (Kevin's call, 2026-08-19): Engagement first,
+// then Adoption, Retention, Penetration. Anything not in this list (shouldn't happen given
+// METRIC_META above, but keeps this future-proof) sorts to the end in its original order.
+const METRIC_DISPLAY_ORDER = ["NEW_CONNECTIONS", "ENGAGEMENT", "NAR", "REPEAT_RATE", "PENETRATION", "SIGNUP_TIMING"];
+
 export function renderPeerBenchmarks(input: {
   slideId: number;
   pmcName: string;
@@ -500,8 +508,11 @@ export function renderPeerBenchmarks(input: {
     const meta = METRIC_META[m.metric] || { label: m.metric, definition: "", format: (v: number) => v.toFixed(2) };
     if (m.pmcValue == null || m.p50 === 0) return "";
 
-    // Determine initial visibility for toggleable metrics (non-anchor)
-    const isAnchor = m.metric === "adoption_rate";
+    // Determine initial visibility for toggleable metrics (non-anchor). Real metric key is
+    // "NAR" (see METRIC_META above) — this compared against "adoption_rate", which no metric
+    // ever actually has, so isAnchor was silently always false and Adoption could get toggled
+    // off like any other row despite the comment above saying it's always shown.
+    const isAnchor = m.metric === "NAR";
     let initiallyHidden = false;
     const rowId = isAnchor ? "" : `bm-${m.metric}-${slideId}`;
     if (!isAnchor && visibleMetrics != null) {
@@ -619,7 +630,12 @@ export function renderPeerBenchmarks(input: {
         </div>`;
   }
 
-  const rows = metrics.map(sliderRow).filter(Boolean).join("");
+  const orderedMetrics = [...metrics].sort((a, b) => {
+    const ai = METRIC_DISPLAY_ORDER.indexOf(a.metric);
+    const bi = METRIC_DISPLAY_ORDER.indexOf(b.metric);
+    return (ai === -1 ? METRIC_DISPLAY_ORDER.length : ai) - (bi === -1 ? METRIC_DISPLAY_ORDER.length : bi);
+  });
+  const rows = orderedMetrics.map(sliderRow).filter(Boolean).join("");
   if (!rows) return { html: "", js: "" };
 
   // Toggle control bar — one button per optional metric that rendered
@@ -1396,10 +1412,9 @@ interface DelinquencyMonth {
 export function renderDelinquency(input: {
   slideId: number;
   months: DelinquencyMonth[];
-  lifetimeShielded: number;
   windowMonths: number;
 }): SlideResult {
-  const { slideId, months, lifetimeShielded, windowMonths } = input;
+  const { slideId, months, windowMonths } = input;
 
   if (!months || months.length === 0) {
     const html = `
@@ -1415,7 +1430,15 @@ export function renderDelinquency(input: {
 
   const windowPhrase = windowMonths >= 12 ? "12 months" : `${windowMonths} months`;
   const windowTitle = windowMonths >= 12 ? "Trailing 12 Months" : `Trailing ${windowMonths} Months`;
-  const totalResidents = months.reduce((s, m) => s + m.residentsShielded, 0);
+  // Headline sum/count computed from the same windowMonths the label claims (Kevin's catch —
+  // this used to sum every row `months` happened to contain, which can exceed windowMonths
+  // thanks to the underlying pull's lag buffer, producing a $ figure that didn't match its own
+  // "in the last N months" label). This slide is deliberately independent of the report's own
+  // Full/Quarter/YTD period (matches Flask's render_delinquency) — always a trailing-12-months-
+  // or-full-tenure headline, not scoped to lookback_months.
+  const windowedMonths = months.slice(-windowMonths);
+  const lifetimeShielded = windowedMonths.reduce((s, m) => s + m.totalRentShielded, 0);
+  const totalResidents = windowedMonths.reduce((s, m) => s + m.residentsShielded, 0);
 
   // Pad short histories so the chart has at least 3 slots
   const padCount = Math.max(0, 3 - months.length);

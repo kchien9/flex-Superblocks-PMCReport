@@ -17,7 +17,10 @@ function _e(s: string): string {
 }
 
 function pctStr(v: number): string {
-  return `${(v * 100).toFixed(1)}%`;
+  // Drop the trailing ".0" on a whole-number percent (Kevin's catch: "85%", not "85.0%") -
+  // same fix as get-pmc-monthly-report.ts's own fmtPct, just never ported to this file.
+  const s = (v * 100).toFixed(1);
+  return s.endsWith(".0") ? s.slice(0, -2) + "%" : s + "%";
 }
 
 function ppStr(v: number): string {
