@@ -1759,6 +1759,10 @@ export function renderRetention(input: {
 export interface StageBenchmarkRow {
   p50: number | null;
   peer_label?: string;
+  /** How many peer PMCs actually had data at this specific tenure bucket - shown alongside
+   * the label so a thin-sample month (e.g. 2 peers) isn't mistaken for the same confidence as
+   * a well-populated one (Kevin's ask). */
+  pmc_count?: number;
 }
 
 export interface AdoptionTrendKpis {
@@ -1812,14 +1816,24 @@ export function renderAdoptionTrend(input: {
         const p50 = brow?.p50;
         benchmarkVals.push(p50 ? Math.round(p50 * 1000) / 10 : null);
       }
-      // Find peer label
+      // Find peer label - pmc_count comes from the SAME bucket the label itself is drawn
+      // from, so "how many peers" always describes the number actually behind the label
+      // shown, not some other month's count (Kevin's ask - thin months shouldn't read with
+      // the same confidence as well-populated ones).
       for (let mn = Math.max(1, msl - n + 1); mn < Math.min(msl + 1, 37); mn++) {
-        const pl = sbm[mn]?.peer_label;
-        if (pl) { benchmarkLabel = `Peer Median (${pl})`; break; }
+        const row = sbm[mn];
+        if (row?.peer_label) {
+          const countSuffix = row.pmc_count ? ` · ${row.pmc_count} PMC${row.pmc_count === 1 ? "" : "s"}` : "";
+          benchmarkLabel = `Peer Median (${row.peer_label}${countSuffix})`;
+          break;
+        }
       }
       if (benchmarkLabel === "Peer Median" && msl > 36) {
-        const pl = sbm[36]?.peer_label;
-        if (pl) benchmarkLabel = `Peer Median (${pl})`;
+        const row = sbm[36];
+        if (row?.peer_label) {
+          const countSuffix = row.pmc_count ? ` · ${row.pmc_count} PMC${row.pmc_count === 1 ? "" : "s"}` : "";
+          benchmarkLabel = `Peer Median (${row.peer_label}${countSuffix})`;
+        }
       }
     }
   }

@@ -2254,7 +2254,24 @@ export default api({
     // if the NEXT failure shows this exact string, we know for certain the UDF-free query is
     // really what ran and the problem is something else entirely; if the panel is missing this
     // line or shows old debugInfo shape, the working tree is still stale.
-    const PROPERTY_POOL_SQL_VERSION = "v8-no-udf-stratified-60";
+    // CORRECTION #5 (Kevin's catch): stratifying by (state, age_bucket) alone, with no size
+    // dimension, meant the retained 60 rows per cell were a RANDOM hash-ordered sample across
+    // every size in that state/age combo - a property's own size-matched tier (±40% units,
+    // e.g. resolvePropertyPeerNar's tier 1/2) then had to filter that already-random 60 down
+    // further, and for a size band far from the cell's bulk, could land on anywhere from 0 to
+    // a handful of real candidates. Confirmed real: LC Dublin (552 units, OH, 13-18mo) showed
+    // a peer median of 7.2% one run and 0.0% another, vs. Flask's real unsampled 1.7% - not
+    // sample-size noise at a stable N, but the SAMPLE ITSELF changing composition run to run
+    // because size was never part of what the cap preserved.
+    // Fix: add a size-bucket dimension to the partition key, cap reduced from 60 to 10 per
+    // (state, age_bucket, size_bucket) cell (6 size buckets x 10 = 60 worst-case per original
+    // (state, age_bucket) cell - same ceiling as before for a maximally dense cell, but now
+    // every size band within it is guaranteed representation instead of a coin flip). Real
+    // total row count should come in AT OR BELOW today's ~12,648 (most cells aren't dense
+    // enough to hit 10 in every size band, let alone 60 in aggregate) - not expected to
+    // reopen the IntegrationError code 4 cost ceiling documented above, but worth confirming
+    // live after this ships.
+    const PROPERTY_POOL_SQL_VERSION = "v9-no-udf-stratified-state-age-size-10";
     const PROPERTY_POOL_SQL = `WITH latest AS (
                 SELECT MAX(BP_MONTH) AS bp_month
                 FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS
@@ -2297,13 +2314,25 @@ export default api({
                              WHEN DATEDIFF('month', ROLLOUT_MONTH, (SELECT bp_month FROM latest)) <= 24 THEN '19-24mo'
                              WHEN DATEDIFF('month', ROLLOUT_MONTH, (SELECT bp_month FROM latest)) <= 36 THEN '25-36mo'
                              ELSE '37+mo'
+                           END,
+                           -- Size bucket - roughly doubling steps, aligned with the ±40%
+                           -- relative-size tiers resolvePropertyPeerMetric filters by
+                           -- downstream, so no size band gets starved by a cap that only
+                           -- ever preserved state+age composition.
+                           CASE
+                             WHEN PROPERTY_UNIT_COUNT < 50   THEN 'xs'
+                             WHEN PROPERTY_UNIT_COUNT < 100  THEN 'sm'
+                             WHEN PROPERTY_UNIT_COUNT < 200  THEN 'md'
+                             WHEN PROPERTY_UNIT_COUNT < 400  THEN 'lg'
+                             WHEN PROPERTY_UNIT_COUNT < 800  THEN 'xl'
+                             ELSE 'xxl'
                            END
                          ORDER BY HASH(PMC_NAME, PROPERTY_NAME)
                        ) AS rn
                 FROM agg
              ),
              sampled AS (
-                SELECT * FROM ranked WHERE rn <= 60
+                SELECT * FROM ranked WHERE rn <= 10
              )
              SELECT PMC_NAME, PROPERTY_NAME, PROPERTY_STATE, PROPERTY_UNIT_COUNT,
                     RENT_PAID_AMOUNT, BILLS_PAID_COUNT, ROLLOUT_MONTH, T12_CONNECTIONS,
@@ -3751,11 +3780,13 @@ export default api({
     // Build the tenure-bucketed benchmark map the Adoption Trend chart reads (kpis.stage_benchmarks).
     // peer_label matches lockedPeersCriteria - the SAME criteria string the Peer Benchmarks slide
     // shows, so the two never disagree on what "peer" means (this deck's whole reason for having
-    // a canonical/locked peer cohort at all).
-    const stageBenchmarksMap: Record<number, { p50: number | null; peer_label?: string }> = {};
+    // a canonical/locked peer cohort at all). pmc_count surfaces how many peers actually had data
+    // at that specific bucket, shown alongside the label (Kevin's ask) - a bucket down to 2 peers
+    // shouldn't read with the same confidence as one with 5.
+    const stageBenchmarksMap: Record<number, { p50: number | null; peer_label?: string; pmc_count?: number }> = {};
     for (const row of stageBenchmarkRows) {
       if (row.P50 != null) {
-        stageBenchmarksMap[row.MONTH_NUMBER] = { p50: row.P50, peer_label: lockedPeersCriteria };
+        stageBenchmarksMap[row.MONTH_NUMBER] = { p50: row.P50, peer_label: lockedPeersCriteria, pmc_count: row.PMC_COUNT };
       }
     }
 
