@@ -3311,10 +3311,24 @@ export default api({
     // (that stays wide on purpose so the Delinquency slide's own trend chart keeps its full
     // window). Used to always show a fixed 13-month figure regardless of the period the AE
     // picked (Kevin's catch). BP_MONTH is 'YYYY-MM-DD' — string comparison is chronological.
-    const dqWindowStartDate = new Date(latestCompletedMonth + "T00:00:00Z");
-    dqWindowStartDate.setUTCMonth(dqWindowStartDate.getUTCMonth() - (lookback_months - 1));
-    const dqWindowStart = dqWindowStartDate.toISOString().slice(0, 10);
-    const dqWindowedRows = dqShieldedRows.filter((r) => r.BP_MONTH != null && r.BP_MONTH >= dqWindowStart);
+    //
+    // Anchor to DQ's OWN latest month, not latestCompletedMonth (the main report's latest
+    // month) — DQ_PROPERTY data lags 1 month behind BP_MONTH (see the Delinquency slide's
+    // comment), so anchoring to latestCompletedMonth silently excluded the oldest real DQ row
+    // (Kevin's catch: Delinquency slide said $530K, this tile said $487K — the $43K gap was
+    // exactly one excluded month). Not relying on the query's own ORDER BY for which row is
+    // latest — computed defensively via string max, same robustness as Flask's sort_values.
+    const dqLatestMonth = dqShieldedRows.reduce<string | null>(
+      (latest, r) => (r.BP_MONTH != null && (latest == null || r.BP_MONTH > latest) ? r.BP_MONTH : latest),
+      null
+    );
+    const dqWindowedRows = (() => {
+      if (dqLatestMonth == null) return [];
+      const dqWindowStartDate = new Date(dqLatestMonth + "T00:00:00Z");
+      dqWindowStartDate.setUTCMonth(dqWindowStartDate.getUTCMonth() - (lookback_months - 1));
+      const dqWindowStart = dqWindowStartDate.toISOString().slice(0, 10);
+      return dqShieldedRows.filter((r) => r.BP_MONTH != null && r.BP_MONTH >= dqWindowStart);
+    })();
     const lifetimeDqShielded = dqWindowedRows.reduce((sum, r) => sum + (r.TOTAL_RENT_SHIELDED ?? 0), 0);
 
     // --- Segment NAR / HubSpot segment label — REMOVED (fabricated data source) ---
