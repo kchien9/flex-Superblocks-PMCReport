@@ -2654,11 +2654,11 @@ export default api({
     // Tenure percentile vs. all active PMCs (1 = oldest) — gates the anniversary-milestone
     // callout below to only the top 50% most-tenured partners, matching Flask.
     let tenurePercentileFromTop: number | null = null;
-    // Deactivated properties + network-wide age-since-rollout benchmark, feeding the
-    // "These properties need our attention" slide's New Rollouts and No-Longer-Active
-    // sections (QBR only, same as the rest of this block).
+    // Deactivated properties, feeding the "These properties need our attention" slide's
+    // No-Longer-Active section (QBR only, same as the rest of this block). New Rollouts'
+    // benchmark used to come from a dedicated network-wide-untiered query here
+    // (stageAgeBenchmarkRows) - removed (see stageBenchmarksMap below for why).
     let disabledPropertyRows: { PROPERTY_NAME: string; DEACTIVATION_REASON: string; PROPERTY_UNIT_COUNT: number; LAST_SEEN_MONTH: string | null }[] = [];
-    let stageAgeBenchmarkRows: { AGE_MONTHS: number; P50_NAR: number | null; P50_ENG_PER_100: number | null; N: number }[] = [];
 
     if (needsQBRQueries) {
       // Network pool query was moved earlier (fires in parallel with the main batch above).
@@ -2792,61 +2792,27 @@ export default api({
         { label: "Fetch deactivated properties for the No-Longer-Active section" }
       ).catch(() => [] as z.infer<typeof DisabledPropertySchema>[]);
 
-      // Network-wide NAR + T12-engagement benchmark by months-since-rollout (age 1-11), for
-      // the New Rollouts section's "expected" columns. Flask's real equivalent
-      // (_pull_stage_benchmarks, generator/data.py:2524) geo/size/rent/D2C/NIRO-tiers this by
-      // PMC portfolio; simplified here to a network-wide-only percentile (still 100% real data,
-      // just not geo-matched) since the established per-property peer pool used elsewhere on
-      // this slide structurally excludes anything under 7 months live and has no candidates
-      // this young.
-      const StageAgeBenchmarkSchema = z.object({
-        AGE_MONTHS: z.number(),
-        P50_NAR: z.number().nullable(),
-        P50_ENG_PER_100: z.number().nullable(),
-        N: z.number(),
-      });
-      const stageAgeBenchmarkPromise = ctx.integrations.snowflake_sso.query(
-        `WITH base AS (
-            SELECT
-              PROPERTY_PUBLIC_ID,
-              PMC_NAME,
-              PROPERTY_UNIT_COUNT,
-              BP_MONTH,
-              DATEDIFF('month', ROLLOUT_MONTH, BP_MONTH) + 1 AS AGE_MONTHS,
-              BILLS_PAID_COUNT,
-              SUM(COALESCE(NEW_BILL_CONNECTIONS_PROPERTY, 0)) OVER (
-                PARTITION BY PROPERTY_PUBLIC_ID ORDER BY BP_MONTH
-              ) AS CUM_CONNECTIONS
-            FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS
-            WHERE IS_IN_NETWORK = TRUE
-              AND ROLLOUT_MONTH IS NOT NULL
-              AND PMC_NAME NOT IN (${subjectPlaceholders})
-              AND BP_MONTH >= DATEADD('month', -24, CURRENT_DATE())
-              AND BP_MONTH < ?
-         )
-         SELECT
-            AGE_MONTHS,
-            PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY BILLS_PAID_COUNT::FLOAT / NULLIF(PROPERTY_UNIT_COUNT, 0)) AS P50_NAR,
-            PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY CUM_CONNECTIONS::FLOAT / NULLIF(PROPERTY_UNIT_COUNT, 0) * 100) AS P50_ENG_PER_100,
-            COUNT(*) AS N
-         FROM base
-         WHERE AGE_MONTHS BETWEEN 1 AND 11
-         GROUP BY AGE_MONTHS
-         HAVING COUNT(*) >= 5`,
-        StageAgeBenchmarkSchema,
-        [...subjectPmcNames, cutoffStr],
-        { label: "Fetch network-wide age-since-rollout benchmark for New Rollouts section" }
-      ).catch(() => [] as z.infer<typeof StageAgeBenchmarkSchema>[]);
+      // New Rollouts section's "expected" NAR used to come from a dedicated network-wide,
+      // UNTIERED query here. Confirmed real and broken: it returned P50_NAR = 0.0 at every
+      // single age bucket 1-11 (Kevin's catch - "clark is showing a 0 peer median adoption
+      // rate") because ~77% of ALL network property-months have zero bills paid and nothing
+      // here excluded them by geography/size/rent the way every real peer benchmark elsewhere
+      // in this deck does - Flask's real equivalent for this exact column
+      // (_pull_stage_benchmarks, generator/data.py:2524) IS geo/size/rent/NIRO-tiered, and
+      // showed a real 3.4% for the same property/age this query returned 0.0% for. Since
+      // stageBenchmarksMap (built above, same tenure-cohort query the Adoption Trend chart
+      // now uses) already covers ages 1-36 on the SAME locked-peers cohort, the New Rollouts
+      // section now reads that directly instead of this separate, broken query - see the
+      // newRolloutCandidates loop below.
 
-      const [networkPoolResult, propertyPoolResult, regionDetailResult, subjectIncomeRows, tenurePercentileRows, disabledPropertyResult, stageAgeBenchmarkResult] = await Promise.all([
+      const [networkPoolResult, propertyPoolResult, regionDetailResult, subjectIncomeRows, tenurePercentileRows, disabledPropertyResult] = await Promise.all([
         networkPoolPromise, propertyPoolPromise, regionDetailPromise, subjectIncomePromise, tenurePercentilePromise,
-        disabledPropertiesPromise, stageAgeBenchmarkPromise,
+        disabledPropertiesPromise,
       ]);
       networkPool = networkPoolResult;
       propertyPool = propertyPoolResult;
       regionDetail = regionDetailResult;
       disabledPropertyRows = disabledPropertyResult;
-      stageAgeBenchmarkRows = stageAgeBenchmarkResult;
       for (const row of subjectIncomeRows) {
         if (row.MEDIAN_RENTER_INCOME != null && row.MEDIAN_RENTER_INCOME > 0) {
           subjectIncomeByProperty.set(row.PROPERTY_NAME, row.MEDIAN_RENTER_INCOME);
@@ -5015,12 +4981,17 @@ export default api({
     // --- New Rollouts — below age-since-rollout benchmark (Flask: generator/slides.py:5226-5318) ---
     // Only meaningful once the portfolio itself has enough history to distinguish "new" from
     // "everything is new" — Flask's own gate (_msfirst >= 6).
-    const stageAgeBenchmarkMap = new Map<number, { p50Nar: number; p50Eng: number }>();
-    for (const row of stageAgeBenchmarkRows) {
-      if (row.P50_NAR != null) {
-        stageAgeBenchmarkMap.set(row.AGE_MONTHS, { p50Nar: row.P50_NAR, p50Eng: row.P50_ENG_PER_100 ?? 0 });
-      }
-    }
+    // benchNar reads stageBenchmarksMap - the SAME real, geo/size/rent-matched tenure-cohort
+    // query the Adoption Trend chart uses (built earlier in this function), matching Flask's
+    // own render_adoption_opportunities, which reads its "Expected" column from this exact
+    // same kpis["stage_benchmarks"] source (generator/slides.py:5277-5279). Previously read a
+    // dedicated untiered network-wide query that returned exactly 0.0% at every age bucket -
+    // confirmed broken, not a thin-sample artifact (Kevin's catch).
+    // expectedEngPer100 falls back to peerMedianEngFallback (already computed above) rather
+    // than reviving that same broken query for engagement - a real, if coarser, network-wide
+    // P50 beats a degenerate one, and the "below benchmark" filter tolerates a missing/zero
+    // engagement expectation without excluding the row (only benchNar being exactly 0 broke
+    // that filter).
     const newRolloutCandidates: NewRolloutCandidate[] = [];
     if (_msl >= 6) {
       const newCutoffDate = latestCompletedMonth ? new Date(latestCompletedMonth) : new Date();
@@ -5029,16 +5000,16 @@ export default api({
       for (const p of propertySnapshot) {
         if (!p.rolloutMonth || p.rolloutMonth <= newCutoffStr) continue;
         const age = Math.max(1, p.monthsLive);
-        const bench = stageAgeBenchmarkMap.get(age);
+        const bench = stageBenchmarksMap[age];
         newRolloutCandidates.push({
           propertyName: p.propertyName,
           propertyState: p.propertyState,
           units: p.units,
           ageMonths: age,
           adoptionRate: p.adoptionRate,
-          benchNar: bench?.p50Nar ?? 0,
+          benchNar: bench?.p50 ?? 0,
           observedEngPer100: p.t12EngPer100 ?? 0,
-          expectedEngPer100: bench?.p50Eng ?? 0,
+          expectedEngPer100: peerMedianEngFallback ?? 0,
           hasMarketingIntegration: p.hasMarketingIntegration,
         });
       }
