@@ -3936,24 +3936,50 @@ export default api({
     }
 
     // --- Canonical Peer Benchmark (one resolved P50 NAR per deck) ---
-    // Resolution order (mirrors Flask's resolve_canonical_benchmark, generator/data.py:2095-2177,
-    // minus the stage-bucket tier — that one is a separate real query, _pull_stage_benchmarks,
-    // data.py:2524, not yet ported; PMCs younger than 36mo fall through to tier 2 below instead
-    // of a dedicated young-PMC benchmark, a known gap):
+    // Resolution order now mirrors Flask's resolve_canonical_benchmark EXACTLY
+    // (generator/data.py:2126-2205) - the stage-bucket tier below was the missing piece
+    // (previously "not yet ported... a known gap"), now that stageBenchmarksMap exists.
     //   1. Rolling calendar-time peer median (established PMCs, tenure >= 36 months) — real,
     //      time-series, from the SAME geo/size/rent-matched lockedPeers cohort.
-    //   2. Snapshot P50 across lockedPeers (real, single-month) — used for all other tenures,
-    //      and as tier 1's own fallback if the rolling query came back empty.
-    // Every slide that shows a peer-median number MUST read from this single value.
+    //   2. Tenure-cohort benchmark (nearest stage_benchmarks bucket to months_since_launch) -
+    //      for PMCs under 36mo, or established PMCs whose rolling query came back empty.
+    //   3. Snapshot P50 across lockedPeers (real, single-month) — only when neither above has
+    //      data at all.
+    // Every slide that shows a peer-median number MUST read from this single value. Confirmed
+    // real, Kevin's catch: before this, Peer Benchmarks/QBR Close showed tier 3's snapshot
+    // (11.8%) while the Adoption Trend chart showed the real tenure-matched curve (4.9%) for
+    // the SAME PMC, same report - Flask's real function resolves both from the same value.
     {
       const narPerc = segmentPercentiles.find((s) => s.metric === "NAR");
       if (narPerc) {
-        canonicalPeerNarP50 = narPerc.p50;
+        canonicalPeerNarP50 = narPerc.p50; // tier 3
       }
 
-      // Rolling per-month data, if present, overrides the single P50 above with the latest
-      // month's own smoothed value for consistency with the adoption-trend chart's own line.
-      if (rollingRows.length > 0) {
+      // Tier 2: nearest tenure bucket to months_since_launch, mirroring Flask's
+      // `min(stage_bmarks.keys(), key=lambda k: abs(k - months_since))` exactly.
+      if (Object.keys(stageBenchmarksMap).length > 0 && _msl > 0) {
+        let nearestMn = -1;
+        let nearestDist = Infinity;
+        for (const mnStr of Object.keys(stageBenchmarksMap)) {
+          const mn = Number(mnStr);
+          const dist = Math.abs(mn - _msl);
+          if (dist < nearestDist) {
+            nearestDist = dist;
+            nearestMn = mn;
+          }
+        }
+        const nearestP50 = nearestMn >= 0 ? stageBenchmarksMap[nearestMn]?.p50 : null;
+        if (nearestP50 != null) {
+          canonicalPeerNarP50 = nearestP50;
+        }
+      }
+
+      // Tier 1 (highest priority): rolling calendar-time peer median - established PMCs
+      // (>=36mo) only, matching Flask's msl_is_capped gate. Without this gate, a PMC under
+      // 36mo with a stray non-empty rollingPeerMedianMap (e.g. the network-wide fallback a
+      // few hundred lines up) would wrongly prefer calendar-time movement over the real
+      // tenure-matched comparison for a PMC still in its ramp stage.
+      if (_msl >= 36 && rollingRows.length > 0) {
         const latestPeer = rollingRows[rollingRows.length - 1];
         if (latestPeer.SMOOTHED_NAR != null) {
           canonicalPeerNarP50 = latestPeer.SMOOTHED_NAR;
