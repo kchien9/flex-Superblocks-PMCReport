@@ -25,6 +25,7 @@ export interface ExpansionFormState {
   review_period: string;
   comparison_months: number;
   delivery: string;
+  growth_slides: string;
   selected_slides: Set<string>;
   selected_metrics: Set<string>;
   testimonials: Testimonial[];
@@ -46,6 +47,7 @@ export function ExpansionTab({ pmcNames, pmcLoading, generating, onGenerate }: E
   const [reviewPeriod, setReviewPeriod] = useState("full");
   const [comparisonMonths, setComparisonMonths] = useState(3);
   const [delivery, setDelivery] = useState("presenting");
+  const [growthSlides, setGrowthSlides] = useState("auto");
   const [selectedSlides, setSelectedSlides] = useState<Set<string>>(() => defaultSlideSet(EXPANSION_SLIDES));
   // Fixed — the picker for this was removed (server never reads it; the Peer Benchmarks slide
   // has its own inline toggle), but selected_metrics stays in the payload shape unchanged.
@@ -62,6 +64,7 @@ export function ExpansionTab({ pmcNames, pmcLoading, generating, onGenerate }: E
       review_period: reviewPeriod,
       comparison_months: comparisonMonths,
       delivery,
+      growth_slides: growthSlides,
       selected_slides: selectedSlides,
       selected_metrics: selectedMetrics,
       testimonials,
@@ -134,6 +137,10 @@ export function ExpansionTab({ pmcNames, pmcLoading, generating, onGenerate }: E
         <div className="flex items-center justify-between">
           <label className="text-xs font-medium text-gray-600">Delivery</label>
           <ToggleGroup options={[{ value: "sharing", label: "Sharing" }, { value: "presenting", label: "Presenting" }]} value={delivery} onChange={setDelivery} />
+        </div>
+        <div className="flex items-center justify-between">
+          <label className="text-xs font-medium text-gray-600">Growth trend slides</label>
+          <ToggleGroup options={[{ value: "auto", label: "Auto" }, { value: "include", label: "Include" }, { value: "exclude", label: "Exclude" }]} value={growthSlides} onChange={setGrowthSlides} />
         </div>
       </div>
 

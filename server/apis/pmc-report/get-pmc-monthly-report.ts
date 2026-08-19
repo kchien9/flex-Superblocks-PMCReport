@@ -1729,6 +1729,12 @@ export default api({
     expansion_slides: z.array(z.string()).optional(),
     presenting_mode: z.boolean().optional().default(false),
     comparison_months: z.number().int().optional().default(1),
+    // Growth trend slides (residents_units/adoption_trend/cohort_overview) override.
+    // "auto" preserves the SMB-only default; "include"/"exclude" force the segment veto
+    // either way. Plain optional (not .default()) like expansion_slides above, so QBR/
+    // new_logo call sites aren't forced to pass it — the derivation below falls back to "auto".
+    // See docs/clark-session-form-corrections.md for the contract.
+    growth_slides: z.enum(["auto", "include", "exclude"]).optional(),
   }),
 
   output: z.object({
@@ -1737,7 +1743,7 @@ export default api({
     notes_html: z.string().optional(),
   }),
 
-  async run(ctx, { pmc_name, second_pmc, report_name, lookback_months, deck_mode, adoption_target, testimonials, total_portfolio_units, expansion_slides, presenting_mode, comparison_months }) {
+  async run(ctx, { pmc_name, second_pmc, report_name, lookback_months, deck_mode, adoption_target, testimonials, total_portfolio_units, expansion_slides, presenting_mode, comparison_months, growth_slides }) {
     // Compute bp_safe_cutoff
     const today = new Date();
     const dayOfMonth = today.getDate();
@@ -3315,6 +3321,13 @@ export default api({
       return modeTeam === "SMB Manager";
     })();
 
+    // Growth trend slides (residents_units/adoption_trend/cohort_overview) override —
+    // "auto" preserves the is_smb-only default above; "include"/"exclude" let an AE force
+    // the segment veto either way. Derived here (not inline at each gate) since it's needed
+    // by renderExecSummary's showSparklines below, ahead of where activeOrder is built.
+    const showGrowthSlides =
+      growth_slides === "include" || ((growth_slides ?? "auto") === "auto" && is_smb);
+
     // --- Auto-derive evidence_type from property-level avg rent ---
     // Python logic: median of per-property (rent_paid / bills_paid); if < $950 → "affordable"
     let evidence_type: "high_rent" | "affordable" = "high_rent";
@@ -4215,11 +4228,18 @@ export default api({
       dqSinceComparison: dqSinceComparison != null && dqSinceComparison > 0 ? dqSinceComparison : null,
       slideId: 2,
       // Flask: QBR always show_sparklines=False (hardcoded, unconditional).
-      // Expansion: show_sparklines = not (is_smb and 54 in active_exp_order).
-      // Since slide 54 = "residents_units", suppress sparklines on expansion when SMB
-      // and that slide is included (it renders the same data as a full chart).
+      // Expansion: show_sparklines = not (_show_growth and 54 in active_exp_order).
+      // Since slide 54 = "residents_units", suppress sparklines on expansion when the growth
+      // trend slides are showing (SMB by default, or forced via growth_slides="include") and
+      // that slide specifically is included (it renders the same data as a full chart).
+      // An empty expansion_slides array means "no filter" (all slides included) per the
+      // activeOrder build below — match that semantics here rather than treating [] as "off".
       showSparklines: deck_mode === "qbr" ? false
-        : deck_mode === "expansion" ? !(is_smb && (expansion_slides?.includes("residents_units") ?? true))
+        : deck_mode === "expansion" ? !(showGrowthSlides && (
+            expansion_slides && expansion_slides.length > 0
+              ? expansion_slides.includes("residents_units")
+              : true
+          ))
         : false,
       vsLabel,
     });
@@ -4404,9 +4424,9 @@ export default api({
         "cover",
         "exec_bottom_line",
         "by_state",
-        "residents_units",     // SMB-only
-        "adoption_trend",      // SMB-only
-        "cohort_overview",     // SMB-only
+        "residents_units",     // growth trend
+        "adoption_trend",      // growth trend
+        "cohort_overview",     // growth trend
         "peer_benchmarks",
         "retention",
         "high_rent",
@@ -4417,8 +4437,9 @@ export default api({
         "expansion_case_close",
       ];
 
-      // SMB-only slides are excluded when not an SMB account
-      const SMB_ONLY = new Set(["residents_units", "adoption_trend", "cohort_overview"]);
+      // Growth trend slides are gated by showGrowthSlides (see derivation above) rather than
+      // a bare is_smb check — "auto" keeps the SMB-only default, "include"/"exclude" override it.
+      const GROWTH_TREND_SLIDES = new Set(["residents_units", "adoption_trend", "cohort_overview"]);
 
       // Build active order: filter by expansion_slides if provided, then
       // force-append expansion_case_close at the end regardless of selection
@@ -4428,7 +4449,7 @@ export default api({
 
       const activeOrder = EXPANSION_SLIDE_ORDER.filter((sid) => {
         if (sid === "expansion_case_close") return false; // always appended below
-        if (SMB_ONLY.has(sid) && !is_smb) return false;  // SMB gate
+        if (GROWTH_TREND_SLIDES.has(sid) && !showGrowthSlides) return false;
         if (sid === "testimonials" && testimonials.length === 0) return false;
         return slideFilter === null || slideFilter.has(sid);
       });

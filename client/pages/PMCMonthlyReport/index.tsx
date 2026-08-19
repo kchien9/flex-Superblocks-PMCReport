@@ -126,6 +126,7 @@ export default function PMCMonthlyReportPage() {
       expansion_slides: [...state.selected_slides],
       presenting_mode: state.delivery === "presenting",
       comparison_months: state.comparison_months ?? 1,
+      growth_slides: state.growth_slides as "auto" | "include" | "exclude",
     };
     lastArgsRef.current = args;
     try {
