@@ -1096,7 +1096,7 @@ export function renderPropertiesWorthCelebrating(input: {
       <div class="slide-label">PROPERTY DEEP DIVE</div>
       <div class="slide-title" style="display:flex;align-items:center;">Properties worth celebrating — what can we learn?${trendToggle}</div>
     </div>
-    <div style="font-size:10px;color:#a09cb0;margin:-4px 0 8px;">Peer comparisons draw from a bounded network sample (top properties per matching PMC, network-wide median as fallback) — hover a value for its exact match criteria and peer count.</div>
+    <div style="font-size:10px;color:#a09cb0;margin:-4px 0 8px;">Peer comparisons are drawn from a capped sample of the network, not the full population — hover a value for its exact match criteria and peer count.</div>
     ${tableHtml}
     <div style="flex-shrink:0;padding-top:10px;border-top:1px solid #eceaf2;margin-top:8px;">
       <div style="font-size:11px;color:#524e5b;">These properties are beating the portfolio average by a meaningful margin — worth asking what they're doing differently (marketing cadence, move-in process, team engagement) and whether it can travel to other properties.</div>
@@ -1392,7 +1392,7 @@ export function renderAdoptionOpportunities(input: {
       <div class="slide-label">PROPERTY DEEP DIVE</div>
       <div class="slide-title" style="display:flex;align-items:center;">These properties need our attention.${trendToggle}</div>
     </div>
-    <div style="font-size:10px;color:#a09cb0;margin:-4px 0 8px;">Peer comparisons draw from a bounded network sample (top properties per matching PMC, network-wide median as fallback) — hover a value for its exact match criteria and peer count.</div>
+    <div style="font-size:10px;color:#a09cb0;margin:-4px 0 8px;">Peer comparisons are drawn from a capped sample of the network, not the full population — hover a value for its exact match criteria and peer count.</div>
     ${newRolloutSection}
     ${establishedSection}
     ${disabledSection}
