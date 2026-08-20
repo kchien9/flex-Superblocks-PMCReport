@@ -306,7 +306,7 @@ export function NewLogoTab({ generating, onGenerate }: NewLogoTabProps) {
 
       {/* Testimonials */}
       <Section title="Customer Testimonials">
-        <p className="text-xs font-bold text-gray-700 mb-2">Please read these tickets and make the call on if they should be included in the deck.</p>
+        <p className="text-xs font-bold text-red-600 mb-2">Please read these tickets and make the call on if they should be included in the deck.</p>
         <TestimonialsEditor testimonials={testimonials} onChange={setTestimonials} pmcName="" fetchLabel="Fetch from peer group" />
       </Section>
 
