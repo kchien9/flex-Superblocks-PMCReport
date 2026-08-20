@@ -65,9 +65,6 @@ export default function PMCMonthlyReportPage() {
       presenting_mode: state.delivery === "presenting",
       comparison_months: state.comparison_months ?? 1,
       growth_slides: "auto" as const,
-      // Kevin's catch: this existed on QBRFormState and updated on toggle, but was never
-      // actually included in the args sent to the API — the control did nothing.
-      terminology: state.terminology as "resident" | "household",
     };
     lastArgsRef.current = args;
     try {
@@ -105,7 +102,6 @@ export default function PMCMonthlyReportPage() {
       property_list_filename: state.property_list_filename || null,
       prospect_slides: [...state.selected_slides],
       presenting_mode: state.delivery === "presenting",
-      terminology: state.terminology as "resident" | "household",
     };
     lastProspectArgsRef.current = args;
     try {
@@ -132,7 +128,6 @@ export default function PMCMonthlyReportPage() {
       presenting_mode: state.delivery === "presenting",
       comparison_months: state.comparison_months ?? 1,
       growth_slides: state.growth_slides as "auto" | "include" | "exclude",
-      terminology: state.terminology as "resident" | "household",
     };
     lastArgsRef.current = args;
     try {

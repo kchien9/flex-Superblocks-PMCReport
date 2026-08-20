@@ -98,27 +98,6 @@ function mean(arr: number[]): number {
   return arr.reduce((s, v) => s + v, 0) / arr.length;
 }
 
-// Resident/household terminology toggle (Kevin's ask, 2026-08-19) — see the identical helper
-// in get-pmc-monthly-report.ts for the full rationale. Duplicated here (not imported) to
-// match this file's existing convention of self-contained helpers with no cross-file imports.
-const TERM_MAP: Record<string, string> = {
-  Residents: "Households", residents: "households",
-  Resident: "Household", resident: "household",
-  RESIDENTS: "HOUSEHOLDS", RESIDENT: "HOUSEHOLD",
-};
-const TERM_MAP_REVERSE: Record<string, string> = Object.fromEntries(
-  Object.entries(TERM_MAP).map(([k, v]) => [v, k])
-);
-
-function applyTerminology(html: string, terminology: string | null | undefined): string {
-  const mapping = terminology === "household" ? TERM_MAP : TERM_MAP_REVERSE;
-  let out = html;
-  for (const [src, dst] of Object.entries(mapping)) {
-    out = out.replace(new RegExp(`\\b${src}\\b`, "g"), dst);
-  }
-  return out;
-}
-
 // ─── Schemas ────────────────────────────────────────────────────────────────
 
 const PeerBenchmarkRow = z.object({
@@ -198,10 +177,6 @@ export default api({
     // Empty/omitted = all slides (matches Flask's prospect_slides_filter default)
     prospect_slides: z.array(z.string()).nullable().optional(),
     presenting_mode: z.boolean().optional().default(false),
-    // Resident/household terminology (Kevin's ask, 2026-08-19) — this is the real New Logo
-    // backend (NewLogoTab.tsx calls GetProspectDeck, not get-pmc-monthly-report.ts's
-    // deck_mode:"new_logo" branch, which is a different, unrelated launch-snapshot concept).
-    terminology: z.enum(["resident", "household"]).optional(),
   }),
 
   output: z.object({
@@ -267,7 +242,6 @@ export default api({
       property_list_filename,
       prospect_slides,
       presenting_mode,
-      terminology,
     } = input;
     const prospectSlidesFilter = prospect_slides && prospect_slides.length > 0 ? new Set(prospect_slides) : null;
 
@@ -1710,15 +1684,9 @@ export default api({
       }
     }
 
-    // Resident/household terminology (Kevin's ask) — applied once here, to every fully-
-    // assembled piece of output text, same as get-pmc-monthly-report.ts's deck/notes.
-    const termedSlides = slides.map((s) => ({ ...s, html: applyTerminology(s.html, terminology) }));
-    const termedNotesHtml = prospectNotesHtml != null ? applyTerminology(prospectNotesHtml, terminology) : prospectNotesHtml;
-    const termedEmailDraft = applyTerminology(emailDraft, terminology);
-
     return {
-      slides: termedSlides,
-      notes_html: termedNotesHtml,
+      slides,
+      notes_html: prospectNotesHtml,
       benchmarks: {
         median_nar: benchmarks.median_nar,
         avg_nar: benchmarks.avg_nar,
@@ -1726,7 +1694,7 @@ export default api({
         match_level: benchmarks.match_level,
         match_mode: benchmarks.match_mode,
       },
-      email_draft: termedEmailDraft,
+      email_draft: emailDraft,
       error: null,
       default_hidden_slides: defaultHiddenSlides,
       market_map_warning: marketMapWarning,

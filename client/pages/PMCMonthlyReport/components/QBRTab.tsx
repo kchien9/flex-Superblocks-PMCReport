@@ -241,6 +241,7 @@ export function QBRTab({ pmcNames, pmcLoading, generating, onGenerate }: QBRTabP
 
       {/* Customer Testimonials */}
       <StaticSection title="Customer Testimonials">
+        <p className="text-xs font-bold text-gray-700 mb-2">Please read these tickets and make the call on if they should be included in the deck.</p>
         <TestimonialsEditor
           testimonials={testimonials}
           onChange={setTestimonials}

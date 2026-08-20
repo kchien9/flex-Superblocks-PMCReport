@@ -106,7 +106,6 @@ export interface NewLogoFormState {
 
   avg_monthly_rent: string;
   delivery: string;
-  terminology: string;
   selected_slides: Set<string>;
   testimonials: Testimonial[];
   property_list_csv: string | null;
@@ -129,7 +128,6 @@ export function NewLogoTab({ generating, onGenerate }: NewLogoTabProps) {
 
   const [avgMonthlyRent, setAvgMonthlyRent] = useState("");
   const [delivery, setDelivery] = useState("presenting");
-  const [terminology, setTerminology] = useState("resident");
   const [selectedSlides, setSelectedSlides] = useState<Set<string>>(() => defaultSlideSet(NEW_LOGO_SLIDES));
   const [testimonials, setTestimonials] = useState<Testimonial[]>([]);
   const [propertyListFile, setPropertyListFile] = useState<File | null>(null);
@@ -191,7 +189,6 @@ export function NewLogoTab({ generating, onGenerate }: NewLogoTabProps) {
       portfolio_footprint: portfolioFootprint,
       avg_monthly_rent: avgMonthlyRent,
       delivery,
-      terminology,
       selected_slides: selectedSlides,
       testimonials,
       property_list_csv: propertyListCsv,
@@ -200,7 +197,7 @@ export function NewLogoTab({ generating, onGenerate }: NewLogoTabProps) {
         ? propertyListFile.name.replace(/\.(xlsx|xls)$/i, ".csv")
         : null,
     });
-  }, [prospectAccount, totalUnits, states, portfolioType, propertyType, portfolioFootprint, avgMonthlyRent, delivery, terminology, selectedSlides, testimonials, propertyListCsv, propertyListFile, onGenerate]);
+  }, [prospectAccount, totalUnits, states, portfolioType, propertyType, portfolioFootprint, avgMonthlyRent, delivery, selectedSlides, testimonials, propertyListCsv, propertyListFile, onGenerate]);
 
   const inputCls = "w-full px-3 py-2 text-sm border border-gray-200 rounded-[4px] focus:outline-none focus:ring-2 focus:ring-[#6A3DB8]/30 focus:border-[#6A3DB8]";
   const selectCls = `${inputCls} bg-white`;
@@ -308,7 +305,8 @@ export function NewLogoTab({ generating, onGenerate }: NewLogoTabProps) {
       </div>
 
       {/* Testimonials */}
-      <Section title="Testimonials">
+      <Section title="Customer Testimonials">
+        <p className="text-xs font-bold text-gray-700 mb-2">Please read these tickets and make the call on if they should be included in the deck.</p>
         <TestimonialsEditor testimonials={testimonials} onChange={setTestimonials} pmcName="" fetchLabel="Fetch from peer group" />
       </Section>
 
@@ -324,15 +322,6 @@ export function NewLogoTab({ generating, onGenerate }: NewLogoTabProps) {
           <ToggleGroup options={[{ value: "sharing", label: "Sharing" }, { value: "presenting", label: "Presenting" }]} value={delivery} onChange={setDelivery} />
         </div>
         <p className="text-[11px] text-gray-400 mt-1">Are you emailing this deck or presenting it live? Controls formatting.</p>
-      </div>
-
-      {/* Terminology */}
-      <div>
-        <div className="flex items-center justify-between">
-          <label className="text-sm font-medium text-gray-700">Terminology</label>
-          <ToggleGroup options={[{ value: "resident", label: "Resident" }, { value: "household", label: "Household" }]} value={terminology} onChange={setTerminology} />
-        </div>
-        <p className="text-[11px] text-gray-400 mt-1">Which word to use throughout the deck and Excel workbook — some partners prefer one over the other.</p>
       </div>
 
       {/* Generate */}
