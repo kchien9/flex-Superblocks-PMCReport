@@ -2849,25 +2849,53 @@ export default api({
         ).catch(() => [] as { PROPERTY_NAME: string; MEDIAN_RENTER_INCOME: number | null }[]);
 
       // Tenure percentile vs. all active PMCs — gates the anniversary-milestone callout to only
-      // the top 50% most-tenured partners, same as Flask's pull_pmc_tenure_percentile. Ranks by
-      // true rollout tenure (any integration status), which is what the milestone slide's
-      // tenure stat is about — a separate concept from months_since_launch's DI-only maturity.
+      // the top 50% most-tenured partners, same as Flask's pull_pmc_tenure_percentile.
+      //
+      // Ranks by the same SFDC-New-Logo-aware "true partner since" date as partnerSincePromise
+      // above (COALESCE opp close date, falling back to raw MIN(ROLLOUT_MONTH) only when no
+      // matching opportunity exists) — NOT raw MIN(ROLLOUT_MONTH) alone. Confirmed real bug
+      // this fixes (Kevin's catch, 2026-08-19): Bridge PM's milestone slide showed "Top 1%" /
+      // "2 years" / "since July 2024" on the same slide — internally contradictory, since 2
+      // years of tenure is nowhere near the network's real top 1% (P99 tenure is ~75 months).
+      // Root cause: Bridge PM's earliest PROPERTY rolled out in Oct 2019 under a prior
+      // management company, 57 months before Bridge PM itself became a Flex partner — ranking
+      // the whole network by raw rollout month reproduces that inherited-date problem for any
+      // PMC in the same situation. Live-verified: Bridge PM's real percentile is 36%, not 1%,
+      // and the corrected subject launch_month (2024-07-29) matches its own "since July 2024"
+      // headline exactly.
       const subjectPmcNames = second_pmc ? [pmc_name, second_pmc] : [pmc_name];
       const subjectPlaceholders = subjectPmcNames.map(() => "?").join(", ");
       const TenurePercentileSchema = z.object({
         PERCENTILE_FROM_TOP: z.number().nullable(),
       });
       const tenurePercentilePromise = ctx.integrations.snowflake_sso.query(
-          `WITH pmc_tenures AS (
-              SELECT PMC_NAME, MIN(ROLLOUT_MONTH) AS launch_month
+          `WITH pmc_ids AS (
+              SELECT DISTINCT PMC_NAME, PMC_ID FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS WHERE PMC_ID IS NOT NULL
+           ),
+           pmc_rollout AS (
+              SELECT PMC_NAME, MIN(ROLLOUT_MONTH) AS rollout_launch
               FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS
               WHERE ROLLOUT_MONTH IS NOT NULL
               GROUP BY PMC_NAME
            ),
+           pmc_opps AS (
+              -- Same join shape as partnerSincePromise's old-schema half above.
+              SELECT pi.PMC_NAME, MIN(o.CLOSED_AT_UTC) AS opp_launch
+              FROM PRODUCTION.SALES.FCT_SALES_OPPORTUNITIES o
+              JOIN PRODUCTION.SALES.DIM_SALES_ACCOUNTS a ON o.SALES_ACCOUNT_KEY = a.SALES_ACCOUNT_KEY
+              JOIN pmc_ids pi ON pi.PMC_ID = a.PMC_ID
+              WHERE o.OPPORTUNITY_TYPE = 'New Logo' AND o.IS_CLOSED_WON = TRUE
+              GROUP BY pi.PMC_NAME
+           ),
+           pmc_tenures AS (
+              SELECT r.PMC_NAME, COALESCE(o.opp_launch::DATE, r.rollout_launch) AS launch_month
+              FROM pmc_rollout r
+              LEFT JOIN pmc_opps o ON o.PMC_NAME = r.PMC_NAME
+           ),
            subject AS (
-              SELECT MIN(ROLLOUT_MONTH) AS launch_month
-              FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS
-              WHERE ROLLOUT_MONTH IS NOT NULL AND PMC_NAME IN (${subjectPlaceholders})
+              SELECT MIN(launch_month) AS launch_month
+              FROM pmc_tenures
+              WHERE PMC_NAME IN (${subjectPlaceholders})
            ),
            counts AS (
               SELECT
@@ -3284,16 +3312,21 @@ export default api({
       .map((r) => r.ROLLOUT_MONTH!)
       .sort()[0] || null;
 
-    // ── Partner Since: prefer earliest of Salesforce closed-won OR MIN(ROLLOUT_MONTH) ──
-    // Flask: pull_launch_month() — uses the EARLIER of Salesforce close date and first rollout
+    // ── Partner Since: Salesforce closed-won New Logo opp date, unconditionally when it
+    // exists — falls back to MIN(ROLLOUT_MONTH) only when no matching opportunity exists.
+    // Flask: pull_launch_month() — `if opp_date: return opp_date` (generator/data.py:2549),
+    // no comparison against rollout month. This file's previous comment claimed Flask "uses
+    // the EARLIER of" the two and picked whichever date was smaller — backwards, and it's the
+    // exact bug this override exists to prevent: a PMC that acquired/inherited a property with
+    // OLDER rollout history (from a prior management company) would have that inherited date
+    // win over its own real, later partnership start. Confirmed real for Bridge PM (Kevin's
+    // catch): SFDC close date 2024-07-29, but an inherited property rollout of 2019-10-01 —
+    // the old "earlier wins" logic kept 2019-10-01, 57 months before Bridge PM was a partner.
     let partnerSince = earliestRollout;
     try {
       const [launchRow] = await partnerSincePromise;
       if (launchRow?.LAUNCH_MONTH) {
-        // Use the EARLIER of Salesforce close date and first property rollout
-        if (!earliestRollout || launchRow.LAUNCH_MONTH < earliestRollout) {
-          partnerSince = launchRow.LAUNCH_MONTH;
-        }
+        partnerSince = launchRow.LAUNCH_MONTH;
       } else if (partnerSinceError) {
         console.warn(`[PMC Report] partner-since Salesforce query failed for ${pmc_name}: ${partnerSinceError}`);
       }
