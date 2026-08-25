@@ -539,7 +539,7 @@ export function renderExpansionCaseClose(input: ExpansionCaseCloseInput): SlideR
   const f1 = trueRepeat != null && trueRepeat > 0
     ? finding("1",
         "Residents who use Flex keep coming back",
-        `${(trueRepeat * 100).toFixed(1)}% of eligible households returned in a given month \u2013 once residents start using Flex, most keep using it.`
+        `${(trueRepeat * 100).toFixed(1)}% of eligible residents came back in a given month \u2013 once residents start using Flex, most keep using it.`
       )
     : finding("1",
         "Residents who use Flex keep coming back",

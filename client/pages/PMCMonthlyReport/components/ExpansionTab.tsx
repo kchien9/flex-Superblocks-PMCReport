@@ -26,6 +26,7 @@ export interface ExpansionFormState {
   comparison_months: number;
   delivery: string;
   growth_slides: string;
+  terminology: string;
   selected_slides: Set<string>;
   selected_metrics: Set<string>;
   testimonials: Testimonial[];
@@ -48,6 +49,7 @@ export function ExpansionTab({ pmcNames, pmcLoading, generating, onGenerate }: E
   const [comparisonMonths, setComparisonMonths] = useState(3);
   const [delivery, setDelivery] = useState("presenting");
   const [growthSlides, setGrowthSlides] = useState("auto");
+  const [terminology, setTerminology] = useState("resident");
   const [selectedSlides, setSelectedSlides] = useState<Set<string>>(() => defaultSlideSet(EXPANSION_SLIDES));
   // Fixed — the picker for this was removed (server never reads it; the Peer Benchmarks slide
   // has its own inline toggle), but selected_metrics stays in the payload shape unchanged.
@@ -65,11 +67,12 @@ export function ExpansionTab({ pmcNames, pmcLoading, generating, onGenerate }: E
       comparison_months: comparisonMonths,
       delivery,
       growth_slides: growthSlides,
+      terminology,
       selected_slides: selectedSlides,
       selected_metrics: selectedMetrics,
       testimonials,
     });
-  }, [selectedPMC, totalPortfolioUnits, propertyIds, ownershipReportName, reviewPeriod, comparisonMonths, delivery, growthSlides, selectedSlides, selectedMetrics, testimonials, onGenerate]);
+  }, [selectedPMC, totalPortfolioUnits, propertyIds, ownershipReportName, reviewPeriod, comparisonMonths, delivery, growthSlides, terminology, selectedSlides, selectedMetrics, testimonials, onGenerate]);
 
   const inputCls = "w-full px-3 py-2 text-sm border border-gray-200 rounded-[4px] focus:outline-none focus:ring-2 focus:ring-[#6A3DB8]/30 focus:border-[#6A3DB8]";
 
@@ -151,6 +154,13 @@ export function ExpansionTab({ pmcNames, pmcLoading, generating, onGenerate }: E
             <ToggleGroup options={[{ value: "auto", label: "Auto" }, { value: "include", label: "Include" }, { value: "exclude", label: "Exclude" }]} value={growthSlides} onChange={setGrowthSlides} />
           </div>
           <p className="text-[11px] text-gray-400 mt-1">Auto-included for SMB, off for MM+ by default. Use this toggle to override and force-include or remove the trend slides. Include if you want to highlight historic performance.</p>
+        </div>
+        <div>
+          <div className="flex items-center justify-between">
+            <label className="text-sm font-medium text-gray-700">Terminology</label>
+            <ToggleGroup options={[{ value: "resident", label: "Resident" }, { value: "household", label: "Household" }]} value={terminology} onChange={setTerminology} />
+          </div>
+          <p className="text-[11px] text-gray-400 mt-1">Which word to use throughout the deck and Excel workbook — some partners prefer one over the other.</p>
         </div>
       </div>
 
