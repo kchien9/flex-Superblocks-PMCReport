@@ -5594,6 +5594,7 @@ export default api({
         const optInUnits = latestRows.reduce((s, r) => s + (r.HAS_MARKETING_INTEGRATION ? r.PROPERTY_UNIT_COUNT : 0), 0);
         return optInUnits / totalUnits;
       })(),
+      showAdoptionPeerMedian: show_adoption_peer_median,
     });
 
     // Full Property Table = appendix after QBR Close

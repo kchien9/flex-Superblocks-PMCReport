@@ -1870,6 +1870,7 @@ export function renderAdoptionTrend(input: {
   // ─── Peer cohort benchmark ──────────────────────────────────────────────
   let benchmarkVals: (number | null)[] = [];
   let benchmarkLabel = "Peer Median";
+  let benchmarkLabelTooltip = ""; // set only for the calendar-time rolling variant below
   let _mslIsCapped = false;
 
   if (kpis) {
@@ -1930,7 +1931,18 @@ export function renderAdoptionTrend(input: {
         benchmarkVals = newBvals;
         benchmarkLabel = kpis.locked_peers_criteria
           ? `Peer Median \u00b7 ${kpis.locked_peers_criteria}`
-          : "Peer Median \u00b7 similar PMCs \u00b7 same calendar months";
+          : "Peer Median \u00b7 similar PMCs \u00b7 same time period";
+        // Peers here are matched on geography/size/rent, NOT on how long they've been on
+        // Flex - this line tracks each peer's OWN value in the same real-world month as the
+        // point beside it, not an age-matched comparison the way the stage-benchmark label
+        // above is. "same calendar months" tried to say that but read as unexplained jargon
+        // (Kevin's catch, mirrored from the identical fix in Flask's render_adoption_trend) -
+        // "same time period" says the same thing in plain English; the fuller technical
+        // distinction lives in the hover tooltip instead of the visible chip.
+        benchmarkLabelTooltip = kpis.locked_peers_criteria
+          ? ""
+          : "Each point compares your adoption rate to comparable PMCs' median in that same " +
+            "real-world month - not to how long those PMCs have been on Flex.";
       }
     }
   }
@@ -2076,10 +2088,14 @@ export function renderAdoptionTrend(input: {
   // ─── Legend overlay ─────────────────────────────────────────────────────
   let bmLegend = "";
   if (showBenchmark) {
+    const bmLabelSpan = benchmarkLabelTooltip
+      ? `<span style="font-size:13px;color:#524e5b;text-decoration:underline dotted #9ca3af;` +
+        `text-underline-offset:2px;cursor:help;" title="${_e(benchmarkLabelTooltip)}">${_e(benchmarkLabel)}</span>`
+      : `<span style="font-size:13px;color:#524e5b;">${_e(benchmarkLabel)}</span>`;
     bmLegend =
       `<span id="bmLegend${slideId}" style="display:flex;align-items:center;gap:7px;">` +
       `<span style="display:inline-block;width:28px;height:0;border-top:2px dashed rgba(100,116,139,0.6);"></span>` +
-      `<span style="font-size:13px;color:#524e5b;">${_e(benchmarkLabel)}</span>` +
+      bmLabelSpan +
       `</span>`;
   }
 
@@ -3180,6 +3196,7 @@ export interface QbrCloseInput {
   milestoneYears?: number | null; // partnership anniversary years (e.g. 5)
   lifetimeDqShielded?: number; // total DQ shielded for win2 body
   optInPct?: number; // marketing opt-in % for co-marketing action
+  showAdoptionPeerMedian?: boolean; // default true - mirrors Flask's render_qbr_close
 }
 
 export function renderQbrClose(input: QbrCloseInput): SlideResult {
@@ -3189,6 +3206,7 @@ export function renderQbrClose(input: QbrCloseInput): SlideResult {
     benchmarkP75, trueRepeatRate, newPropertiesCount, monthlyTotals,
     milestoneYears, lifetimeDqShielded, optInPct,
   } = input;
+  const showAdoptionPeerMedian = input.showAdoptionPeerMedian !== false;
 
   const pmc = _e(pmcName);
   const bNar = benchmarkNar || 0.085;
@@ -3219,6 +3237,27 @@ export function renderQbrClose(input: QbrCloseInput): SlideResult {
   // Win 1: NAR vs benchmark (with top-quartile check)
   const narPct = fmtPct(currentNar);
   const bPct = fmtPct(bNar);
+
+  // Portfolio-level adoption growth over the same ~6-month window as the per-property trend
+  // badges - a benchmark-independent win for the "upside ahead" branch below, which otherwise
+  // has nothing to say if the peer-median toggle hides the one number its whole framing is
+  // built on (Kevin's catch, mirrored from the identical fix in Flask's render_qbr_close). null
+  // if there isn't enough monthly history, or the growth is too small to be worth claiming
+  // (same 0.5pp tolerance as AT_MEDIAN_TOL above).
+  let ownGrowthPp: number | null = null;
+  let growthLookback = 0;
+  if (monthlyTotals.length >= 2) {
+    growthLookback = Math.min(6, monthlyTotals.length - 1);
+    const refNar = monthlyTotals[monthlyTotals.length - 1 - growthLookback].adoptionRate;
+    const growth = currentNar - refNar;
+    if (growth > AT_MEDIAN_TOL) ownGrowthPp = growth;
+  }
+
+  // "Peer median is {bPct}." is the one clause that leaks a number the Property Deep Dive
+  // tables' show_adoption_peer_median toggle already decided should be hidden - drop it
+  // entirely rather than let this slide show a figure the rest of the deck just hid.
+  const peerClause = showAdoptionPeerMedian ? `Peer median is ${bPct}. ` : "";
+
   let win1Head: string, win1Body: string;
   if (nearP75) {
     win1Head = `Top-quartile adoption at ${narPct}`;
@@ -3229,13 +3268,30 @@ export function renderQbrClose(input: QbrCloseInput): SlideResult {
     win1Body = `Your adoption rate puts you in the top 25% across your peer group. Residents are finding value and coming back - that's the signal.`;
   } else if (aboveMedian) {
     win1Head = `Above-average adoption at ${narPct}`;
-    win1Body = `Peer median is ${bPct}. You're above it - room to grow by driving activation at lower-performing properties.`;
+    // "You're above it" -> "You're above average for your peer group" when the peer-median
+    // clause is dropped - "it" has no referent left to point at otherwise.
+    const aboveClause = showAdoptionPeerMedian ? "You're above it" : "You're above average for your peer group";
+    win1Body = `${peerClause}${aboveClause} - room to grow by driving activation at lower-performing properties.`;
   } else if (atMedian) {
     win1Head = `At median adoption at ${narPct}`;
-    win1Body = `Right at the peer median of ${bPct}. You're in the pack - a focused push on your lower-performing properties can move you above.`;
+    win1Body = `${peerClause}You're right in line with comparable PMCs - a focused push on your lower-performing properties can move you above.`;
   } else {
     win1Head = `Adoption at ${narPct} - upside ahead`;
-    win1Body = `Peer median is ${bPct}. Closing that gap typically comes down to resident outreach and consistent on-site activation.`;
+    const growthClause = ownGrowthPp !== null
+      ? `Adoption has grown ${(ownGrowthPp * 100).toFixed(1)}pp over the last ${growthLookback} months - `
+      : "";
+    if (showAdoptionPeerMedian) {
+      // Both stories at once when there's real growth to point to - the peer-median gap
+      // framing doesn't have to be the only thing this card says.
+      const closeClause = ownGrowthPp !== null ? "closing the rest of that gap" : "Closing that gap";
+      win1Body = `${peerClause}${growthClause}${closeClause} typically comes down to resident outreach and consistent on-site activation.`;
+    } else if (ownGrowthPp !== null) {
+      win1Body = `${growthClause}keep that momentum going with consistent resident outreach and on-site activation.`;
+    } else {
+      // No peer number to cite and no growth to point to - fall back to the plain lever, no
+      // comparison claim at all.
+      win1Body = "Resident outreach and consistent on-site activation are the levers most likely to move this.";
+    }
   }
 
   // Win 2: guaranteed rent (with DQ shielded clause)
