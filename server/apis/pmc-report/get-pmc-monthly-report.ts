@@ -1889,6 +1889,12 @@ export default api({
     show_engagement_observed: z.boolean().optional(),
     show_engagement_portfolio_avg: z.boolean().optional(),
     show_engagement_peer_median: z.boolean().optional(),
+    // "Include D2C Marketing Language" QBRTab toggle (Kevin's catch: this existed in the UI
+    // and updated local state, but was never actually read server-side, nor even included in
+    // index.tsx's generate args - the control did nothing at all, badges always showed
+    // regardless. Mirrors Flask's hide_d2c: hides the Direct Marketing on/off badge on the
+    // adoption-opportunities ("needs attention") slide).
+    hide_d2c: z.boolean().optional(),
     // Slides pulled in from an uploaded PDF (Import Slides picker, QBR only for now) - pages
     // are rendered to images client-side (pdf.js), so the server never touches the PDF itself.
     // anchor is "start" | "end" only in this first pass (mirrors Flask's app.py comment shape,
@@ -1910,7 +1916,7 @@ export default api({
     notes_html: z.string().optional(),
   }),
 
-  async run(ctx, { pmc_name, second_pmc, report_name, lookback_months, deck_mode, adoption_target, testimonials, total_portfolio_units, expansion_slides, presenting_mode, comparison_months, growth_slides, terminology, hidden_kpi_tiles, show_adoption_portfolio_avg, show_adoption_peer_median, show_engagement_observed, show_engagement_portfolio_avg, show_engagement_peer_median, imported_slides }) {
+  async run(ctx, { pmc_name, second_pmc, report_name, lookback_months, deck_mode, adoption_target, testimonials, total_portfolio_units, expansion_slides, presenting_mode, comparison_months, growth_slides, terminology, hidden_kpi_tiles, show_adoption_portfolio_avg, show_adoption_peer_median, show_engagement_observed, show_engagement_portfolio_avg, show_engagement_peer_median, imported_slides, hide_d2c }) {
     // Compute bp_safe_cutoff
     const today = new Date();
     const dayOfMonth = today.getDate();
@@ -2974,13 +2980,16 @@ export default api({
            GROUP BY t.PROPERTY_STATE, COALESCE(dma.DMA_NAME, 'Unknown')
            ORDER BY t.PROPERTY_STATE, BILLS_PAID DESC`,
           RegionDetailSchema,
-          // KNOWN ISSUE, not fixed here: cutoffStr is an exclusive boundary (1st of the next
-          // allowed month), not a real month — exact-matching it can land on Snowflake's
-          // pre-created, not-yet-real stub row for that month (same bug class fixed elsewhere
-          // in this file). latestCompletedMonth (the correct value to use) isn't computed yet
-          // at this point in the request pipeline, so it's not a same-line swap; needs its own
-          // pass to compute a real "latest" inline the way reportingMonthStr does above.
-          [pmc_name, cutoffStr],
+          // FIXED (Kevin's catch - "sub region doesn't work", every DMA showing 0%): this used
+          // to bind cutoffStr, an exclusive boundary (1st of the next allowed month) - an exact
+          // BP_MONTH match against that lands on Snowflake's pre-created, not-yet-real stub row
+          // for that month (real BILLS_PAID_COUNT hasn't landed yet), so every region's adoption
+          // rate computed as 0/units. latestCompletedMonth itself isn't computed until later in
+          // this pipeline (see its own definition further down), but reportingMonthStr - defined
+          // above, same "last month with real billing data" concept, confirmed live against
+          // Snowflake to return correct non-zero bills_paid per region - is already in scope
+          // here and is the right value to bind instead.
+          [pmc_name, reportingMonthStr],
           { label: "Pull DMA region detail for geo slide dropdowns" }
         ).catch(() => [] as { PROPERTY_STATE: string; PROPERTY_REGION: string; PROPERTIES: number; TOTAL_UNITS: number; BILLS_PAID: number }[]);
 
@@ -3669,7 +3678,7 @@ export default api({
     // stayed at the old snapshot's 11.9%/17.0% - an impossible P25 > P50 ordering on screen).
     let canonicalPeerNarP25: number | null = null;
     let canonicalPeerNarP75: number | null = null;
-    let rollingPeerMedianMap: Record<string, { p50: number }> = {};
+    let rollingPeerMedianMap: Record<string, { p50: number; p25?: number; p75?: number }> = {};
     // Compute months since launch for benchmark resolution (used by peer median + adoption trend)
     let _msl = 0;
     if (earliestRollout && latestCompletedMonth) {
@@ -3899,7 +3908,16 @@ export default api({
       }
     }
 
-    const RollingPeerSchema = z.object({ BP_MONTH: z.string(), SMOOTHED_NAR: z.number().nullable() });
+    // P25/P75 added alongside the existing SMOOTHED_NAR (Kevin's catch: an established
+    // (>=36mo) PMC's Peer Benchmarks slide could show a P50 from this rolling tier while
+    // P25/P75 stayed stuck on whatever tier 2/3 set them to, producing an impossible
+    // P75 < P50 ordering on screen when the two tiers' distributions didn't line up).
+    const RollingPeerSchema = z.object({
+      BP_MONTH: z.string(),
+      SMOOTHED_NAR: z.number().nullable(),
+      P25: z.number().nullable(),
+      P75: z.number().nullable(),
+    });
     const StageBenchmarkQuerySchema = z.object({
       MONTH_NUMBER: z.number(),
       P25: z.number().nullable(),
@@ -4089,7 +4107,9 @@ export default api({
          )
          SELECT
            TO_VARCHAR(BP_MONTH, 'YYYY-MM-DD') AS BP_MONTH,
-           PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY smoothed_nar) AS SMOOTHED_NAR
+           PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY smoothed_nar) AS SMOOTHED_NAR,
+           PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY smoothed_nar) AS P25,
+           PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY smoothed_nar) AS P75
          FROM smoothed
          WHERE BP_MONTH >= DATEADD('month', -?, ?::DATE)
            AND BP_MONTH < ?
@@ -4099,7 +4119,7 @@ export default api({
          ORDER BY BP_MONTH`,
         RollingPeerSchema,
         [...lockedPeers, cutoffStr, cutoffStr, lookback_months, cutoffStr, cutoffStr],
-        { label: "Rolling peer median NAR (per-month P50 from locked peers)" }
+        { label: "Rolling peer median NAR (per-month P25/P50/P75 from locked peers)" }
       ).catch((err) => { console.error("[ROLLING QUERY FAILED]", String(err)); return [] as z.infer<typeof RollingPeerSchema>[]; })
       : Promise.resolve([] as z.infer<typeof RollingPeerSchema>[]);
 
@@ -4341,7 +4361,7 @@ export default api({
 
     for (const row of rollingRows) {
       if (row.SMOOTHED_NAR != null) {
-        rollingPeerMedianMap[row.BP_MONTH] = { p50: row.SMOOTHED_NAR };
+        rollingPeerMedianMap[row.BP_MONTH] = { p50: row.SMOOTHED_NAR, p25: row.P25 ?? undefined, p75: row.P75 ?? undefined };
       }
     }
 
@@ -4395,15 +4415,17 @@ export default api({
       // 36mo with a stray non-empty rollingPeerMedianMap (e.g. the network-wide fallback a
       // few hundred lines up) would wrongly prefer calendar-time movement over the real
       // tenure-matched comparison for a PMC still in its ramp stage.
-      // KNOWN GAP: rollingPromise/RollingPeerSchema only computes SMOOTHED_NAR (P50), not a
-      // full percentile spread, so P25/P75 aren't updated here - an established (>=36mo) PMC
-      // on this tier can still show a P50 that doesn't visually center in its P25-P75 band.
-      // Smaller and pre-existing vs. the tier 2/3 fix above; would need widening rollingPromise
-      // itself (PERCENTILE_CONT at 0.25/0.75 alongside the existing smoothed-NAR calc) to close.
+      // FIXED (Kevin's catch - Peer Benchmarks slide showing P75 < P50, an impossible
+      // ordering): rollingPromise/RollingPeerSchema now computes P25/P75 alongside
+      // SMOOTHED_NAR (P50) - all three come from this same tier's same smoothed
+      // cross-sectional distribution, never a P50 from here left paired with P25/P75 still
+      // pointing at tier 2/3's unrelated distribution.
       if (_msl >= 36 && rollingRows.length > 0) {
         const latestPeer = rollingRows[rollingRows.length - 1];
         if (latestPeer.SMOOTHED_NAR != null) {
           canonicalPeerNarP50 = latestPeer.SMOOTHED_NAR;
+          if (latestPeer.P25 != null) canonicalPeerNarP25 = latestPeer.P25;
+          if (latestPeer.P75 != null) canonicalPeerNarP75 = latestPeer.P75;
         }
       }
     }
@@ -4438,7 +4460,9 @@ export default api({
            )
            SELECT
              TO_VARCHAR(BP_MONTH, 'YYYY-MM-DD') AS BP_MONTH,
-             PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY smoothed_nar) AS SMOOTHED_NAR
+             PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY smoothed_nar) AS SMOOTHED_NAR,
+             PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY smoothed_nar) AS P25,
+             PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY smoothed_nar) AS P75
            FROM smoothed
            WHERE BP_MONTH >= DATEADD('month', -?, ?::DATE)
              AND BP_MONTH < ?
@@ -4448,11 +4472,11 @@ export default api({
            ORDER BY BP_MONTH`,
           RollingPeerSchema,
           [pmc_name, cutoffStr, cutoffStr, lookback_months, cutoffStr, cutoffStr],
-          { label: "Network-wide rolling median NAR (fallback)" }
+          { label: "Network-wide rolling median NAR (fallback, P25/P50/P75)" }
         );
         for (const row of networkWideRolling) {
           if (row.SMOOTHED_NAR != null) {
-            rollingPeerMedianMap[row.BP_MONTH] = { p50: row.SMOOTHED_NAR };
+            rollingPeerMedianMap[row.BP_MONTH] = { p50: row.SMOOTHED_NAR, p25: row.P25 ?? undefined, p75: row.P75 ?? undefined };
           }
         }
       } catch (_e2) {
@@ -5575,6 +5599,7 @@ export default api({
       newRolloutCandidates,
       disabledProperties,
       presentingMode: presenting_mode,
+      hideD2c: hide_d2c,
       showAdoptionPortfolioAvg: show_adoption_portfolio_avg,
       showAdoptionPeerMedian: show_adoption_peer_median,
       showEngagementObserved: show_engagement_observed,

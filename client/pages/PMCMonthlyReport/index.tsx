@@ -75,6 +75,10 @@ export default function PMCMonthlyReportPage() {
       show_engagement_portfolio_avg: state.show_engagement_portfolio_avg,
       show_engagement_peer_median: state.show_engagement_peer_median,
       imported_slides: state.imported_slides,
+      // Same bug class as the terminology fix above (Kevin's catch): "Include D2C Marketing
+      // Language" existed on QBRFormState and updated on toggle, but was never included here -
+      // the control did nothing, badges always showed regardless of the toggle.
+      hide_d2c: state.d2c_marketing === "no",
     };
     lastArgsRef.current = args;
     try {

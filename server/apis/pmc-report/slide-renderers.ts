@@ -1221,10 +1221,13 @@ export function renderAdoptionOpportunities(input: {
   disabledProperties?: DisabledPropertyRow[];
   /** Live presenting has no fixed-height/no-scroll PDF export constraint, so row caps lift. */
   presentingMode?: boolean;
+  /** Hides the "Direct Marketing on/off" badge (both this table and the new-rollout
+   * sub-table) - mirrors Flask's hide_d2c param. */
+  hideD2c?: boolean;
 } & BenchmarkColumnVisibility): { html: string; js: string } {
   const {
     slideId, propertySnapshot, targetNar: _targetNar, peerMedianNar, peerMedianEngagement,
-    newRolloutCandidates = [], disabledProperties = [], presentingMode = false,
+    newRolloutCandidates = [], disabledProperties = [], presentingMode = false, hideD2c = false,
   } = input;
   const { colgroupHtml, theadHtml } = benchmarkTableHeader(input);
 
@@ -1261,9 +1264,9 @@ export function renderAdoptionOpportunities(input: {
   let newRolloutSection = "";
   if (nrShown.length > 0) {
     const nrRowsHtml = nrShown.map((c) => {
-      const d2c = c.isMarketingOptIn
-        ? '<span class="mktg-badge" style="font-size:8px;font-weight:600;color:#15803d;background:#dcfce7;border:1px solid #bbf7d0;border-radius:3px;padding:1px 5px;margin-left:5px;">Direct Marketing on</span>'
-        : '<span class="mktg-badge" style="font-size:8px;font-weight:600;color:#dc2626;background:#fee2e2;border:1px solid #fecaca;border-radius:3px;padding:1px 5px;margin-left:5px;">Direct Marketing off</span>';
+      const d2c = hideD2c ? "" : c.isMarketingOptIn
+        ? '<span class="mktg-badge" style="font-size:8px;font-weight:600;color:#15803d;background:#dcfce7;border:1px solid #bbf7d0;border-radius:3px;padding:1px 5px;margin-left:5px;white-space:nowrap;">Direct Marketing on</span>'
+        : '<span class="mktg-badge" style="font-size:8px;font-weight:600;color:#dc2626;background:#fee2e2;border:1px solid #fecaca;border-radius:3px;padding:1px 5px;margin-left:5px;white-space:nowrap;">Direct Marketing off</span>';
       return `
       <tr style="border-bottom:1px solid #f0f0f4;">
         <td style="padding:5px 8px 5px 4px;">
@@ -1397,9 +1400,9 @@ export function renderAdoptionOpportunities(input: {
     const peerEngCell = (p.peerEng ?? peerMedianEngagement) != null
       ? `<span style="text-decoration:underline dotted #9ca3af;text-underline-offset:2px;cursor:help;" title="${peerEngTitle}">${expEng.toFixed(0)}</span>`
       : "-";
-    const d2cBadge = p.isMarketingOptIn
-      ? '<span class="mktg-badge" style="font-size:8px;font-weight:600;color:#15803d;background:#dcfce7;border:1px solid #bbf7d0;border-radius:3px;padding:1px 5px;margin-left:5px;vertical-align:middle;">Direct Marketing on</span>'
-      : '<span class="mktg-badge" style="font-size:8px;font-weight:600;color:#dc2626;background:#fee2e2;border:1px solid #fecaca;border-radius:3px;padding:1px 5px;margin-left:5px;vertical-align:middle;">Direct Marketing off</span>';
+    const d2cBadge = hideD2c ? "" : p.isMarketingOptIn
+      ? '<span class="mktg-badge" style="font-size:8px;font-weight:600;color:#15803d;background:#dcfce7;border:1px solid #bbf7d0;border-radius:3px;padding:1px 5px;margin-left:5px;white-space:nowrap;vertical-align:middle;">Direct Marketing on</span>'
+      : '<span class="mktg-badge" style="font-size:8px;font-weight:600;color:#dc2626;background:#fee2e2;border:1px solid #fecaca;border-radius:3px;padding:1px 5px;margin-left:5px;white-space:nowrap;vertical-align:middle;">Direct Marketing off</span>';
     // Reconcile contradiction: "improving" badge on a "needs attention" property
     let trendBadge = p.trendFlag ? _trendBadgeHtml(p.trendFlag, p.monthsLive) : "";
     if (trendBadge && p.trendFlag?.direction === "improve") {
@@ -1450,7 +1453,9 @@ export function renderAdoptionOpportunities(input: {
   // whether they belong in the story before you're live, without re-generating the report.
   // Same .presenter-control semantics as trendToggle above: hidden automatically once
   // actually presenting. Mirrors Flask's _mktg_badge_toggle_html (generator/slides.py).
-  const mktgToggle = `
+  // Gated on !hideD2c - no badges exist to toggle when hideD2c already removed them all
+  // server-side, matching Flask's identical _mktg_toggle gate.
+  const mktgToggle = hideD2c ? "" : `
     <style>#slide-${slideId}.mktg-hidden .mktg-badge { display: none; }</style>
     <button class="spark-ctrl-btn presenter-control" style="margin-left:8px;"
             onclick="document.getElementById('slide-${slideId}').classList.toggle('mktg-hidden'); this.classList.toggle('is-active');"
