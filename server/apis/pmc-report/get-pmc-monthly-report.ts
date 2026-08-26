@@ -1582,7 +1582,7 @@ function buildDeckHtml(params: {
     slide.appendChild(btn);
 
     const copyBtn = document.createElement('button');
-    copyBtn.className = 'slide-copy-btn pdf-export-hide';
+    copyBtn.className = 'slide-copy-btn pdf-export-hide presenter-control';
     copyBtn.textContent = 'Copy slide';
     copyBtn.title = 'Copy this slide as an image - paste into a Sheet, Doc, or Slide';
     copyBtn.addEventListener('click', e => { e.stopPropagation(); copySlideImage(n, copyBtn); });
