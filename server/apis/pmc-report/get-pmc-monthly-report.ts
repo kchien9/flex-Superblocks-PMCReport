@@ -1241,7 +1241,12 @@ function renderStateBreakdown(input: StateBreakdownInput): { html: string; js: s
           scale: localScale,
         });
       }
-      regionBlock = `<div id="${rowsId}" style="display:none;padding-left:20px;margin-top:-4px;">${regionRows}</div>`;
+      // Left border acts as a visible tree guide-line connecting every region row back to
+      // its parent state - a plain padding-left (the old approach) only nudged the label
+      // text a little to the right, which read as barely-there hierarchy (Kevin's catch:
+      // hard to tell these roll up into the state total above them). Mirrors the identical
+      // fix in Flask's render_state_breakdown.
+      regionBlock = `<div id="${rowsId}" style="display:none;margin-top:6px;margin-left:6px;padding-left:18px;border-left:2px solid #e5e2f0;">${regionRows}</div>`;
       onclick = `onclick="flexToggleGeoRegion('${rowsId}')"`;
     }
     stateRowsHtml += barRow({
