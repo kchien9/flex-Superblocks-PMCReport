@@ -1244,9 +1244,15 @@ function renderStateBreakdown(input: StateBreakdownInput): { html: string; js: s
       // Left border acts as a visible tree guide-line connecting every region row back to
       // its parent state - a plain padding-left (the old approach) only nudged the label
       // text a little to the right, which read as barely-there hierarchy (Kevin's catch:
-      // hard to tell these roll up into the state total above them). Mirrors the identical
-      // fix in Flask's render_state_breakdown.
-      regionBlock = `<div id="${rowsId}" style="display:none;margin-top:6px;margin-left:6px;padding-left:18px;border-left:2px solid #e5e2f0;">${regionRows}</div>`;
+      // hard to tell these roll up into the state total above them). Deeper padding-left
+      // than the first pass (18px -> 28px) makes the indent itself more decisive, and
+      // margin-bottom gives the group a visible close before the next state starts -
+      // without it, the gap after the last region row was the same rowMargin used between
+      // every row throughout the list, so nothing signaled "this nested group just ended"
+      // before the next top-level state appeared right after it (Kevin's follow-up catch:
+      // hard to tell FL's rows end and TN begins). Mirrors the identical fix in Flask's
+      // render_state_breakdown.
+      regionBlock = `<div id="${rowsId}" style="display:none;margin-top:6px;margin-bottom:14px;margin-left:6px;padding-left:28px;border-left:2px solid #e5e2f0;">${regionRows}</div>`;
       onclick = `onclick="flexToggleGeoRegion('${rowsId}')"`;
     }
     stateRowsHtml += barRow({
