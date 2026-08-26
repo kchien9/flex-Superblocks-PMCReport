@@ -74,6 +74,7 @@ export default function PMCMonthlyReportPage() {
       show_engagement_observed: state.show_engagement_observed,
       show_engagement_portfolio_avg: state.show_engagement_portfolio_avg,
       show_engagement_peer_median: state.show_engagement_peer_median,
+      imported_slides: state.imported_slides,
     };
     lastArgsRef.current = args;
     try {

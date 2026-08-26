@@ -14,6 +14,7 @@ import {
   renderRetention,
   renderCustomerExperience,
   computePropertyTrendFlags,
+  renderImportedSlide,
 } from "./slide-renderers.js";
 import type { BenchmarkMetric, ResidentTrend, Testimonial, TrendFlag, YearlyData, NewRolloutCandidate, DisabledPropertyRow } from "./slide-renderers.js";
 import { buildSpeakerNotesHtml, buildExpansionSpeakerNotesHtml } from "./speaker-notes.js";
@@ -1888,6 +1889,19 @@ export default api({
     show_engagement_observed: z.boolean().optional(),
     show_engagement_portfolio_avg: z.boolean().optional(),
     show_engagement_peer_median: z.boolean().optional(),
+    // Slides pulled in from an uploaded PDF (Import Slides picker, QBR only for now) - pages
+    // are rendered to images client-side (pdf.js), so the server never touches the PDF itself.
+    // anchor is "start" | "end" only in this first pass (mirrors Flask's app.py comment shape,
+    // minus the "after:<slide_id>" variant - see renderImportedSlide's docstring in
+    // slide-renderers.ts for why that's out of scope here). Plain optional, not .default([]) -
+    // same call-site-required gotcha as every other optional field in this schema.
+    imported_slides: z.array(z.object({
+      anchor: z.string(),
+      image_b64: z.string(),
+      image_mime: z.string(),
+      source_title: z.string().optional(),
+      deck_title: z.string().optional(),
+    })).optional(),
   }),
 
   output: z.object({
@@ -1896,7 +1910,7 @@ export default api({
     notes_html: z.string().optional(),
   }),
 
-  async run(ctx, { pmc_name, second_pmc, report_name, lookback_months, deck_mode, adoption_target, testimonials, total_portfolio_units, expansion_slides, presenting_mode, comparison_months, growth_slides, terminology, hidden_kpi_tiles, show_adoption_portfolio_avg, show_adoption_peer_median, show_engagement_observed, show_engagement_portfolio_avg, show_engagement_peer_median }) {
+  async run(ctx, { pmc_name, second_pmc, report_name, lookback_months, deck_mode, adoption_target, testimonials, total_portfolio_units, expansion_slides, presenting_mode, comparison_months, growth_slides, terminology, hidden_kpi_tiles, show_adoption_portfolio_avg, show_adoption_peer_median, show_engagement_observed, show_engagement_portfolio_avg, show_engagement_peer_median, imported_slides }) {
     // Compute bp_safe_cutoff
     const today = new Date();
     const dayOfMonth = today.getDate();
@@ -5412,6 +5426,26 @@ export default api({
     let _nextDynamicSlideId = 100;
     const allocSlideId = () => _nextDynamicSlideId++;
 
+    // --- Imported slides (PDF upload, QBR only for now) ---
+    // Mirrors Flask's app.py imported-slides handling: each import rides as an opaque
+    // placeholder token until AFTER applyTerminology runs (see the token-swap right before
+    // `html` is returned below), then gets swapped for its real data: URI. Only "start"/"end"
+    // anchors are supported this round - see renderImportedSlide's docstring for why a
+    // specific-slide anchor is out of scope for now.
+    const importedSlidesRaw = imported_slides ?? [];
+    const importPlaceholders = new Map<string, string>(); // token -> real data: URI
+    const startImportsHtml: string[] = [];
+    const endImportsHtml: string[] = [];
+    importedSlidesRaw.forEach((imp, idx) => {
+      const token = `__FLEX_IMPORTED_SLIDE_${idx}__`;
+      importPlaceholders.set(token, `data:${imp.image_mime || "image/png"};base64,${imp.image_b64 || ""}`);
+      const { html } = renderImportedSlide(allocSlideId(), token, imp.source_title ?? "", imp.deck_title ?? "");
+      // Anything other than a literal "start" (including any stray "after:X" from a client
+      // that hasn't been updated) falls through to "end" - same default Flask's own anchor
+      // parsing uses for an unrecognized value, rather than silently dropping the slide.
+      if (imp.anchor === "start") startImportsHtml.push(html); else endImportsHtml.push(html);
+    });
+
     // Testimonials slide (after retention, before celebrate/opportunities)
     // Resolve the deferred Zendesk promise now
     let topTestimonials: Testimonial[];
@@ -5619,6 +5653,7 @@ export default api({
     //   → Flex For Everyone(39) → Retention(15) → Delinquency(26) → MetroSight(50)
     //   → Peer Benchmarks(44) → Celebrate(58) → Opportunities(34) → Testimonials(57) → QBR Close(25) → Appendix
     const slidesOrdered = [
+      ...startImportsHtml,                      // Imported (PDF upload) - anchor "start"
       renderCover(kpis),                        // Flask slide 1  - Cover
       execResult.html,                          // Flask slide 13 - Executive Summary
       sinceInceptionResult.html,                // Flask slide 56 - Bills & Rent Since Inception
@@ -5637,6 +5672,7 @@ export default api({
       testimonialResult.html,                   // Flask slide 57 - Customer Experience / Testimonials
       qbrFinal.html,                            // Flask slide 25 - QBR Close (always last real slide)
       propertyTableHtml,                        // Appendix - Full Property Table
+      ...endImportsHtml,                        // Imported (PDF upload) - anchor "end" (default)
     ].filter(Boolean) as string[];
 
     // ─── Renumber slideIds sequentially by document position ─────────────────
@@ -5694,7 +5730,7 @@ export default api({
     const reportYear = yearOnly(latestCompletedMonth);
     const pdfFilename = displayName.replace(/[^a-zA-Z0-9]/g, "_") + "_deck.pdf";
 
-    const html = applyTerminology(buildDeckHtml({
+    let html = applyTerminology(buildDeckHtml({
       slides: slidesConcatenated,
       pmc_name: displayName,
       report_month: reportMonth,
@@ -5703,6 +5739,12 @@ export default api({
       pdf_filename: pdfFilename,
       extra_js: extraJs,
     }), terminology);
+    // Swap imported-slide placeholder tokens for their real data: URIs only now, after
+    // terminology substitution has already run - see the imported-slides setup above for
+    // why this order matters (mirrors Flask's app.py).
+    for (const [token, dataUri] of importPlaceholders) {
+      html = html.replaceAll(token, dataUri);
+    }
 
     // --- Speaker notes (downloaded client-side as a data URI, same pattern as the deck) ---
     let notesHtml: string | undefined;

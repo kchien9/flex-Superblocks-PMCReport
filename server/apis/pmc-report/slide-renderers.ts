@@ -3392,6 +3392,49 @@ export function renderQbrClose(input: QbrCloseInput): SlideResult {
   return { html, js: "" };
 }
 
+// ─── IMPORTED SLIDE (PDF upload) ────────────────────────────────────────────
+
+/** Full-bleed slide for one page pulled in from an uploaded PDF. Mirrors Flask's
+ * render_imported_slide (generator/slides.py) exactly, including the "start"/"end"-only
+ * anchor scope for this first Superblocks pass - Flask supports anchoring after any specific
+ * catalog slide too, but replicating that here would mean hand-verifying a full Flask-
+ * catalog-id ↔ Superblocks-slidesOrdered-position map with no way to click through and
+ * confirm it live (no local dev server, no Superblocks preview access from this session).
+ * start/end covers the real use case (drop a slide into a bigger shared deck) without that
+ * risk; a specific-slide anchor can be added later once someone can verify it live.
+ *
+ * `imageSrc` is normally a `data:{mime};base64,...` URI, but during deck assembly it's an
+ * opaque placeholder token instead - the caller (get-pmc-monthly-report.ts) swaps that for
+ * the real data URI only AFTER applyTerminology runs, same as Flask's app.py. Skipping that
+ * indirection here and embedding the raw base64 directly would be a real bug, not a
+ * simplification: applyTerminology does a `\bword\b`-boundary regex replace over the entire
+ * assembled deck HTML, and a base64 payload's `+`/`/`/`=` alphabet can satisfy that pattern
+ * and get silently corrupted (exactly what Flask's own comment on this warns about). This
+ * function doesn't need to know or care which kind of string it's holding - it just embeds
+ * it verbatim as the <img> src.
+ *
+ * Deliberately no inline `display:` on the .slide root - same reasoning as every other slide
+ * in this file (an inline display would beat `.slide{display:none}` / `.slide.active
+ * {display:flex}` and leave the slide permanently visible on top of everything before it).
+ * The dark letterbox background (rather than white) is so a legacy 4:3 source slide reads as
+ * an intentional inset, not a layout mistake. */
+export function renderImportedSlide(
+  slideId: number,
+  imageSrc: string,
+  sourceTitle: string,
+  deckTitle: string,
+): SlideResult {
+  const label = deckTitle ? _e(deckTitle) : "Imported slide";
+  const title = sourceTitle ? _e(sourceTitle) : `Slide ${slideId}`;
+  const html = `
+  <div class="slide" id="slide-${slideId}" style="padding:0;background:#0f0f12;">
+    <div class="slide-label" style="position:absolute;width:1px;height:1px;overflow:hidden;">${label}</div>
+    <div class="slide-title" style="position:absolute;width:1px;height:1px;overflow:hidden;">${title}</div>
+    <img src="${imageSrc}" alt="${title}" style="width:100%;min-height:720px;object-fit:contain;display:block;" />
+  </div>`;
+  return { html, js: "" };
+}
+
 // ─── TESTIMONIALS ────────────────────────────────────────────────────────────
 
 export interface Testimonial {
