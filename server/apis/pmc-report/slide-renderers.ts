@@ -926,6 +926,11 @@ interface PropertyRow {
   trendFlag?: TrendFlag;
   t12EngPer100?: number;
   hasMarketingIntegration?: boolean;
+  // Actual direct-to-resident marketing opt-in (Flask: is_marketing_opt_in) - the real driver
+  // of the "Direct Marketing on/off" badge and its sort tiebreaker below. Distinct from
+  // hasMarketingIntegration (integration wired up ≠ opted in) - see the schema comment in
+  // get-pmc-monthly-report.ts for the bug this fixed.
+  isMarketingOptIn?: boolean;
   peerNar?: number | null;
   peerNarCriteria?: string;
   peerNarCount?: number;
@@ -982,14 +987,89 @@ function buildEstablishedPool(propertySnapshot: PropertyRow[]): {
   return { established, portfolioAvgNar, portfolioAvgEng };
 }
 
+// ── Benchmark column visibility (Kevin's ask) ────────────────────────────────
+// Shared by renderPropertiesWorthCelebrating and renderAdoptionOpportunities - both tables
+// have the identical Adoption Rate / Engagement column-group structure (Observed always shown,
+// Portfolio Avg + Peer Median each independently toggleable), so the header/colgroup/row-cell
+// construction lives here once rather than duplicated per renderer. Chosen at generation time,
+// not a live post-generation toggle - same reasoning as hidden_kpi_tiles on the exec-summary
+// input schema (get-pmc-monthly-report.ts): the download button re-serializes this API's
+// original response string, not whatever's currently in the preview iframe.
+export interface BenchmarkColumnVisibility {
+  showAdoptionPortfolioAvg?: boolean;
+  showAdoptionPeerMedian?: boolean;
+  showEngagementPortfolioAvg?: boolean;
+  showEngagementPeerMedian?: boolean;
+}
+
+function benchmarkTableHeader(v: BenchmarkColumnVisibility): { colgroupHtml: string; theadHtml: string; adoptionCols: number; engagementCols: number } {
+  const showAPA = v.showAdoptionPortfolioAvg !== false;
+  const showAPM = v.showAdoptionPeerMedian !== false;
+  const showEPA = v.showEngagementPortfolioAvg !== false;
+  const showEPM = v.showEngagementPeerMedian !== false;
+  const adoptionCols = 1 + Number(showAPA) + Number(showAPM);
+  const engagementCols = 1 + Number(showEPA) + Number(showEPM);
+  const th = (label: string) => `<th style="padding:2px 8px 4px;font-size:8px;font-weight:600;color:#6b7280;text-align:right;text-transform:uppercase;letter-spacing:0.04em;">${label}</th>`;
+
+  const colgroupHtml = `
+          <col style="width:150px;">
+          <col style="width:60px;">
+          ${showAPA ? '<col style="width:66px;">' : ""}
+          ${showAPM ? '<col style="width:66px;">' : ""}
+          <col style="width:60px;">
+          ${showEPA ? '<col style="width:66px;">' : ""}
+          ${showEPM ? '<col style="width:66px;">' : ""}`;
+
+  const theadHtml = `
+        <thead style="background:#fff;position:sticky;top:0;z-index:1;">
+          <tr>
+            <th rowspan="2" style="padding:5px 8px 5px 4px;font-size:8px;font-weight:600;color:#9ca3af;text-align:left;text-transform:uppercase;letter-spacing:0.06em;vertical-align:bottom;">Property</th>
+            <th colspan="${adoptionCols}" style="padding:4px 8px 3px;font-size:9px;font-weight:800;color:#374151;text-align:center;text-transform:uppercase;letter-spacing:0.08em;border-bottom:2px solid #9ca3af;">Adoption Rate</th>
+            <th colspan="${engagementCols}" style="padding:4px 8px 3px;font-size:9px;font-weight:800;color:#374151;text-align:center;text-transform:uppercase;letter-spacing:0.08em;border-bottom:2px solid #9ca3af;">Engagement (per 100 units)</th>
+          </tr>
+          <tr style="border-bottom:2px solid #e5e7eb;">
+            ${th("Observed")}
+            ${showAPA ? th("Portfolio Avg") : ""}
+            ${showAPM ? th("Peer Median") : ""}
+            ${th("Observed")}
+            ${showEPA ? th("Portfolio Avg") : ""}
+            ${showEPM ? th("Peer Median") : ""}
+          </tr>
+        </thead>`;
+
+  return { colgroupHtml, theadHtml, adoptionCols, engagementCols };
+}
+
+// Builds the 6 (or fewer) data <td>s for one row, in column order, omitting whichever
+// Portfolio Avg / Peer Median cells are toggled off. Each *Html arg is a complete <td>...</td>
+// string (or "-" content already baked in) — this function only decides which ones survive.
+function benchmarkRowCells(v: BenchmarkColumnVisibility, cells: {
+  adoptionObserved: string; adoptionPortfolioAvg: string; adoptionPeerMedian: string;
+  engagementObserved: string; engagementPortfolioAvg: string; engagementPeerMedian: string;
+}): string {
+  const showAPA = v.showAdoptionPortfolioAvg !== false;
+  const showAPM = v.showAdoptionPeerMedian !== false;
+  const showEPA = v.showEngagementPortfolioAvg !== false;
+  const showEPM = v.showEngagementPeerMedian !== false;
+  return [
+    cells.adoptionObserved,
+    showAPA ? cells.adoptionPortfolioAvg : "",
+    showAPM ? cells.adoptionPeerMedian : "",
+    cells.engagementObserved,
+    showEPA ? cells.engagementPortfolioAvg : "",
+    showEPM ? cells.engagementPeerMedian : "",
+  ].join("");
+}
+
 export function renderPropertiesWorthCelebrating(input: {
   slideId: number;
   propertySnapshot: PropertyRow[];
   targetNar: number;
   peerMedianNar?: number;
   peerMedianEngagement?: number;
-}): { html: string; js: string } {
+} & BenchmarkColumnVisibility): { html: string; js: string } {
   const { slideId, propertySnapshot, targetNar, peerMedianNar, peerMedianEngagement } = input;
+  const { colgroupHtml, theadHtml } = benchmarkTableHeader(input);
 
   // Shared established-property pool (live 7+mo, meaningful size/rent sample) — same baseline
   // "These Properties Need Our Attention" ranks within, so the two slides can never silently
@@ -1037,18 +1117,21 @@ export function renderPropertiesWorthCelebrating(input: {
       ? `<span style="text-decoration:underline dotted #9ca3af;text-underline-offset:2px;cursor:help;" title="${peerEngTitle}">${pEng.toFixed(0)}</span>`
       : "-";
     const badge = p.trendFlag ? _trendBadgeHtml(p.trendFlag, p.monthsLive) : "";
+    const dataCells = benchmarkRowCells(input, {
+      adoptionObserved: `<td style="padding:6px 8px;text-align:right;font-size:13px;font-weight:700;color:#1a9e6a;">${(p.adoptionRate * 100).toFixed(1)}%</td>`,
+      adoptionPortfolioAvg: `<td style="padding:6px 8px;text-align:right;font-size:12px;color:#6b7280;">${(portfolioAvgNar * 100).toFixed(1)}%</td>`,
+      adoptionPeerMedian: `<td style="padding:6px 8px;text-align:right;font-size:12px;color:#6b7280;">${peerNarCell}</td>`,
+      engagementObserved: `<td style="padding:6px 8px;text-align:right;font-size:12px;color:#374151;">${eng.toFixed(0)}</td>`,
+      engagementPortfolioAvg: `<td style="padding:6px 8px;text-align:right;font-size:12px;color:#6b7280;">${portfolioAvgEng.toFixed(0)}</td>`,
+      engagementPeerMedian: `<td style="padding:6px 8px;text-align:right;font-size:12px;color:#6b7280;">${peerEngCell}</td>`,
+    });
     return `
       <tr style="border-bottom:1px solid #f0f0f4;">
         <td style="padding:6px 8px 6px 4px;">
           <div style="font-size:11px;font-weight:600;color:#1D1D1D;line-height:1.3;">${_e(p.propertyName)}${badge}</div>
           <div style="font-size:9px;color:#a09cb0;margin-top:1px;">${_e(p.propertyState || "")} · ${p.units.toLocaleString()} units${p.monthsLive ? ` · ${p.monthsLive}mo` : ""}</div>
         </td>
-        <td style="padding:6px 8px;text-align:right;font-size:13px;font-weight:700;color:#1a9e6a;">${(p.adoptionRate * 100).toFixed(1)}%</td>
-        <td style="padding:6px 8px;text-align:right;font-size:12px;color:#6b7280;">${(portfolioAvgNar * 100).toFixed(1)}%</td>
-        <td style="padding:6px 8px;text-align:right;font-size:12px;color:#6b7280;">${peerNarCell}</td>
-        <td style="padding:6px 8px;text-align:right;font-size:12px;color:#374151;">${eng.toFixed(0)}</td>
-        <td style="padding:6px 8px;text-align:right;font-size:12px;color:#6b7280;">${portfolioAvgEng.toFixed(0)}</td>
-        <td style="padding:6px 8px;text-align:right;font-size:12px;color:#6b7280;">${peerEngCell}</td>
+        ${dataCells}
       </tr>`;
   }).join("");
 
@@ -1061,30 +1144,9 @@ export function renderPropertiesWorthCelebrating(input: {
   const tableHtml = `
     <div style="flex:1;overflow-y:auto;min-height:0;">
       <table style="width:100%;border-collapse:collapse;table-layout:fixed;">
-        <colgroup>
-          <col style="width:150px;">
-          <col style="width:60px;">
-          <col style="width:66px;">
-          <col style="width:66px;">
-          <col style="width:60px;">
-          <col style="width:66px;">
-          <col style="width:66px;">
+        <colgroup>${colgroupHtml}
         </colgroup>
-        <thead style="background:#fff;position:sticky;top:0;z-index:1;">
-          <tr>
-            <th rowspan="2" style="padding:5px 8px 5px 4px;font-size:8px;font-weight:600;color:#9ca3af;text-align:left;text-transform:uppercase;letter-spacing:0.06em;vertical-align:bottom;">Property</th>
-            <th colspan="3" style="padding:4px 8px 3px;font-size:9px;font-weight:800;color:#374151;text-align:center;text-transform:uppercase;letter-spacing:0.08em;border-bottom:2px solid #9ca3af;">Adoption Rate</th>
-            <th colspan="3" style="padding:4px 8px 3px;font-size:9px;font-weight:800;color:#374151;text-align:center;text-transform:uppercase;letter-spacing:0.08em;border-bottom:2px solid #9ca3af;">Engagement (per 100 units)</th>
-          </tr>
-          <tr style="border-bottom:2px solid #e5e7eb;">
-            <th style="padding:2px 8px 4px;font-size:8px;font-weight:600;color:#6b7280;text-align:right;text-transform:uppercase;letter-spacing:0.04em;">Observed</th>
-            <th style="padding:2px 8px 4px;font-size:8px;font-weight:600;color:#6b7280;text-align:right;text-transform:uppercase;letter-spacing:0.04em;">Portfolio Avg</th>
-            <th style="padding:2px 8px 4px;font-size:8px;font-weight:600;color:#6b7280;text-align:right;text-transform:uppercase;letter-spacing:0.04em;">Peer Median</th>
-            <th style="padding:2px 8px 4px;font-size:8px;font-weight:600;color:#6b7280;text-align:right;text-transform:uppercase;letter-spacing:0.04em;">Observed</th>
-            <th style="padding:2px 8px 4px;font-size:8px;font-weight:600;color:#6b7280;text-align:right;text-transform:uppercase;letter-spacing:0.04em;">Portfolio Avg</th>
-            <th style="padding:2px 8px 4px;font-size:8px;font-weight:600;color:#6b7280;text-align:right;text-transform:uppercase;letter-spacing:0.04em;">Peer Median</th>
-          </tr>
-        </thead>
+        ${theadHtml}
         <tbody>${rowsHtml}</tbody>
       </table>
       <div style="font-size:9px;color:#9ca3af;margin-top:5px;font-style:italic;">Portfolio avg = this portfolio's own average · Peer median = comparable properties network-wide (same state/size/rent) · Engagement = new bill connections per 100 units</div>
@@ -1120,6 +1182,11 @@ export interface NewRolloutCandidate {
   observedEngPer100: number;
   expectedEngPer100: number;
   hasMarketingIntegration?: boolean;
+  // Actual direct-to-resident marketing opt-in (Flask: is_marketing_opt_in) - the real driver
+  // of this row's "Direct Marketing on/off" badge. See slide-renderers.ts's other
+  // isMarketingOptIn comment / get-pmc-monthly-report.ts's schema comment for why this is a
+  // separate field from hasMarketingIntegration.
+  isMarketingOptIn?: boolean;
 }
 
 export interface DisabledPropertyRow {
@@ -1141,11 +1208,12 @@ export function renderAdoptionOpportunities(input: {
   disabledProperties?: DisabledPropertyRow[];
   /** Live presenting has no fixed-height/no-scroll PDF export constraint, so row caps lift. */
   presentingMode?: boolean;
-}): { html: string; js: string } {
+} & BenchmarkColumnVisibility): { html: string; js: string } {
   const {
     slideId, propertySnapshot, targetNar: _targetNar, peerMedianNar, peerMedianEngagement,
     newRolloutCandidates = [], disabledProperties = [], presentingMode = false,
   } = input;
+  const { colgroupHtml, theadHtml } = benchmarkTableHeader(input);
 
   // Shared established-property pool (live 7+mo, meaningful size/rent sample) — same baseline
   // "Properties Worth Celebrating" ranks within, so the two slides can never silently disagree
@@ -1180,7 +1248,7 @@ export function renderAdoptionOpportunities(input: {
   let newRolloutSection = "";
   if (nrShown.length > 0) {
     const nrRowsHtml = nrShown.map((c) => {
-      const d2c = c.hasMarketingIntegration
+      const d2c = c.isMarketingOptIn
         ? '<span style="font-size:8px;font-weight:600;color:#15803d;background:#dcfce7;border:1px solid #bbf7d0;border-radius:3px;padding:1px 5px;margin-left:5px;">Direct Marketing on</span>'
         : '<span style="font-size:8px;font-weight:600;color:#dc2626;background:#fee2e2;border:1px solid #fecaca;border-radius:3px;padding:1px 5px;margin-left:5px;">Direct Marketing off</span>';
       return `
@@ -1236,7 +1304,7 @@ export function renderAdoptionOpportunities(input: {
     .map((p) => {
       const narGap = portfolioAvgNar - p.adoptionRate;
       const isZero = p.adoptionRate === 0;
-      const noD2c = p.hasMarketingIntegration !== true;
+      const noD2c = p.isMarketingOptIn !== true;
       const opportunityScore = p.units * narGap;
       const eng = p.t12EngPer100 ?? (p.newSignups / Math.max(p.units, 1)) * 100;
       const expEng = p.peerEng ?? peerMedianEngagement ?? 0;
@@ -1316,7 +1384,7 @@ export function renderAdoptionOpportunities(input: {
     const peerEngCell = (p.peerEng ?? peerMedianEngagement) != null
       ? `<span style="text-decoration:underline dotted #9ca3af;text-underline-offset:2px;cursor:help;" title="${peerEngTitle}">${expEng.toFixed(0)}</span>`
       : "-";
-    const d2cBadge = p.hasMarketingIntegration
+    const d2cBadge = p.isMarketingOptIn
       ? '<span style="font-size:8px;font-weight:600;color:#15803d;background:#dcfce7;border:1px solid #bbf7d0;border-radius:3px;padding:1px 5px;margin-left:5px;vertical-align:middle;">Direct Marketing on</span>'
       : '<span style="font-size:8px;font-weight:600;color:#dc2626;background:#fee2e2;border:1px solid #fecaca;border-radius:3px;padding:1px 5px;margin-left:5px;vertical-align:middle;">Direct Marketing off</span>';
     // Reconcile contradiction: "improving" badge on a "needs attention" property
@@ -1324,18 +1392,21 @@ export function renderAdoptionOpportunities(input: {
     if (trendBadge && p.trendFlag?.direction === "improve") {
       trendBadge += `<span style="font-size:8px;color:#6b7280;margin-left:3px;">(still below avg)</span>`;
     }
+    const dataCells = benchmarkRowCells(input, {
+      adoptionObserved: `<td style="padding:6px 8px;text-align:right;font-size:13px;font-weight:700;color:#dc5050;">${(p.adoptionRate * 100).toFixed(1)}%</td>`,
+      adoptionPortfolioAvg: `<td style="padding:6px 8px;text-align:right;font-size:12px;color:#6b7280;">${(portfolioAvgNar * 100).toFixed(1)}%</td>`,
+      adoptionPeerMedian: `<td style="padding:6px 8px;text-align:right;font-size:12px;color:#6b7280;">${peerNarCell}</td>`,
+      engagementObserved: `<td style="padding:6px 8px;text-align:right;font-size:12px;color:#374151;">${eng.toFixed(0)}</td>`,
+      engagementPortfolioAvg: `<td style="padding:6px 8px;text-align:right;font-size:12px;color:#6b7280;">${portfolioAvgEng.toFixed(0)}</td>`,
+      engagementPeerMedian: `<td style="padding:6px 8px;text-align:right;font-size:12px;color:#6b7280;">${peerEngCell}</td>`,
+    });
     return `
       <tr style="border-bottom:1px solid #f0f0f4;">
         <td style="padding:6px 8px 6px 4px;">
           <div style="font-size:11px;font-weight:600;color:#1D1D1D;line-height:1.3;">${_e(p.propertyName)}${d2cBadge}${trendBadge}</div>
           <div style="font-size:9px;color:#a09cb0;margin-top:1px;">${_e(p.propertyState || "")} · ${p.units.toLocaleString()} units${p.monthsLive ? ` · ${p.monthsLive}mo` : ""}</div>
         </td>
-        <td style="padding:6px 8px;text-align:right;font-size:13px;font-weight:700;color:#dc5050;">${(p.adoptionRate * 100).toFixed(1)}%</td>
-        <td style="padding:6px 8px;text-align:right;font-size:12px;color:#6b7280;">${(portfolioAvgNar * 100).toFixed(1)}%</td>
-        <td style="padding:6px 8px;text-align:right;font-size:12px;color:#6b7280;">${peerNarCell}</td>
-        <td style="padding:6px 8px;text-align:right;font-size:12px;color:#374151;">${eng.toFixed(0)}</td>
-        <td style="padding:6px 8px;text-align:right;font-size:12px;color:#6b7280;">${portfolioAvgEng.toFixed(0)}</td>
-        <td style="padding:6px 8px;text-align:right;font-size:12px;color:#6b7280;">${peerEngCell}</td>
+        ${dataCells}
       </tr>`;
   }).join("");
 
@@ -1348,30 +1419,9 @@ export function renderAdoptionOpportunities(input: {
     <div style="flex:1;overflow-y:auto;min-height:0;">
       ${establishedHeaderHtml}
       <table style="width:100%;border-collapse:collapse;table-layout:fixed;">
-        <colgroup>
-          <col style="width:150px;">
-          <col style="width:60px;">
-          <col style="width:66px;">
-          <col style="width:66px;">
-          <col style="width:60px;">
-          <col style="width:66px;">
-          <col style="width:66px;">
+        <colgroup>${colgroupHtml}
         </colgroup>
-        <thead style="background:#fff;position:sticky;top:0;z-index:1;">
-          <tr>
-            <th rowspan="2" style="padding:5px 8px 5px 4px;font-size:8px;font-weight:600;color:#9ca3af;text-align:left;text-transform:uppercase;letter-spacing:0.06em;vertical-align:bottom;">Property</th>
-            <th colspan="3" style="padding:4px 8px 3px;font-size:9px;font-weight:800;color:#374151;text-align:center;text-transform:uppercase;letter-spacing:0.08em;border-bottom:2px solid #9ca3af;">Adoption Rate</th>
-            <th colspan="3" style="padding:4px 8px 3px;font-size:9px;font-weight:800;color:#374151;text-align:center;text-transform:uppercase;letter-spacing:0.08em;border-bottom:2px solid #9ca3af;">Engagement (per 100 units)</th>
-          </tr>
-          <tr style="border-bottom:2px solid #e5e7eb;">
-            <th style="padding:2px 8px 4px;font-size:8px;font-weight:600;color:#6b7280;text-align:right;text-transform:uppercase;letter-spacing:0.04em;">Observed</th>
-            <th style="padding:2px 8px 4px;font-size:8px;font-weight:600;color:#6b7280;text-align:right;text-transform:uppercase;letter-spacing:0.04em;">Portfolio Avg</th>
-            <th style="padding:2px 8px 4px;font-size:8px;font-weight:600;color:#6b7280;text-align:right;text-transform:uppercase;letter-spacing:0.04em;">Peer Median</th>
-            <th style="padding:2px 8px 4px;font-size:8px;font-weight:600;color:#6b7280;text-align:right;text-transform:uppercase;letter-spacing:0.04em;">Observed</th>
-            <th style="padding:2px 8px 4px;font-size:8px;font-weight:600;color:#6b7280;text-align:right;text-transform:uppercase;letter-spacing:0.04em;">Portfolio Avg</th>
-            <th style="padding:2px 8px 4px;font-size:8px;font-weight:600;color:#6b7280;text-align:right;text-transform:uppercase;letter-spacing:0.04em;">Peer Median</th>
-          </tr>
-        </thead>
+        ${theadHtml}
         <tbody>${rowsHtml}</tbody>
       </table>
       <div style="font-size:9px;color:#9ca3af;margin-top:5px;font-style:italic;">Portfolio avg = this portfolio's own average · Peer median = comparable properties network-wide (same state/size/rent) · Engagement = new bill connections per 100 units</div>
@@ -1438,7 +1488,28 @@ export function renderDelinquency(input: {
   // "in the last N months" label). This slide is deliberately independent of the report's own
   // Full/Quarter/YTD period (matches Flask's render_delinquency) — always a trailing-12-months-
   // or-full-tenure headline, not scoped to lookback_months.
-  const windowedMonths = months.slice(-windowMonths);
+  //
+  // Windowed by calendar date, not array position (Kevin's catch, round 2) — a positional
+  // `.slice(-windowMonths)` assumes `months` has exactly one contiguous row per calendar month,
+  // but DQ_PROPERTY's GROUP BY simply omits a month with zero shielded rows for this PMC rather
+  // than emitting a zero row for it. When that happens, slicing by array position reaches back
+  // one extra calendar month past the true trailing-N-months boundary to fill the count,
+  // silently including a month's total that's outside the window the label claims — exactly
+  // what let this slide's headline ($1.6M) disagree with the exec-summary tile's date-bounded
+  // figure ($1.51M) even though both nominally used the same 12-month window. Anchor is
+  // defensively re-derived as the max month actually present (not assumed from array order),
+  // same pattern as the exec-summary tile's own dqLatestMonth in get-pmc-monthly-report.ts.
+  const dqLatestMonth = months.reduce<string | null>(
+    (latest, m) => (m.month != null && (latest == null || m.month > latest) ? m.month : latest),
+    null
+  );
+  const windowedMonths = (() => {
+    if (dqLatestMonth == null) return months;
+    const windowStartDate = new Date(dqLatestMonth + "T00:00:00Z");
+    windowStartDate.setUTCMonth(windowStartDate.getUTCMonth() - (windowMonths - 1));
+    const windowStart = windowStartDate.toISOString().slice(0, 10);
+    return months.filter((m) => m.month >= windowStart);
+  })();
   const lifetimeShielded = windowedMonths.reduce((s, m) => s + m.totalRentShielded, 0);
   const totalResidents = windowedMonths.reduce((s, m) => s + m.residentsShielded, 0);
 

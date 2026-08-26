@@ -48,7 +48,24 @@ export interface QBRFormState {
   selected_metrics: Set<string>;
   testimonials: Testimonial[];
   whats_new_text: string;
+  hidden_kpi_tiles: string[];
+  show_adoption_portfolio_avg: boolean;
+  show_adoption_peer_median: boolean;
+  show_engagement_portfolio_avg: boolean;
+  show_engagement_peer_median: boolean;
 }
+
+/** Exec-summary KPI tile keys — must match get-pmc-monthly-report.ts's hiddenTileSet checks.
+ * Not exported — react-refresh/only-export-components flags a non-component export from a
+ * component file, and nothing outside this file needs this list. */
+const KPI_TILES: { id: string; label: string }[] = [
+  { id: "active_properties", label: "Active properties" },
+  { id: "residents_paying", label: "Residents paying" },
+  { id: "new_residents", label: "New residents paying this month" },
+  { id: "adoption_rate", label: "Adoption rate" },
+  { id: "true_repeat_rate", label: "True repeat rate" },
+  { id: "delinquency_shielded", label: "Delinquency shielded" },
+];
 
 interface QBRTabProps {
   pmcNames: string[];
@@ -79,6 +96,22 @@ export function QBRTab({ pmcNames, pmcLoading, generating, onGenerate }: QBRTabP
   // Fixed — the picker for this was removed (server never reads it; the Peer Benchmarks slide
   // has its own inline toggle), but selected_metrics stays in the payload shape unchanged.
   const [selectedMetrics] = useState<Set<string>>(() => new Set(BENCHMARK_METRICS.map((m) => m.id)));
+  // Which exec-summary KPI tiles to omit (Kevin's ask) — empty means show all 6.
+  const [hiddenKpiTiles, setHiddenKpiTiles] = useState<Set<string>>(() => new Set());
+  // Property Deep Dive benchmark columns (Kevin's ask) — full per-column control, all on by
+  // default. Applies to both the celebrating and needs-attention tables.
+  const [showAdoptionPortfolioAvg, setShowAdoptionPortfolioAvg] = useState(true);
+  const [showAdoptionPeerMedian, setShowAdoptionPeerMedian] = useState(true);
+  const [showEngagementPortfolioAvg, setShowEngagementPortfolioAvg] = useState(true);
+  const [showEngagementPeerMedian, setShowEngagementPeerMedian] = useState(true);
+
+  const toggleKpiTile = useCallback((id: string) => {
+    setHiddenKpiTiles((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }, []);
 
   const canGenerate = reportBasis === "pmc"
     ? !!selectedPMC || propertyIds.length > 0
@@ -104,8 +137,13 @@ export function QBRTab({ pmcNames, pmcLoading, generating, onGenerate }: QBRTabP
       selected_metrics: selectedMetrics,
       testimonials,
       whats_new_text: whatsNewText,
+      hidden_kpi_tiles: Array.from(hiddenKpiTiles),
+      show_adoption_portfolio_avg: showAdoptionPortfolioAvg,
+      show_adoption_peer_median: showAdoptionPeerMedian,
+      show_engagement_portfolio_avg: showEngagementPortfolioAvg,
+      show_engagement_peer_median: showEngagementPeerMedian,
     });
-  }, [canGenerate, reportBasis, selectedPMC, secondPMC, reportName, propertyIds, ownershipReportName, totalCompanyUnits, partnerSinceOverride, reviewPeriod, delivery, terminology, d2cMarketing, comparisonMonths, selectedSlides, selectedMetrics, testimonials, whatsNewText, onGenerate]);
+  }, [canGenerate, reportBasis, selectedPMC, secondPMC, reportName, propertyIds, ownershipReportName, totalCompanyUnits, partnerSinceOverride, reviewPeriod, delivery, terminology, d2cMarketing, comparisonMonths, selectedSlides, selectedMetrics, testimonials, whatsNewText, hiddenKpiTiles, showAdoptionPortfolioAvg, showAdoptionPeerMedian, showEngagementPortfolioAvg, showEngagementPeerMedian, onGenerate]);
 
   const handleBasisChange = useCallback((v: string) => {
     setReportBasis(v as "pmc" | "ownership");
@@ -238,6 +276,47 @@ export function QBRTab({ pmcNames, pmcLoading, generating, onGenerate }: QBRTabP
           ]}
         />
       </StaticSection>
+
+      {/* KPI tiles + Property Deep Dive benchmark columns */}
+      <Section title="KPI Tiles & Benchmark Columns">
+        <div className="mb-3">
+          <p className="text-[11px] text-gray-400 mb-1.5">Uncheck any Executive Summary tile to leave it off the deck.</p>
+          <div className="grid grid-cols-2 gap-1.5">
+            {KPI_TILES.map((t) => (
+              <label key={t.id} className="flex items-center gap-2 text-xs text-gray-700 cursor-pointer">
+                <input type="checkbox" checked={!hiddenKpiTiles.has(t.id)} onChange={() => toggleKpiTile(t.id)}
+                  className="rounded border-gray-300 text-[#6A3DB8] focus:ring-[#6A3DB8]/30" />
+                {t.label}
+              </label>
+            ))}
+          </div>
+        </div>
+        <div>
+          <p className="text-[11px] text-gray-400 mb-1.5">Property Deep Dive tables (Properties Worth Celebrating / Need Attention) — hide a benchmark column when it isn't relevant, without losing the property listing itself.</p>
+          <div className="grid grid-cols-2 gap-1.5">
+            <label className="flex items-center gap-2 text-xs text-gray-700 cursor-pointer">
+              <input type="checkbox" checked={showAdoptionPortfolioAvg} onChange={() => setShowAdoptionPortfolioAvg((v) => !v)}
+                className="rounded border-gray-300 text-[#6A3DB8] focus:ring-[#6A3DB8]/30" />
+              Adoption — Portfolio Avg
+            </label>
+            <label className="flex items-center gap-2 text-xs text-gray-700 cursor-pointer">
+              <input type="checkbox" checked={showAdoptionPeerMedian} onChange={() => setShowAdoptionPeerMedian((v) => !v)}
+                className="rounded border-gray-300 text-[#6A3DB8] focus:ring-[#6A3DB8]/30" />
+              Adoption — Peer Median
+            </label>
+            <label className="flex items-center gap-2 text-xs text-gray-700 cursor-pointer">
+              <input type="checkbox" checked={showEngagementPortfolioAvg} onChange={() => setShowEngagementPortfolioAvg((v) => !v)}
+                className="rounded border-gray-300 text-[#6A3DB8] focus:ring-[#6A3DB8]/30" />
+              Engagement — Portfolio Avg
+            </label>
+            <label className="flex items-center gap-2 text-xs text-gray-700 cursor-pointer">
+              <input type="checkbox" checked={showEngagementPeerMedian} onChange={() => setShowEngagementPeerMedian((v) => !v)}
+                className="rounded border-gray-300 text-[#6A3DB8] focus:ring-[#6A3DB8]/30" />
+              Engagement — Peer Median
+            </label>
+          </div>
+        </div>
+      </Section>
 
       {/* Customer Testimonials */}
       <StaticSection title="Customer Testimonials">

@@ -181,9 +181,16 @@ const RawRowSchema = z.object({
   // Internal Flex sales/CS team assignment (Flask: app.py "segment_team", used as the mode
   // across a PMC's rows to detect SMB-managed accounts) — NOT a HubSpot company-segment field.
   SEGMENT_TEAM: z.string().nullable(),
-  // Direct-to-resident marketing opt-in (Flask: is_marketing_opt_in) — drives the "Direct
-  // Marketing on/off" badge and D2C tiebreaker on the Property Deep Dive slides.
+  // Whether the marketing integration is technically wired up — a DIFFERENT flag from actual
+  // opt-in (below). Kept for whatever else already reads it (e.g. the D2C-split unit count
+  // further down this file); NOT the badge driver — see IS_MARKETING_OPT_IN.
   HAS_MARKETING_INTEGRATION: z.boolean().nullable(),
+  // Direct-to-resident marketing opt-in (Flask: is_marketing_opt_in) — the actual driver of the
+  // "Direct Marketing on/off" badge and D2C tiebreaker on the Property Deep Dive slides. Kevin's
+  // catch: this file previously read HAS_MARKETING_INTEGRATION for that badge instead, a
+  // genuinely different per-property flag (integration wired up ≠ opted in to direct
+  // marketing), which produced a scattered, per-property mismatch against Flask's badges.
+  IS_MARKETING_OPT_IN: z.boolean().nullable(),
 });
 
 // Partner-relevant deactivation reasons (Flask: PARTNER_DEACTIVATION_REASONS, generator/data.py:3860)
@@ -368,6 +375,10 @@ interface ExecSummaryInput {
   execNotes?: string;
   showSparklines?: boolean;
   vsLabel?: string;
+  // Keys: active_properties, residents_paying, new_residents, adoption_rate, true_repeat_rate,
+  // delinquency_shielded. Chosen at generation time (Kevin's ask) - see hidden_kpi_tiles on the
+  // top-level input schema for why this isn't a live post-generation toggle.
+  hiddenTiles?: string[];
 }
 
 function renderExecSummary(d: ExecSummaryInput): { html: string; js: string } {
@@ -557,6 +568,8 @@ function renderExecSummary(d: ExecSummaryInput): { html: string; js: string } {
     </div>`;
   }
 
+  const hiddenTileSet = new Set(d.hiddenTiles ?? []);
+
   // ── Delta toggle check ────────────────────────────────────────────────────
   const pillProps = pill(d.propertyCount, d.prevPropertyCount, "abs");
   const pillResidents = pill(d.currentResidents, d.prevResidents, "abs");
@@ -612,14 +625,14 @@ function renderExecSummary(d: ExecSummaryInput): { html: string; js: string } {
           </div>
         </div>
       </div>
-      <!-- 6 Metric Tiles (3×2 grid) -->
-      <div style="display:grid;grid-template-columns:repeat(3,1fr);grid-template-rows:repeat(2,1fr);gap:12px;">
-        ${tile("Active properties", d.propertyCount.toLocaleString(), "", pillProps, "", svgBldg)}
-        ${tile("Residents paying", d.currentResidents.toLocaleString(), "", pillResidents, residentsSparkHtml, svgPerson)}
-        ${tile("New residents paying this month", d.currentNewSignups.toLocaleString(), signupsSub, "", signupsSparkHtml, svgNewP)}
-        ${tile("Adoption rate", fmtPct(nar), "", pillNar, narSparkHtml, svgPct)}
-        ${tile("True repeat rate", retentionVal, retentionSub, "", "", svgRepeat)}
-        ${tile("Delinquency shielded", dqVal, dqSub, dqPill, "", svgShield)}
+      <!-- 6 Metric Tiles (3-wide grid, rows auto-size to however many remain after hiding) -->
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);grid-auto-rows:1fr;gap:12px;">
+        ${hiddenTileSet.has("active_properties") ? "" : tile("Active properties", d.propertyCount.toLocaleString(), "", pillProps, "", svgBldg)}
+        ${hiddenTileSet.has("residents_paying") ? "" : tile("Residents paying", d.currentResidents.toLocaleString(), "", pillResidents, residentsSparkHtml, svgPerson)}
+        ${hiddenTileSet.has("new_residents") ? "" : tile("New residents paying this month", d.currentNewSignups.toLocaleString(), signupsSub, "", signupsSparkHtml, svgNewP)}
+        ${hiddenTileSet.has("adoption_rate") ? "" : tile("Adoption rate", fmtPct(nar), "", pillNar, narSparkHtml, svgPct)}
+        ${hiddenTileSet.has("true_repeat_rate") ? "" : tile("True repeat rate", retentionVal, retentionSub, "", "", svgRepeat)}
+        ${hiddenTileSet.has("delinquency_shielded") ? "" : tile("Delinquency shielded", dqVal, dqSub, dqPill, "", svgShield)}
       </div>
     </div>
     ${sparkCtrlHtml}
@@ -1774,6 +1787,25 @@ export default api({
     // Resident/household terminology, every deck mode (Kevin's ask, 2026-08-19). Plain
     // optional like growth_slides above — same .default() call-site-required gotcha.
     terminology: z.enum(["resident", "household"]).optional(),
+    // Which of the 6 exec-summary KPI tiles to omit entirely (Kevin's ask). Chosen at
+    // generation time, not a live post-generation toggle — the download button re-serializes
+    // this API's original response string, not whatever's currently in the preview iframe, so
+    // a live click-to-hide wouldn't survive into the downloaded file with today's architecture.
+    // Valid keys: active_properties, residents_paying, new_residents, adoption_rate,
+    // true_repeat_rate, delinquency_shielded.
+    // Plain optional (not .default()), like growth_slides above — a concurrent edit changing
+    // any of these to .default() would make it REQUIRED in the generated call-site type
+    // (breaks every caller that doesn't pass it). Fallback handled at the usage site instead:
+    // hiddenTileSet = new Set(d.hiddenTiles ?? []), and benchmarkTableHeader/benchmarkRowCells
+    // treat an omitted show* flag as `!== false` → shown, so undefined already means "default".
+    hidden_kpi_tiles: z.array(z.string()).optional(),
+    // Property Deep Dive benchmark columns (Kevin's ask) — full per-column control, since
+    // sometimes the benchmarking isn't relevant but the property listing itself still is.
+    // Applies to both the celebrating and needs-attention tables (they share one structure).
+    show_adoption_portfolio_avg: z.boolean().optional(),
+    show_adoption_peer_median: z.boolean().optional(),
+    show_engagement_portfolio_avg: z.boolean().optional(),
+    show_engagement_peer_median: z.boolean().optional(),
   }),
 
   output: z.object({
@@ -1782,7 +1814,7 @@ export default api({
     notes_html: z.string().optional(),
   }),
 
-  async run(ctx, { pmc_name, second_pmc, report_name, lookback_months, deck_mode, adoption_target, testimonials, total_portfolio_units, expansion_slides, presenting_mode, comparison_months, growth_slides, terminology }) {
+  async run(ctx, { pmc_name, second_pmc, report_name, lookback_months, deck_mode, adoption_target, testimonials, total_portfolio_units, expansion_slides, presenting_mode, comparison_months, growth_slides, terminology, hidden_kpi_tiles, show_adoption_portfolio_avg, show_adoption_peer_median, show_engagement_portfolio_avg, show_engagement_peer_median }) {
     // Compute bp_safe_cutoff
     const today = new Date();
     const dayOfMonth = today.getDate();
@@ -1811,7 +1843,8 @@ export default api({
           COALESCE(NEW_BILL_CONNECTIONS_PROPERTY, 0) AS NEW_BILL_CONNECTIONS,
           HUBSPOT_DEAL_TOTAL_COMPANY_UNITS,
           STATIC_PARENT_TEAM_NAME_OPPORTUNITY AS SEGMENT_TEAM,
-          HAS_MARKETING_INTEGRATION
+          HAS_MARKETING_INTEGRATION,
+          IS_MARKETING_OPT_IN
        FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS
        WHERE PMC_NAME = ?
          AND BP_MONTH >= DATEADD('month', -?, CURRENT_DATE())
@@ -2716,12 +2749,25 @@ export default api({
     let partnerSinceError: string | null = null;
     const partnerSincePromise = ctx.integrations.snowflake_sso.query(
       `WITH opp_dates AS (
+        -- Any closed-won opportunity, not just 'New Logo' - dropped that type filter (Kevin's
+        -- catch, mirrors the same fix in Flask's pull_launch_month, generator/data.py:2496).
+        -- 'New Logo' isn't reliable: confirmed real on Bridge PM, whose only 'New Logo'-typed
+        -- opps are dated 2024 and are literally named "(Glen 91 Transfer)" / "(Dulles Greene
+        -- Transfer)" - property-transfer deals into an already multi-year-established partner,
+        -- mistyped as New Logo - while real Expansion opportunities go back to Sept 2020 (an
+        -- Expansion deal can't happen before you're already a customer) and property rollout
+        -- data goes back to Oct 2019. Because a 'New Logo' match existed, this never fell
+        -- through to the rollout fallback that would have gotten closer to the truth, and
+        -- returned the false, too-recent 2024 date instead. Any closed-won deal proves the
+        -- partnership already existed by that date, which is all this needs - and unlike
+        -- rollout_month, a deal record is tied to the ACCOUNT, not a property, so it can't be
+        -- inherited from an unrelated prior owner via a transfer the way rollout_month can.
         SELECT MIN(o.CLOSED_AT_UTC) AS closed_at
         FROM PRODUCTION.SALES.FCT_SALES_OPPORTUNITIES o
         JOIN PRODUCTION.SALES.DIM_SALES_ACCOUNTS a ON o.SALES_ACCOUNT_KEY = a.SALES_ACCOUNT_KEY
         JOIN (SELECT DISTINCT PMC_ID FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS WHERE PMC_NAME = ?) p
              ON a.PMC_ID = p.PMC_ID
-        WHERE o.OPPORTUNITY_TYPE = 'New Logo' AND o.IS_CLOSED_WON = TRUE
+        WHERE o.IS_CLOSED_WON = TRUE
         UNION ALL
         SELECT MIN(o.CLOSED_AT_UTC) AS closed_at
         FROM FLEX.SALES.FCT_CRM_OPPORTUNITY o
@@ -2729,7 +2775,7 @@ export default api({
         JOIN (SELECT DISTINCT PMC_ID FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS WHERE PMC_NAME = ?) p
              ON a.PMC_ID = p.PMC_ID
         WHERE a.IS_CURRENT = TRUE
-          AND o.OPPORTUNITY_TYPE = 'New Logo' AND o.IS_CLOSED_WON = TRUE
+          AND o.IS_CLOSED_WON = TRUE
        )
        SELECT TO_VARCHAR(MIN(closed_at), 'YYYY-MM-DD') AS LAUNCH_MONTH FROM opp_dates`,
       LaunchSchema,
@@ -2739,6 +2785,31 @@ export default api({
       partnerSinceError = err instanceof Error ? err.message : String(err);
       return [{ LAUNCH_MONTH: null }] as { LAUNCH_MONTH: string | null }[];
     });
+
+    // Guarded rollout-date comparator - mirrors Flask's pull_launch_month (generator/data.py:
+    // 2496) after its second fix. Only trusts a property's ROLLOUT_MONTH when that property's
+    // OWN earliest bp_month row under this pmc scope actually starts close to it (<=3 months) -
+    // a transferred-in property carries its old rollout_month forward but has a real gap
+    // before its billing history under the new PMC's name begins, which this excludes. This is
+    // the guard the PREVIOUS version of this file's "earlier wins" logic was missing (see the
+    // comment above partnerSince below) - without it, a genuinely long-tenured property and a
+    // transfer-inherited one are indistinguishable by date alone, which is why that logic got
+    // reverted. With the guard, they're not: verified directly against Bridge PM's own data -
+    // "Allure" (rollout 2019-10-01) has 1,505 bills paid continuously from Oct 2019 through
+    // today, not a gapped transfer artifact.
+    const rolloutDatePromise = ctx.integrations.snowflake_sso.query(
+      `SELECT TO_VARCHAR(MIN(ROLLOUT_MONTH), 'YYYY-MM-DD') AS LAUNCH_MONTH
+       FROM (
+           SELECT PROPERTY_PUBLIC_ID, ROLLOUT_MONTH, MIN(BP_MONTH) AS first_billed_month
+           FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS
+           WHERE PMC_NAME = ? AND ROLLOUT_MONTH IS NOT NULL
+           GROUP BY PROPERTY_PUBLIC_ID, ROLLOUT_MONTH
+       ) t
+       WHERE DATEDIFF('month', ROLLOUT_MONTH, first_billed_month) <= 3`,
+      LaunchSchema,
+      [pmc_name],
+      { label: "Pull guarded earliest rollout month for partner-since comparison" }
+    ).catch(() => [{ LAUNCH_MONTH: null }] as { LAUNCH_MONTH: string | null }[]);
 
     // Flask (generator/data.py:2367-2413, compute_benchmark): Portfolio Penetration's
     // denominator is deliberately NOT HUBSPOT_DEAL_TOTAL_COMPANY_UNITS for the SUBJECT PMC -
@@ -2873,24 +2944,43 @@ export default api({
               SELECT DISTINCT PMC_NAME, PMC_ID FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS WHERE PMC_ID IS NOT NULL
            ),
            pmc_rollout AS (
+              -- Same guard as rolloutDatePromise above: only trust a property's ROLLOUT_MONTH
+              -- when its own earliest bp_month row starts close to it (<=3 months), so a
+              -- transferred-in property's inherited old rollout_month doesn't win here either.
               SELECT PMC_NAME, MIN(ROLLOUT_MONTH) AS rollout_launch
-              FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS
-              WHERE ROLLOUT_MONTH IS NOT NULL
+              FROM (
+                  SELECT PMC_NAME, PROPERTY_PUBLIC_ID, ROLLOUT_MONTH, MIN(BP_MONTH) AS first_billed_month
+                  FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS
+                  WHERE ROLLOUT_MONTH IS NOT NULL
+                  GROUP BY PMC_NAME, PROPERTY_PUBLIC_ID, ROLLOUT_MONTH
+              )
+              WHERE DATEDIFF('month', ROLLOUT_MONTH, first_billed_month) <= 3
               GROUP BY PMC_NAME
            ),
            pmc_opps AS (
-              -- Same join shape as partnerSincePromise's old-schema half above.
+              -- Same join shape as partnerSincePromise's old-schema half above, and the same
+              -- dropped 'New Logo' type filter - see the comment there for why (Kevin's catch).
               SELECT pi.PMC_NAME, MIN(o.CLOSED_AT_UTC) AS opp_launch
               FROM PRODUCTION.SALES.FCT_SALES_OPPORTUNITIES o
               JOIN PRODUCTION.SALES.DIM_SALES_ACCOUNTS a ON o.SALES_ACCOUNT_KEY = a.SALES_ACCOUNT_KEY
               JOIN pmc_ids pi ON pi.PMC_ID = a.PMC_ID
-              WHERE o.OPPORTUNITY_TYPE = 'New Logo' AND o.IS_CLOSED_WON = TRUE
+              WHERE o.IS_CLOSED_WON = TRUE
               GROUP BY pi.PMC_NAME
            ),
            pmc_tenures AS (
-              SELECT r.PMC_NAME, COALESCE(o.opp_launch::DATE, r.rollout_launch) AS launch_month
-              FROM pmc_rollout r
-              LEFT JOIN pmc_opps o ON o.PMC_NAME = r.PMC_NAME
+              -- Earlier of the two (guarded rollout vs opp date), same reasoning as
+              -- partnerSincePromise above, not "opp wins whenever it exists" - and driven off
+              -- every known PMC_NAME (not just those with a qualifying rollout property), so a
+              -- PMC with only an opp date isn't dropped from the ranking entirely.
+              SELECT pi.PMC_NAME,
+                     CASE
+                       WHEN o.opp_launch IS NOT NULL AND r.rollout_launch IS NOT NULL
+                         THEN LEAST(o.opp_launch::DATE, r.rollout_launch)
+                       ELSE COALESCE(o.opp_launch::DATE, r.rollout_launch)
+                     END AS launch_month
+              FROM (SELECT DISTINCT PMC_NAME FROM pmc_ids) pi
+              LEFT JOIN pmc_rollout r ON r.PMC_NAME = pi.PMC_NAME
+              LEFT JOIN pmc_opps o ON o.PMC_NAME = pi.PMC_NAME
            ),
            subject AS (
               SELECT MIN(launch_month) AS launch_month
@@ -3200,6 +3290,7 @@ export default api({
             ? (t12ConnMap.get(propKey) ?? 0) / r.PROPERTY_UNIT_COUNT * 100
             : 0,
           hasMarketingIntegration: r.HAS_MARKETING_INTEGRATION ?? false,
+          isMarketingOptIn: r.IS_MARKETING_OPT_IN ?? false,
           peerNar: undefined as number | null | undefined,
           peerNarCriteria: undefined as string | undefined,
           peerNarCount: undefined as number | undefined,
@@ -3312,22 +3403,42 @@ export default api({
       .map((r) => r.ROLLOUT_MONTH!)
       .sort()[0] || null;
 
-    // ── Partner Since: Salesforce closed-won New Logo opp date, unconditionally when it
-    // exists — falls back to MIN(ROLLOUT_MONTH) only when no matching opportunity exists.
-    // Flask: pull_launch_month() — `if opp_date: return opp_date` (generator/data.py:2549),
-    // no comparison against rollout month. This file's previous comment claimed Flask "uses
-    // the EARLIER of" the two and picked whichever date was smaller — backwards, and it's the
-    // exact bug this override exists to prevent: a PMC that acquired/inherited a property with
-    // OLDER rollout history (from a prior management company) would have that inherited date
-    // win over its own real, later partnership start. Confirmed real for Bridge PM (Kevin's
-    // catch): SFDC close date 2024-07-29, but an inherited property rollout of 2019-10-01 —
-    // the old "earlier wins" logic kept 2019-10-01, 57 months before Bridge PM was a partner.
+    // ── Partner Since: the EARLIER of the Salesforce closed-won opportunity date and the
+    // guarded rollout date (rolloutDatePromise above), not just an "earlier wins" pick between
+    // the opp date and the naive earliestRollout computed above from lookback-bounded data.
+    // Salesforce opportunity/account data has a confirmed hard floor around mid-2020 (Flex's
+    // HubSpot-to-Salesforce migration; pre-migration deal history didn't carry over — Bridge
+    // PM's own SFDC account record wasn't created until 2020-07-14, and network-wide, dozens
+    // of unrelated PMCs' "earliest opportunity" cluster in Aug-Dec 2020, a migration-backfill
+    // signature, not organic sales activity). So for any partner whose real tenure predates
+    // that boundary, the opportunity date alone is structurally incapable of being right, even
+    // when a match exists — which is why this compares against rollout rather than only
+    // falling back to it when no opportunity exists.
+    //
+    // This file previously took the opp date unconditionally when it existed, specifically to
+    // avoid a different bug: a PMC that acquired/inherited a property with OLDER rollout
+    // history (from a prior management company) having that inherited date win over its own
+    // real, later partnership start. That concern was real, but the fix reached for was too
+    // blunt — it assumed ANY rollout date earlier than the opp date must be an inherited
+    // artifact, which isn't true. Confirmed directly against Bridge PM's own data: their
+    // earliest guarded rollout date (2019-10-01, from "Allure") isn't an inherited artifact —
+    // that property has 1,505 bills paid continuously from Oct 2019 through today. The real
+    // signature of an inherited transfer date is a GAP between a property's rollout_month and
+    // when its billing history under the current PMC's name actually begins — which
+    // rolloutDatePromise's own guard (<=3 months) already filters for, making the blunt
+    // "always trust the opp date" override unnecessary and, for any pre-2020 partner, wrong.
     let partnerSince = earliestRollout;
     try {
       const [launchRow] = await partnerSincePromise;
-      if (launchRow?.LAUNCH_MONTH) {
-        partnerSince = launchRow.LAUNCH_MONTH;
-      } else if (partnerSinceError) {
+      const [rolloutRow] = await rolloutDatePromise;
+      const oppDate = launchRow?.LAUNCH_MONTH ?? null;
+      const guardedRollout = rolloutRow?.LAUNCH_MONTH ?? null;
+      if (oppDate && guardedRollout) {
+        partnerSince = oppDate < guardedRollout ? oppDate : guardedRollout;
+      } else {
+        partnerSince = oppDate ?? guardedRollout ?? earliestRollout;
+      }
+      if (!oppDate && partnerSinceError) {
         console.warn(`[PMC Report] partner-since Salesforce query failed for ${pmc_name}: ${partnerSinceError}`);
       }
     } catch {
@@ -4354,6 +4465,7 @@ export default api({
       trueRepeatRate: effectiveTrueRepeat,
       lifetimeDqShielded: lifetimeDqShielded > 0 ? lifetimeDqShielded : null,
       dqSinceComparison: dqSinceComparison != null && dqSinceComparison > 0 ? dqSinceComparison : null,
+      hiddenTiles: hidden_kpi_tiles,
       slideId: 2,
       // Flask: QBR always show_sparklines=False (hardcoded, unconditional).
       // Expansion: show_sparklines = not (_show_growth and 54 in active_exp_order).
@@ -5103,12 +5215,25 @@ export default api({
         { label: "Pull resident-level rents for rent bucket slide (last month)" }
       ).catch(() => [] as { RESIDENT_AMOUNT_PAID: number }[]),
       ctx.integrations.snowflake_sso.query(
-        `WITH scoped_props AS (
+        `WITH active_props AS (
+            -- Only properties still IS_IN_NETWORK as of the latest completed month - mirrors
+            -- Flask's _active_property_pmc_pairs scoping for this exact slide
+            -- (generator/data.py:429, app.py:1501), which keeps All-Time honest by not counting
+            -- a departed property's old residents/rent. Without this, All-Time silently
+            -- included every property ever active under this PMC name, even ones since
+            -- sold/transferred/taken off Flex - which is why Last Month matched between Flask
+            -- and Clark but All-Time didn't (Kevin's catch).
+            SELECT DISTINCT PROPERTY_PUBLIC_ID
+            FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS
+            WHERE PMC_NAME = ? AND IS_IN_NETWORK = TRUE AND BP_MONTH = ?
+         ),
+         scoped_props AS (
             SELECT PROPERTY_PUBLIC_ID, BP_MONTH
             FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS
             WHERE PMC_NAME = ?
               AND IS_IN_NETWORK = TRUE
               AND BP_MONTH < ?
+              AND PROPERTY_PUBLIC_ID IN (SELECT PROPERTY_PUBLIC_ID FROM active_props)
          )
          SELECT
             AVG(n.RENT_AMOUNT)   AS RESIDENT_AMOUNT_PAID,
@@ -5120,7 +5245,7 @@ export default api({
          GROUP BY n.CUSTOMER_PUBLIC_ID
          LIMIT 50000`,
         AlltimeResidentSchema,
-        [pmc_name, cutoffStr],
+        [pmc_name, latestCompletedMonth, pmc_name, cutoffStr],
         { label: "Pull all-time resident rent averages for rent bucket toggle" }
       ).catch(() => [] as { RESIDENT_AMOUNT_PAID: number; RESIDENT_TOTAL_PAID: number }[]),
     ]);
@@ -5295,6 +5420,7 @@ export default api({
           observedEngPer100: p.t12EngPer100 ?? 0,
           expectedEngPer100: peerMedianEngFallback ?? 0,
           hasMarketingIntegration: p.hasMarketingIntegration,
+          isMarketingOptIn: p.isMarketingOptIn,
         });
       }
     }
@@ -5317,6 +5443,10 @@ export default api({
       targetNar,
       peerMedianNar: canonicalPeerNarP50 ?? undefined,
       peerMedianEngagement: peerMedianEngFallback,
+      showAdoptionPortfolioAvg: show_adoption_portfolio_avg,
+      showAdoptionPeerMedian: show_adoption_peer_median,
+      showEngagementPortfolioAvg: show_engagement_portfolio_avg,
+      showEngagementPeerMedian: show_engagement_peer_median,
     });
 
     const opportunitiesResult = renderAdoptionOpportunities({
@@ -5328,6 +5458,10 @@ export default api({
       newRolloutCandidates,
       disabledProperties,
       presentingMode: presenting_mode,
+      showAdoptionPortfolioAvg: show_adoption_portfolio_avg,
+      showAdoptionPeerMedian: show_adoption_peer_median,
+      showEngagementPortfolioAvg: show_engagement_portfolio_avg,
+      showEngagementPeerMedian: show_engagement_peer_median,
     });
 
     const metrosightSlideId = allocSlideId();

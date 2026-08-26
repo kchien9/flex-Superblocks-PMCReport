@@ -68,6 +68,11 @@ export default function PMCMonthlyReportPage() {
       // Kevin's catch: this existed on QBRFormState and updated on toggle, but was never
       // actually included in the args sent to the API — the control did nothing.
       terminology: state.terminology as "resident" | "household",
+      hidden_kpi_tiles: state.hidden_kpi_tiles,
+      show_adoption_portfolio_avg: state.show_adoption_portfolio_avg,
+      show_adoption_peer_median: state.show_adoption_peer_median,
+      show_engagement_portfolio_avg: state.show_engagement_portfolio_avg,
+      show_engagement_peer_median: state.show_engagement_peer_median,
     };
     lastArgsRef.current = args;
     try {
