@@ -51,6 +51,7 @@ export interface QBRFormState {
   hidden_kpi_tiles: string[];
   show_adoption_portfolio_avg: boolean;
   show_adoption_peer_median: boolean;
+  show_engagement_observed: boolean;
   show_engagement_portfolio_avg: boolean;
   show_engagement_peer_median: boolean;
 }
@@ -102,6 +103,7 @@ export function QBRTab({ pmcNames, pmcLoading, generating, onGenerate }: QBRTabP
   // default. Applies to both the celebrating and needs-attention tables.
   const [showAdoptionPortfolioAvg, setShowAdoptionPortfolioAvg] = useState(true);
   const [showAdoptionPeerMedian, setShowAdoptionPeerMedian] = useState(true);
+  const [showEngagementObserved, setShowEngagementObserved] = useState(true);
   const [showEngagementPortfolioAvg, setShowEngagementPortfolioAvg] = useState(true);
   const [showEngagementPeerMedian, setShowEngagementPeerMedian] = useState(true);
 
@@ -140,10 +142,11 @@ export function QBRTab({ pmcNames, pmcLoading, generating, onGenerate }: QBRTabP
       hidden_kpi_tiles: Array.from(hiddenKpiTiles),
       show_adoption_portfolio_avg: showAdoptionPortfolioAvg,
       show_adoption_peer_median: showAdoptionPeerMedian,
+      show_engagement_observed: showEngagementObserved,
       show_engagement_portfolio_avg: showEngagementPortfolioAvg,
       show_engagement_peer_median: showEngagementPeerMedian,
     });
-  }, [canGenerate, reportBasis, selectedPMC, secondPMC, reportName, propertyIds, ownershipReportName, totalCompanyUnits, partnerSinceOverride, reviewPeriod, delivery, terminology, d2cMarketing, comparisonMonths, selectedSlides, selectedMetrics, testimonials, whatsNewText, hiddenKpiTiles, showAdoptionPortfolioAvg, showAdoptionPeerMedian, showEngagementPortfolioAvg, showEngagementPeerMedian, onGenerate]);
+  }, [canGenerate, reportBasis, selectedPMC, secondPMC, reportName, propertyIds, ownershipReportName, totalCompanyUnits, partnerSinceOverride, reviewPeriod, delivery, terminology, d2cMarketing, comparisonMonths, selectedSlides, selectedMetrics, testimonials, whatsNewText, hiddenKpiTiles, showAdoptionPortfolioAvg, showAdoptionPeerMedian, showEngagementObserved, showEngagementPortfolioAvg, showEngagementPeerMedian, onGenerate]);
 
   const handleBasisChange = useCallback((v: string) => {
     setReportBasis(v as "pmc" | "ownership");
@@ -303,6 +306,11 @@ export function QBRTab({ pmcNames, pmcLoading, generating, onGenerate }: QBRTabP
               <input type="checkbox" checked={showAdoptionPeerMedian} onChange={() => setShowAdoptionPeerMedian((v) => !v)}
                 className="rounded border-gray-300 text-[#6A3DB8] focus:ring-[#6A3DB8]/30" />
               Adoption — Peer Median
+            </label>
+            <label className="flex items-center gap-2 text-xs text-gray-700 cursor-pointer">
+              <input type="checkbox" checked={showEngagementObserved} onChange={() => setShowEngagementObserved((v) => !v)}
+                className="rounded border-gray-300 text-[#6A3DB8] focus:ring-[#6A3DB8]/30" />
+              Engagement — Observed
             </label>
             <label className="flex items-center gap-2 text-xs text-gray-700 cursor-pointer">
               <input type="checkbox" checked={showEngagementPortfolioAvg} onChange={() => setShowEngagementPortfolioAvg((v) => !v)}

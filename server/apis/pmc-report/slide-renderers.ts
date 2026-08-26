@@ -998,6 +998,10 @@ function buildEstablishedPool(propertySnapshot: PropertyRow[]): {
 export interface BenchmarkColumnVisibility {
   showAdoptionPortfolioAvg?: boolean;
   showAdoptionPeerMedian?: boolean;
+  // Adoption's Observed column has no toggle (unlike Engagement's, below) - it's the metric
+  // that decided which properties made it onto this table in the first place, so hiding it
+  // would leave a flagged property with no visible number explaining why it's there.
+  showEngagementObserved?: boolean;
   showEngagementPortfolioAvg?: boolean;
   showEngagementPeerMedian?: boolean;
 }
@@ -1005,10 +1009,11 @@ export interface BenchmarkColumnVisibility {
 function benchmarkTableHeader(v: BenchmarkColumnVisibility): { colgroupHtml: string; theadHtml: string; adoptionCols: number; engagementCols: number } {
   const showAPA = v.showAdoptionPortfolioAvg !== false;
   const showAPM = v.showAdoptionPeerMedian !== false;
+  const showEO = v.showEngagementObserved !== false;
   const showEPA = v.showEngagementPortfolioAvg !== false;
   const showEPM = v.showEngagementPeerMedian !== false;
   const adoptionCols = 1 + Number(showAPA) + Number(showAPM);
-  const engagementCols = 1 + Number(showEPA) + Number(showEPM);
+  const engagementCols = Number(showEO) + Number(showEPA) + Number(showEPM);
   const th = (label: string) => `<th style="padding:2px 8px 4px;font-size:8px;font-weight:600;color:#6b7280;text-align:right;text-transform:uppercase;letter-spacing:0.04em;">${label}</th>`;
 
   const colgroupHtml = `
@@ -1016,22 +1021,29 @@ function benchmarkTableHeader(v: BenchmarkColumnVisibility): { colgroupHtml: str
           <col style="width:60px;">
           ${showAPA ? '<col style="width:66px;">' : ""}
           ${showAPM ? '<col style="width:66px;">' : ""}
-          <col style="width:60px;">
+          ${showEO ? '<col style="width:60px;">' : ""}
           ${showEPA ? '<col style="width:66px;">' : ""}
           ${showEPM ? '<col style="width:66px;">' : ""}`;
+
+  // engagementCols can be 0 if all three of that group's columns are toggled off - a
+  // colspan="0" group header is invalid HTML, so omit the group header entirely in that case
+  // rather than render a zero-width th.
+  const engagementHeaderHtml = engagementCols > 0
+    ? `<th colspan="${engagementCols}" style="padding:4px 8px 3px;font-size:9px;font-weight:800;color:#374151;text-align:center;text-transform:uppercase;letter-spacing:0.08em;border-bottom:2px solid #9ca3af;">Engagement (per 100 units)</th>`
+    : "";
 
   const theadHtml = `
         <thead style="background:#fff;position:sticky;top:0;z-index:1;">
           <tr>
             <th rowspan="2" style="padding:5px 8px 5px 4px;font-size:8px;font-weight:600;color:#9ca3af;text-align:left;text-transform:uppercase;letter-spacing:0.06em;vertical-align:bottom;">Property</th>
             <th colspan="${adoptionCols}" style="padding:4px 8px 3px;font-size:9px;font-weight:800;color:#374151;text-align:center;text-transform:uppercase;letter-spacing:0.08em;border-bottom:2px solid #9ca3af;">Adoption Rate</th>
-            <th colspan="${engagementCols}" style="padding:4px 8px 3px;font-size:9px;font-weight:800;color:#374151;text-align:center;text-transform:uppercase;letter-spacing:0.08em;border-bottom:2px solid #9ca3af;">Engagement (per 100 units)</th>
+            ${engagementHeaderHtml}
           </tr>
           <tr style="border-bottom:2px solid #e5e7eb;">
             ${th("Observed")}
             ${showAPA ? th("Portfolio Avg") : ""}
             ${showAPM ? th("Peer Median") : ""}
-            ${th("Observed")}
+            ${showEO ? th("Observed") : ""}
             ${showEPA ? th("Portfolio Avg") : ""}
             ${showEPM ? th("Peer Median") : ""}
           </tr>
@@ -1040,22 +1052,23 @@ function benchmarkTableHeader(v: BenchmarkColumnVisibility): { colgroupHtml: str
   return { colgroupHtml, theadHtml, adoptionCols, engagementCols };
 }
 
-// Builds the 6 (or fewer) data <td>s for one row, in column order, omitting whichever
-// Portfolio Avg / Peer Median cells are toggled off. Each *Html arg is a complete <td>...</td>
-// string (or "-" content already baked in) — this function only decides which ones survive.
+// Builds the data <td>s for one row, in column order, omitting whichever cells are toggled
+// off. Each *Html arg is a complete <td>...</td> string (or "-" content already baked in) —
+// this function only decides which ones survive.
 function benchmarkRowCells(v: BenchmarkColumnVisibility, cells: {
   adoptionObserved: string; adoptionPortfolioAvg: string; adoptionPeerMedian: string;
   engagementObserved: string; engagementPortfolioAvg: string; engagementPeerMedian: string;
 }): string {
   const showAPA = v.showAdoptionPortfolioAvg !== false;
   const showAPM = v.showAdoptionPeerMedian !== false;
+  const showEO = v.showEngagementObserved !== false;
   const showEPA = v.showEngagementPortfolioAvg !== false;
   const showEPM = v.showEngagementPeerMedian !== false;
   return [
     cells.adoptionObserved,
     showAPA ? cells.adoptionPortfolioAvg : "",
     showAPM ? cells.adoptionPeerMedian : "",
-    cells.engagementObserved,
+    showEO ? cells.engagementObserved : "",
     showEPA ? cells.engagementPortfolioAvg : "",
     showEPM ? cells.engagementPeerMedian : "",
   ].join("");

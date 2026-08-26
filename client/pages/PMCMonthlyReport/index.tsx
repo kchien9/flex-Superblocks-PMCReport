@@ -71,6 +71,7 @@ export default function PMCMonthlyReportPage() {
       hidden_kpi_tiles: state.hidden_kpi_tiles,
       show_adoption_portfolio_avg: state.show_adoption_portfolio_avg,
       show_adoption_peer_median: state.show_adoption_peer_median,
+      show_engagement_observed: state.show_engagement_observed,
       show_engagement_portfolio_avg: state.show_engagement_portfolio_avg,
       show_engagement_peer_median: state.show_engagement_peer_median,
     };

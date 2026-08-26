@@ -1872,6 +1872,9 @@ export default api({
     // Applies to both the celebrating and needs-attention tables (they share one structure).
     show_adoption_portfolio_avg: z.boolean().optional(),
     show_adoption_peer_median: z.boolean().optional(),
+    // Engagement's Observed is toggleable (Kevin's ask) - Adoption's Observed isn't, since
+    // it's the metric that decided which properties are on this table in the first place.
+    show_engagement_observed: z.boolean().optional(),
     show_engagement_portfolio_avg: z.boolean().optional(),
     show_engagement_peer_median: z.boolean().optional(),
   }),
@@ -1882,7 +1885,7 @@ export default api({
     notes_html: z.string().optional(),
   }),
 
-  async run(ctx, { pmc_name, second_pmc, report_name, lookback_months, deck_mode, adoption_target, testimonials, total_portfolio_units, expansion_slides, presenting_mode, comparison_months, growth_slides, terminology, hidden_kpi_tiles, show_adoption_portfolio_avg, show_adoption_peer_median, show_engagement_portfolio_avg, show_engagement_peer_median }) {
+  async run(ctx, { pmc_name, second_pmc, report_name, lookback_months, deck_mode, adoption_target, testimonials, total_portfolio_units, expansion_slides, presenting_mode, comparison_months, growth_slides, terminology, hidden_kpi_tiles, show_adoption_portfolio_avg, show_adoption_peer_median, show_engagement_observed, show_engagement_portfolio_avg, show_engagement_peer_median }) {
     // Compute bp_safe_cutoff
     const today = new Date();
     const dayOfMonth = today.getDate();
@@ -5513,6 +5516,7 @@ export default api({
       peerMedianEngagement: peerMedianEngFallback,
       showAdoptionPortfolioAvg: show_adoption_portfolio_avg,
       showAdoptionPeerMedian: show_adoption_peer_median,
+      showEngagementObserved: show_engagement_observed,
       showEngagementPortfolioAvg: show_engagement_portfolio_avg,
       showEngagementPeerMedian: show_engagement_peer_median,
     });
@@ -5528,6 +5532,7 @@ export default api({
       presentingMode: presenting_mode,
       showAdoptionPortfolioAvg: show_adoption_portfolio_avg,
       showAdoptionPeerMedian: show_adoption_peer_median,
+      showEngagementObserved: show_engagement_observed,
       showEngagementPortfolioAvg: show_engagement_portfolio_avg,
       showEngagementPeerMedian: show_engagement_peer_median,
     });
