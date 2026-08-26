@@ -569,6 +569,15 @@ function renderExecSummary(d: ExecSummaryInput): { html: string; js: string } {
   }
 
   const hiddenTileSet = new Set(d.hiddenTiles ?? []);
+  // Column count that avoids stranding a lonely single tile in its own row (Kevin's ask) -
+  // the grid used to be a fixed 3 columns, which left a 3-then-1 split whenever exactly 4
+  // tiles were visible (e.g. 2 hidden via hiddenTileSet above). Mirrors Flask's
+  // render_expansion_bottom_line - same mapping, same reasoning.
+  const ALL_TILE_KEYS = ["active_properties", "residents_paying", "new_residents",
+    "adoption_rate", "true_repeat_rate", "delinquency_shielded"];
+  const visibleTileCount = ALL_TILE_KEYS.filter((k) => !hiddenTileSet.has(k)).length;
+  const TILE_COLS_BY_VISIBLE_COUNT: Record<number, number> = { 0: 1, 1: 1, 2: 2, 3: 3, 4: 2, 5: 3, 6: 3 };
+  const tileCols = TILE_COLS_BY_VISIBLE_COUNT[visibleTileCount] ?? 3;
 
   // ── Delta toggle check ────────────────────────────────────────────────────
   const pillProps = pill(d.propertyCount, d.prevPropertyCount, "abs");
@@ -626,7 +635,7 @@ function renderExecSummary(d: ExecSummaryInput): { html: string; js: string } {
         </div>
       </div>
       <!-- 6 Metric Tiles (3-wide grid, rows auto-size to however many remain after hiding) -->
-      <div style="display:grid;grid-template-columns:repeat(3,1fr);grid-auto-rows:1fr;gap:12px;">
+      <div style="display:grid;grid-template-columns:repeat(${tileCols},1fr);grid-auto-rows:1fr;gap:12px;">
         ${hiddenTileSet.has("active_properties") ? "" : tile("Active properties", d.propertyCount.toLocaleString(), "", pillProps, "", svgBldg)}
         ${hiddenTileSet.has("residents_paying") ? "" : tile("Residents paying", d.currentResidents.toLocaleString(), "", pillResidents, residentsSparkHtml, svgPerson)}
         ${hiddenTileSet.has("new_residents") ? "" : tile("New residents paying this month", d.currentNewSignups.toLocaleString(), signupsSub, "", signupsSparkHtml, svgNewP)}
@@ -1441,6 +1450,8 @@ function buildDeckHtml(params: {
   .slide-hide-btn { position: absolute; top: 10px; right: 10px; z-index: 50; padding: 4px 10px; border-radius: 5px; border: 1px solid #e5e7eb; background: rgba(255,255,255,0.92); color: #9ca3af; font-size: 10px; font-weight: 600; cursor: pointer; font-family: 'ABCDiatype', sans-serif; letter-spacing: 0.04em; backdrop-filter: blur(4px); transition: all 0.12s; }
   .slide-hide-btn:hover { background: #f9f5ff; color: #6A3DB8; border-color: #6A3DB8; }
   .slide-hide-btn.is-hidden { background: #fee2e2; color: #dc5050; border-color: #fca5a5; }
+  .slide-copy-btn { position: absolute; top: 10px; right: 90px; z-index: 50; padding: 4px 10px; border-radius: 5px; border: 1px solid #e5e7eb; background: rgba(255,255,255,0.92); color: #9ca3af; font-size: 10px; font-weight: 600; cursor: pointer; font-family: 'ABCDiatype', sans-serif; letter-spacing: 0.04em; backdrop-filter: blur(4px); transition: all 0.12s; }
+  .slide-copy-btn:hover { background: #f0edff; color: #6A3DB8; border-color: #6A3DB8; }
   .slide.slide-excluded { opacity: 0.35; outline: 2px solid #dc5050; }
   :fullscreen .slide-hide-btn, :-webkit-full-screen .slide-hide-btn { display: none; }
   :fullscreen .slide.slide-excluded, :-webkit-full-screen .slide.slide-excluded { opacity: 1; outline: none; }
@@ -1569,6 +1580,13 @@ function buildDeckHtml(params: {
     btn.title = 'Click to skip in presentation';
     btn.addEventListener('click', e => { e.stopPropagation(); toggleHide(n); });
     slide.appendChild(btn);
+
+    const copyBtn = document.createElement('button');
+    copyBtn.className = 'slide-copy-btn pdf-export-hide';
+    copyBtn.textContent = 'Copy slide';
+    copyBtn.title = 'Copy this slide as an image - paste into a Sheet, Doc, or Slide';
+    copyBtn.addEventListener('click', e => { e.stopPropagation(); copySlideImage(n, copyBtn); });
+    slide.appendChild(copyBtn);
   });
   refreshHideButtons();
   function showSlide(n) {
@@ -1692,12 +1710,39 @@ function buildDeckHtml(params: {
     } catch (e) { console.error('Chart init failed:', e); }
   })();
 
+  // Shared by exportDeckPDF's per-page loop AND copySlideImage's single-slide capture below -
+  // mirrors Flask's captureSlideCanvas (deck_base.html / app.py) exactly, so the two apps'
+  // capture behavior doesn't drift. Deliberately does NOT touch deck.style.transform or
+  // el.style.position - the loop resets those once for its whole run, the single-slide button
+  // resets them once for its one capture; bundling that in here would make the loop reset on
+  // every iteration and flicker across each page of a full-deck PDF export.
+  async function captureSlideCanvas(el) {
+    await document.fonts.ready;
+    void el.offsetHeight;
+    el.querySelectorAll('canvas').forEach(cv => {
+      const c = Chart.getChart(cv);
+      if (!c) return;
+      try { c.resize(); c.update('none'); } catch(e) {}
+    });
+    await new Promise(r => setTimeout(r, 100));
+    return html2canvas(el, {
+      scale: 2, useCORS: true, allowTaint: true,
+      backgroundColor: '#ffffff', width: 1280, height: 720,
+      logging: false, imageTimeout: 0, x: 0, y: 0,
+      windowWidth: 1280, windowHeight: 720,
+      onclone: (doc) => {
+        const s = doc.createElement('style');
+        s.textContent = '* { letter-spacing: 0 !important; word-spacing: normal !important; } .slide-hide-btn, .presenter-control, .pdf-export-hide { display: none !important; } .slide-excluded { opacity: 1 !important; outline: none !important; }';
+        doc.head.appendChild(s);
+      },
+    });
+  }
+
   async function exportDeckPDF(btn) {
     const origHTML = btn.innerHTML;
     btn.innerHTML = '\\u23f3 Building\\u2026';
     btn.disabled = true;
     try {
-      await document.fonts.ready;
       const { jsPDF } = window.jspdf;
       const pdf = new jsPDF({ orientation: 'landscape', unit: 'px', format: [1280, 720], hotfixes: ['px_scaling'] });
       const deck = document.getElementById('deck');
@@ -1715,23 +1760,7 @@ function buildDeckHtml(params: {
         void el.offsetHeight;
         if (window['initSlide' + n]) { try { window['initSlide' + n](); } catch(e) {} }
         await new Promise(r => setTimeout(r, 300));
-        el.querySelectorAll('canvas').forEach(cv => {
-          const c = Chart.getChart(cv);
-          if (!c) return;
-          try { c.resize(); c.update('none'); } catch(e) {}
-        });
-        await new Promise(r => setTimeout(r, 100));
-        const canvas = await html2canvas(el, {
-          scale: 2, useCORS: true, allowTaint: true,
-          backgroundColor: '#ffffff', width: 1280, height: 720,
-          logging: false, imageTimeout: 0, x: 0, y: 0,
-          windowWidth: 1280, windowHeight: 720,
-          onclone: (doc) => {
-            const s = doc.createElement('style');
-            s.textContent = '* { letter-spacing: 0 !important; word-spacing: normal !important; } .slide-hide-btn, .presenter-control, .pdf-export-hide { display: none !important; } .slide-excluded { opacity: 1 !important; outline: none !important; }';
-            doc.head.appendChild(s);
-          },
-        });
+        const canvas = await captureSlideCanvas(el);
         el.style.position = 'absolute';
         if (pageAdded) pdf.addPage([1280, 720], 'landscape');
         pdf.addImage(canvas.toDataURL('image/jpeg', 0.92), 'JPEG', 0, 0, 1280, 720);
@@ -1744,6 +1773,45 @@ function buildDeckHtml(params: {
     } catch(e) { alert('PDF export failed: ' + e.message); }
     btn.innerHTML = origHTML;
     btn.disabled = false;
+  }
+
+  // Copy (or, on clipboard failure, download) just the currently-active slide as a flat PNG -
+  // replaces the screenshot-into-a-Sheet/Doc workaround people were already doing by hand.
+  async function copySlideImage(n, btn) {
+    const el = document.getElementById('slide-' + n);
+    if (!el) return;
+    const origLabel = btn.textContent;
+    btn.textContent = '\\u2026';
+    btn.disabled = true;
+    try {
+      const deck = document.getElementById('deck');
+      const savedDeckT = deck.style.transform, savedDeckL = deck.style.left, savedDeckTop = deck.style.top, savedDeckPos = deck.style.position;
+      deck.style.transform = 'none'; deck.style.left = '0'; deck.style.top = '0'; deck.style.position = 'relative';
+      const savedElPos = el.style.position;
+      el.style.position = 'relative';
+      const canvas = await captureSlideCanvas(el);
+      el.style.position = savedElPos;
+      deck.style.transform = savedDeckT; deck.style.left = savedDeckL; deck.style.top = savedDeckTop; deck.style.position = savedDeckPos;
+
+      await new Promise(resolve => canvas.toBlob(async (blob) => {
+        let copied = false;
+        try {
+          await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
+          copied = true;
+        } catch (e) {
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url; a.download = 'slide-' + n + '.png';
+          document.body.appendChild(a); a.click(); document.body.removeChild(a);
+          URL.revokeObjectURL(url);
+        }
+        btn.textContent = copied ? 'Copied!' : 'Downloaded';
+        resolve();
+      }, 'image/png'));
+    } catch (e) {
+      btn.textContent = 'Failed';
+    }
+    setTimeout(() => { btn.textContent = origLabel; btn.disabled = false; }, 1500);
   }
 <\/script>
 </body>
