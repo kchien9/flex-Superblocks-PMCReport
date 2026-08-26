@@ -5,6 +5,7 @@ import { ToggleGroup } from "./ToggleGroup.js";
 import { SlidesPicker, NEW_LOGO_SLIDES, defaultSlideSet } from "./SlidesPicker.js";
 import { TestimonialsEditor, type Testimonial } from "./TestimonialsEditor.js";
 import { ProspectSearch, type ProspectResult } from "./ProspectSearch.js";
+import { ImportSlidesPicker, type ImportedSlide } from "./ImportSlidesPicker.js";
 
 /**
  * Parse an Excel workbook ArrayBuffer into CSV text.
@@ -111,6 +112,7 @@ export interface NewLogoFormState {
   testimonials: Testimonial[];
   property_list_csv: string | null;
   property_list_filename: string | null;
+  imported_slides: ImportedSlide[];
 }
 
 interface NewLogoTabProps {
@@ -134,6 +136,7 @@ export function NewLogoTab({ generating, onGenerate }: NewLogoTabProps) {
   const [testimonials, setTestimonials] = useState<Testimonial[]>([]);
   const [propertyListFile, setPropertyListFile] = useState<File | null>(null);
   const [propertyListCsv, setPropertyListCsv] = useState<string | null>(null);
+  const [importedSlides, setImportedSlides] = useState<ImportedSlide[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleProspectSelect = useCallback((result: ProspectResult) => {
@@ -199,8 +202,9 @@ export function NewLogoTab({ generating, onGenerate }: NewLogoTabProps) {
       property_list_filename: propertyListFile
         ? propertyListFile.name.replace(/\.(xlsx|xls)$/i, ".csv")
         : null,
+      imported_slides: importedSlides,
     });
-  }, [prospectAccount, totalUnits, states, portfolioType, propertyType, portfolioFootprint, avgMonthlyRent, delivery, terminology, selectedSlides, testimonials, propertyListCsv, propertyListFile, onGenerate]);
+  }, [prospectAccount, totalUnits, states, portfolioType, propertyType, portfolioFootprint, avgMonthlyRent, delivery, terminology, selectedSlides, testimonials, propertyListCsv, propertyListFile, importedSlides, onGenerate]);
 
   const inputCls = "w-full px-3 py-2 text-sm border border-gray-200 rounded-[4px] focus:outline-none focus:ring-2 focus:ring-[#6A3DB8]/30 focus:border-[#6A3DB8]";
   const selectCls = `${inputCls} bg-white`;
@@ -306,6 +310,11 @@ export function NewLogoTab({ generating, onGenerate }: NewLogoTabProps) {
         )}
         <p className="text-[10px] text-gray-400 mt-1">Accepts Address column or Street/City/State/Zip, plus optional Units. Top 5 markets show by default.</p>
       </div>
+
+      {/* Import Slides (PDF upload, Kevin's ask: not just QBR) */}
+      <Section title="Import Slides">
+        <ImportSlidesPicker onChange={setImportedSlides} />
+      </Section>
 
       {/* Testimonials */}
       <Section title="Customer Testimonials">

@@ -5,6 +5,7 @@ import { PMCSearch } from "./PMCSearch.js";
 import { OwnershipGroupProperties } from "./OwnershipGroupProperties.js";
 import { SlidesPicker, EXPANSION_SLIDES, BENCHMARK_METRICS, defaultSlideSet } from "./SlidesPicker.js";
 import { TestimonialsEditor, type Testimonial } from "./TestimonialsEditor.js";
+import { ImportSlidesPicker, type ImportedSlide } from "./ImportSlidesPicker.js";
 
 /** Always-visible section — Slides and Testimonials are used on most builds and shouldn't be
  * buried behind a click. */
@@ -30,6 +31,7 @@ export interface ExpansionFormState {
   selected_slides: Set<string>;
   selected_metrics: Set<string>;
   testimonials: Testimonial[];
+  imported_slides: ImportedSlide[];
 }
 
 interface ExpansionTabProps {
@@ -55,6 +57,7 @@ export function ExpansionTab({ pmcNames, pmcLoading, generating, onGenerate }: E
   // has its own inline toggle), but selected_metrics stays in the payload shape unchanged.
   const [selectedMetrics] = useState<Set<string>>(() => new Set(BENCHMARK_METRICS.map((m) => m.id)));
   const [testimonials, setTestimonials] = useState<Testimonial[]>([]);
+  const [importedSlides, setImportedSlides] = useState<ImportedSlide[]>([]);
 
   const handleGenerate = useCallback(() => {
     if (!selectedPMC) return;
@@ -71,8 +74,9 @@ export function ExpansionTab({ pmcNames, pmcLoading, generating, onGenerate }: E
       selected_slides: selectedSlides,
       selected_metrics: selectedMetrics,
       testimonials,
+      imported_slides: importedSlides,
     });
-  }, [selectedPMC, totalPortfolioUnits, propertyIds, ownershipReportName, reviewPeriod, comparisonMonths, delivery, growthSlides, terminology, selectedSlides, selectedMetrics, testimonials, onGenerate]);
+  }, [selectedPMC, totalPortfolioUnits, propertyIds, ownershipReportName, reviewPeriod, comparisonMonths, delivery, growthSlides, terminology, selectedSlides, selectedMetrics, testimonials, importedSlides, onGenerate]);
 
   const inputCls = "w-full px-3 py-2 text-sm border border-gray-200 rounded-[4px] focus:outline-none focus:ring-2 focus:ring-[#6A3DB8]/30 focus:border-[#6A3DB8]";
 
@@ -126,6 +130,11 @@ export function ExpansionTab({ pmcNames, pmcLoading, generating, onGenerate }: E
       <Section title="Customer Testimonials">
         <p className="text-xs font-bold text-red-600 mb-2">Please read these tickets and make the call on if they should be included in the deck.</p>
         <TestimonialsEditor testimonials={testimonials} onChange={setTestimonials} pmcName={selectedPMC} />
+      </Section>
+
+      {/* Import Slides (PDF upload, Kevin's ask: not just QBR) */}
+      <Section title="Import Slides">
+        <ImportSlidesPicker onChange={setImportedSlides} />
       </Section>
 
       {/* Toggles */}

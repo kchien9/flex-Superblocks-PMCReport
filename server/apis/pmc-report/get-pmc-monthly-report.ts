@@ -4848,6 +4848,28 @@ export default api({
       // Render each slide in order; slideNum is used as the sequential HTML id
       let slideNum = 0;
 
+      // Imported slides (PDF upload / Google Slides picker), Expansion deck - start/end
+      // anchors only (Kevin's ask: PDF upload across report types, not just QBR). Pushed via
+      // the same pushSlide() every real slide uses, so they flow through the exact same
+      // expSlideIdMap/expSlidesRenumbered renumbering pass below with no special-casing.
+      // image_b64 rides as an opaque placeholder token until AFTER applyTerminology runs (see
+      // the token-swap right before `html` is returned) - see renderImportedSlide's docstring
+      // in slide-renderers.ts for why raw base64 here would be a real bug, not just unneeded
+      // caution.
+      const expImportPlaceholders = new Map<string, string>();
+      const expStartImports: { token: string; sourceTitle: string; deckTitle: string }[] = [];
+      const expEndImports: { token: string; sourceTitle: string; deckTitle: string }[] = [];
+      (imported_slides ?? []).forEach((imp, idx) => {
+        const token = `__FLEX_IMPORTED_SLIDE_X${idx}__`;
+        expImportPlaceholders.set(token, `data:${imp.image_mime || "image/png"};base64,${imp.image_b64 || ""}`);
+        const entry = { token, sourceTitle: imp.source_title ?? "", deckTitle: imp.deck_title ?? "" };
+        if (imp.anchor === "start") expStartImports.push(entry); else expEndImports.push(entry);
+      });
+      for (const imp of expStartImports) {
+        slideNum++;
+        pushSlide(`imported:${imp.token}`, renderImportedSlide(slideNum, imp.token, imp.sourceTitle, imp.deckTitle));
+      }
+
       for (const sid of activeOrder) {
         slideNum++;
         switch (sid) {
@@ -5041,6 +5063,11 @@ export default api({
         }
       }
 
+      for (const imp of expEndImports) {
+        slideNum++;
+        pushSlide(`imported:${imp.token}`, renderImportedSlide(slideNum, imp.token, imp.sourceTitle, imp.deckTitle));
+      }
+
       // ─── Renumber slideIds sequentially by document position ─────────────────
       // `slideNum` increments on every case in the switch above, even when that case's
       // renderer self-gates and returns empty html (e.g. by_state with <=2 distinct states,
@@ -5087,7 +5114,7 @@ export default api({
       const reportYear = yearOnly(latestCompletedMonth);
       const pdfFilename = displayName.replace(/[^a-zA-Z0-9]/g, "_") + "_expansion.pdf";
 
-      const html = applyTerminology(buildDeckHtml({
+      let html = applyTerminology(buildDeckHtml({
         slides: expSlidesRenumbered.join("\n"),
         pmc_name: displayName,
         report_month: reportMonth,
@@ -5096,6 +5123,11 @@ export default api({
         pdf_filename: pdfFilename,
         extra_js: expJs,
       }), terminology);
+      // Swap imported-slide placeholder tokens for their real data: URIs only now, after
+      // terminology substitution has already run (see the imports setup above for why).
+      for (const [token, dataUri] of expImportPlaceholders) {
+        html = html.replaceAll(token, dataUri);
+      }
 
       // --- Speaker notes ---
       let expNotesHtml: string | undefined;

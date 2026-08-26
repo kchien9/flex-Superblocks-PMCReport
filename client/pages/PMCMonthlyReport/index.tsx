@@ -117,6 +117,7 @@ export default function PMCMonthlyReportPage() {
       prospect_slides: [...state.selected_slides],
       presenting_mode: state.delivery === "presenting",
       terminology: state.terminology as "resident" | "household",
+      imported_slides: state.imported_slides,
     };
     lastProspectArgsRef.current = args;
     try {
@@ -144,6 +145,7 @@ export default function PMCMonthlyReportPage() {
       comparison_months: state.comparison_months ?? 1,
       growth_slides: state.growth_slides as "auto" | "include" | "exclude",
       terminology: state.terminology as "resident" | "household",
+      imported_slides: state.imported_slides,
     };
     lastArgsRef.current = args;
     try {

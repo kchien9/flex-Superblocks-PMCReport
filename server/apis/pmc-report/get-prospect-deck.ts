@@ -21,6 +21,7 @@ import {
 } from "./slides-prospect.js";
 import { renderMetrosightEvidence } from "./slide-renderers.js";
 import { renderCustomerExperience, type Testimonial } from "./slide-renderers.js";
+import { renderImportedSlide } from "./slide-renderers.js";
 import { STATE_TO_REGION } from "./peer-matching.js";
 import { geocodeAddressesConcurrent, type GeocodeDiagnostic } from "./market-map-geocode.js";
 import {
@@ -202,6 +203,19 @@ export default api({
     // backend (NewLogoTab.tsx calls GetProspectDeck, not get-pmc-monthly-report.ts's
     // deck_mode:"new_logo" branch, which is a different, unrelated launch-snapshot concept).
     terminology: z.enum(["resident", "household"]).optional(),
+    // Slides pulled in from an uploaded PDF (Import Slides picker, Kevin's ask: PDF upload
+    // across report types, not just QBR). anchor is "start" | "end" only - mirrors Flask's
+    // generate_prospect() and get-pmc-monthly-report.ts's identical scope decision this
+    // session (see renderImportedSlide's docstring in slide-renderers.ts for why "after a
+    // specific slide" is out of scope). Plain optional, not .default([]) - same call-site-
+    // required gotcha as every other optional field in this file's sibling schemas.
+    imported_slides: z.array(z.object({
+      anchor: z.string(),
+      image_b64: z.string(),
+      image_mime: z.string(),
+      source_title: z.string().optional(),
+      deck_title: z.string().optional(),
+    })).optional(),
   }),
 
   output: z.object({
@@ -268,6 +282,7 @@ export default api({
       prospect_slides,
       presenting_mode,
       terminology,
+      imported_slides,
     } = input;
     const prospectSlidesFilter = prospect_slides && prospect_slides.length > 0 ? new Set(prospect_slides) : null;
 
@@ -1215,6 +1230,29 @@ export default api({
     const slides: { key: string; html: string; js: string }[] = [];
     let slideId = 0;
 
+    // Imported slides (PDF upload / Google Slides picker) - start/end anchors only (Kevin's
+    // ask: PDF upload across report types, not just QBR; same start/end-only scope as the
+    // QBR and Expansion routes' identical handling - see renderImportedSlide's docstring in
+    // slide-renderers.ts). image_b64 rides as an opaque placeholder token until AFTER the
+    // per-slide terminology map runs below (termedSlides), then gets swapped for the real
+    // data: URI - skipping that and embedding raw base64 directly would risk termedSlides'
+    // \bword\b-boundary regex corrupting it, same reasoning as every other route's imports
+    // handling this session.
+    const importPlaceholders = new Map<string, string>();
+    const startImports: { token: string; sourceTitle: string; deckTitle: string }[] = [];
+    const endImports: { token: string; sourceTitle: string; deckTitle: string }[] = [];
+    (imported_slides ?? []).forEach((imp, idx) => {
+      const token = `__FLEX_IMPORTED_SLIDE_N${idx}__`;
+      importPlaceholders.set(token, `data:${imp.image_mime || "image/png"};base64,${imp.image_b64 || ""}`);
+      const entry = { token, sourceTitle: imp.source_title ?? "", deckTitle: imp.deck_title ?? "" };
+      if (imp.anchor === "start") startImports.push(entry); else endImports.push(entry);
+    });
+    for (const imp of startImports) {
+      slideId++;
+      const r = renderImportedSlide(slideId, imp.token, imp.sourceTitle, imp.deckTitle);
+      slides.push({ key: `imported:${imp.token}`, html: r.html, js: r.js });
+    }
+
     // Cover
     slideId++;
     const cover = renderProspectCover(slideId, prospect, benchmarks);
@@ -1710,9 +1748,25 @@ export default api({
       }
     }
 
+    // "end"-anchored imports are appended AFTER speaker notes are generated - notes are keyed
+    // off slides.map(s => s.key), and an imported external slide has no real content to build
+    // notes from, same reasoning Flask's rendered_named_slides deliberately excludes them.
+    for (const imp of endImports) {
+      slideId++;
+      const r = renderImportedSlide(slideId, imp.token, imp.sourceTitle, imp.deckTitle);
+      slides.push({ key: `imported:${imp.token}`, html: r.html, js: r.js });
+    }
+
     // Resident/household terminology (Kevin's ask) — applied once here, to every fully-
     // assembled piece of output text, same as get-pmc-monthly-report.ts's deck/notes.
-    const termedSlides = slides.map((s) => ({ ...s, html: applyTerminology(s.html, terminology) }));
+    let termedSlides = slides.map((s) => ({ ...s, html: applyTerminology(s.html, terminology) }));
+    // Swap imported-slide placeholder tokens for their real data: URIs only now, after
+    // terminology substitution has already run (see the imports setup above for why).
+    termedSlides = termedSlides.map((s) => {
+      let html = s.html;
+      for (const [token, dataUri] of importPlaceholders) html = html.replaceAll(token, dataUri);
+      return { ...s, html };
+    });
     const termedNotesHtml = prospectNotesHtml != null ? applyTerminology(prospectNotesHtml, terminology) : prospectNotesHtml;
     const termedEmailDraft = applyTerminology(emailDraft, terminology);
 
