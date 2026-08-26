@@ -1262,8 +1262,8 @@ export function renderAdoptionOpportunities(input: {
   if (nrShown.length > 0) {
     const nrRowsHtml = nrShown.map((c) => {
       const d2c = c.isMarketingOptIn
-        ? '<span style="font-size:8px;font-weight:600;color:#15803d;background:#dcfce7;border:1px solid #bbf7d0;border-radius:3px;padding:1px 5px;margin-left:5px;">Direct Marketing on</span>'
-        : '<span style="font-size:8px;font-weight:600;color:#dc2626;background:#fee2e2;border:1px solid #fecaca;border-radius:3px;padding:1px 5px;margin-left:5px;">Direct Marketing off</span>';
+        ? '<span class="mktg-badge" style="font-size:8px;font-weight:600;color:#15803d;background:#dcfce7;border:1px solid #bbf7d0;border-radius:3px;padding:1px 5px;margin-left:5px;">Direct Marketing on</span>'
+        : '<span class="mktg-badge" style="font-size:8px;font-weight:600;color:#dc2626;background:#fee2e2;border:1px solid #fecaca;border-radius:3px;padding:1px 5px;margin-left:5px;">Direct Marketing off</span>';
       return `
       <tr style="border-bottom:1px solid #f0f0f4;">
         <td style="padding:5px 8px 5px 4px;">
@@ -1398,8 +1398,8 @@ export function renderAdoptionOpportunities(input: {
       ? `<span style="text-decoration:underline dotted #9ca3af;text-underline-offset:2px;cursor:help;" title="${peerEngTitle}">${expEng.toFixed(0)}</span>`
       : "-";
     const d2cBadge = p.isMarketingOptIn
-      ? '<span style="font-size:8px;font-weight:600;color:#15803d;background:#dcfce7;border:1px solid #bbf7d0;border-radius:3px;padding:1px 5px;margin-left:5px;vertical-align:middle;">Direct Marketing on</span>'
-      : '<span style="font-size:8px;font-weight:600;color:#dc2626;background:#fee2e2;border:1px solid #fecaca;border-radius:3px;padding:1px 5px;margin-left:5px;vertical-align:middle;">Direct Marketing off</span>';
+      ? '<span class="mktg-badge" style="font-size:8px;font-weight:600;color:#15803d;background:#dcfce7;border:1px solid #bbf7d0;border-radius:3px;padding:1px 5px;margin-left:5px;vertical-align:middle;">Direct Marketing on</span>'
+      : '<span class="mktg-badge" style="font-size:8px;font-weight:600;color:#dc2626;background:#fee2e2;border:1px solid #fecaca;border-radius:3px;padding:1px 5px;margin-left:5px;vertical-align:middle;">Direct Marketing off</span>';
     // Reconcile contradiction: "improving" badge on a "needs attention" property
     let trendBadge = p.trendFlag ? _trendBadgeHtml(p.trendFlag, p.monthsLive) : "";
     if (trendBadge && p.trendFlag?.direction === "improve") {
@@ -1446,6 +1446,16 @@ export function renderAdoptionOpportunities(input: {
             onclick="document.getElementById('slide-${slideId}').classList.toggle('trend-hidden'); this.classList.toggle('is-active');"
             title="Show/hide the declining/improving badges">Trend badges</button>` : "";
 
+  // Presenter-decided show/hide for the Direct Marketing on/off badges - lets you decide
+  // whether they belong in the story before you're live, without re-generating the report.
+  // Same .presenter-control semantics as trendToggle above: hidden automatically once
+  // actually presenting. Mirrors Flask's _mktg_badge_toggle_html (generator/slides.py).
+  const mktgToggle = `
+    <style>#slide-${slideId}.mktg-hidden .mktg-badge { display: none; }</style>
+    <button class="spark-ctrl-btn presenter-control" style="margin-left:8px;"
+            onclick="document.getElementById('slide-${slideId}').classList.toggle('mktg-hidden'); this.classList.toggle('is-active');"
+            title="Show/hide the Direct Marketing on/off badges - hidden automatically once presenting live">Marketing badges</button>`;
+
   // No summary line here — Flask's real header (generator/slides.py:5593-5601) goes straight
   // from the title to the sections with nothing in between; a "N properties below portfolio
   // avg · M potential new residents" line here had no basis in the reference.
@@ -1453,7 +1463,7 @@ export function renderAdoptionOpportunities(input: {
   <div class="slide" id="slide-${slideId}" style="background:#fff;justify-content:flex-start;">
     <div class="slide-header" style="margin-bottom:8px;">
       <div class="slide-label">PROPERTY DEEP DIVE</div>
-      <div class="slide-title" style="display:flex;align-items:center;">These properties need our attention.${trendToggle}</div>
+      <div class="slide-title" style="display:flex;align-items:center;">These properties need our attention.${mktgToggle}${trendToggle}</div>
     </div>
     <div style="font-size:10px;color:#a09cb0;margin:-4px 0 8px;">Peer comparisons are drawn from a capped sample of the network, not the full population — hover a value for its exact match criteria and peer count.</div>
     ${newRolloutSection}
