@@ -106,7 +106,6 @@ export interface QBRFormState {
   selected_slides: Set<string>;
   selected_metrics: Set<string>;
   testimonials: Testimonial[];
-  whats_new_text: string;
   hidden_kpi_tiles: string[];
   show_adoption_portfolio_avg: boolean;
   show_adoption_peer_median: boolean;
@@ -151,7 +150,6 @@ export function QBRTab({ pmcNames, pmcLoading, generating, onGenerate }: QBRTabP
   const [terminology, setTerminology] = useState("resident");
   const [d2cMarketing, setD2cMarketing] = useState("no");
   const [comparisonMonths, setComparisonMonths] = useState(3);
-  const [whatsNewText, setWhatsNewText] = useState("");
   const [testimonials, setTestimonials] = useState<Testimonial[]>([]);
   const [selectedSlides, setSelectedSlides] = useState<Set<string>>(() => defaultSlideSet(QBR_SLIDES));
   // Fixed — the picker for this was removed (server never reads it; the Peer Benchmarks slide
@@ -249,7 +247,6 @@ export function QBRTab({ pmcNames, pmcLoading, generating, onGenerate }: QBRTabP
       selected_slides: selectedSlides,
       selected_metrics: selectedMetrics,
       testimonials,
-      whats_new_text: whatsNewText,
       hidden_kpi_tiles: Array.from(hiddenKpiTiles),
       show_adoption_portfolio_avg: showAdoptionPortfolioAvg,
       show_adoption_peer_median: showAdoptionPeerMedian,
@@ -258,7 +255,7 @@ export function QBRTab({ pmcNames, pmcLoading, generating, onGenerate }: QBRTabP
       show_engagement_peer_median: showEngagementPeerMedian,
       imported_slides: importedSlides,
     });
-  }, [canGenerate, reportBasis, selectedPMC, secondPMC, reportName, propertyIds, ownershipReportName, totalCompanyUnits, partnerSinceOverride, reviewPeriod, delivery, terminology, d2cMarketing, comparisonMonths, selectedSlides, selectedMetrics, testimonials, whatsNewText, hiddenKpiTiles, showAdoptionPortfolioAvg, showAdoptionPeerMedian, showEngagementObserved, showEngagementPortfolioAvg, showEngagementPeerMedian, importedSlides, onGenerate]);
+  }, [canGenerate, reportBasis, selectedPMC, secondPMC, reportName, propertyIds, ownershipReportName, totalCompanyUnits, partnerSinceOverride, reviewPeriod, delivery, terminology, d2cMarketing, comparisonMonths, selectedSlides, selectedMetrics, testimonials, hiddenKpiTiles, showAdoptionPortfolioAvg, showAdoptionPeerMedian, showEngagementObserved, showEngagementPortfolioAvg, showEngagementPeerMedian, importedSlides, onGenerate]);
 
   const handleBasisChange = useCallback((v: string) => {
     setReportBasis(v as "pmc" | "ownership");
@@ -449,16 +446,11 @@ export function QBRTab({ pmcNames, pmcLoading, generating, onGenerate }: QBRTabP
         />
       </StaticSection>
 
-      {/* What's New at Flex */}
-      <StaticSection title="What's New at Flex">
-        <p className="text-[11px] text-gray-400 mb-2">Use this box to share product updates or what's new at Flex.</p>
-        <textarea value={whatsNewText} onChange={(e) => setWhatsNewText(e.target.value)} placeholder="Rough bullets — AI polishes into partner-facing copy" rows={3}
-          className="w-full px-3 py-2 text-sm border border-gray-200 rounded-[4px] focus:outline-none focus:ring-2 focus:ring-[#6A3DB8]/30 focus:border-[#6A3DB8] resize-y" />
-        <label className="flex items-center gap-2 mt-2 px-3 py-2 text-xs text-[#6A3DB8] border border-[#6A3DB8]/30 rounded-[4px] cursor-pointer hover:bg-[#EEE2FC] transition-colors w-fit">
-          Attach image
-          <input type="file" accept="image/*" className="hidden" />
-        </label>
-      </StaticSection>
+      {/* "What's New at Flex" removed (Kevin's call) - PDF upload (below) covers the same need
+          as a real custom slide instead of AI-polished bullets from rough notes. Was already
+          fully dead here anyway: whats_new_text updated local state but was never actually
+          read by index.tsx's handleQBRGenerate or present in the server's input schema at all -
+          same silent-no-op bug class as the D2C toggle fixed this session. */}
 
       {/* Import Slides (PDF upload) */}
       <StaticSection title="Import Slides">
