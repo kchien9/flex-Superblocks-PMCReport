@@ -2703,7 +2703,7 @@ export function renderResidentsUnitsCombo(input: ResidentsUnitsInput): SlideResu
       <span><span style="display:inline-block;width:14px;height:3px;background:#2563EB;border-radius:2px;margin-right:5px;vertical-align:middle;"></span>Units in Network</span>
       <span><span style="display:inline-block;width:14px;height:3px;background:#1a9e6a;border-radius:2px;margin-right:5px;vertical-align:middle;"></span>Rent Collected</span>
     </div>
-    <div class="chart-wrap"><canvas id="chart${slideId}"></canvas></div>
+    <div class="chart-wrap" style="flex:1;min-height:0;"><canvas id="chart${slideId}"></canvas></div>
   </div>`;
 
   const js = `
