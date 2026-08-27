@@ -1928,6 +1928,70 @@ export default api({
     }
     const cutoffStr = cutoff.toISOString().slice(0, 10);
 
+    // Peer-candidate profile for GEO-TIER matching - fired here, immediately, rather than at
+    // its point of use (~line 3700, after two entire sequential query batches) because its
+    // inputs (pmc_name/second_pmc/cutoffStr) are already available and it depends on nothing
+    // else this function computes. Awaited later at its original call site - same "fire early,
+    // await late" pattern as networkPoolPromise/rollingPromise/zendeskPromise below. Performance
+    // fix (Kevin's catch: GetPMCMonthlyReport taking 60+s vs Flask's ~20s) - this alone removes
+    // one full sequential stage (an unbatched, standalone await) from the critical path by
+    // overlapping it with the rows query and the two query batches that come after it instead.
+    //
+    // A SEPARATE, dedicated query at (PMC, STATE) grain, deliberately NOT built from
+    // networkPoolProps. networkPoolProps is capped (top-20-properties-per-PMC, 3000 rows total)
+    // to survive Superblocks' 5MB step-output limit - fine for the property-level things it's
+    // built for (income lookups, T12 engagement), but fatal for geo-matching specifically: if a
+    // candidate PMC's smaller in-state properties get sampled out in favor of its bigger
+    // properties elsewhere, it looks state-absent here when it isn't, and a real multi-state
+    // overlap match (which Flask found for this exact PMC — "true 1:1 match in NC, SC" — while
+    // this port fell through to the region tier instead) never gets a chance to match. Matches
+    // Flask's own pull_rolling_peer_median Step A (generator/data.py:4088-4104) exactly:
+    // aggregated to (PMC_NAME, PROPERTY_STATE) grain in SQL, not fetched as raw property rows -
+    // a PMC operates in a handful of states, not thousands of properties, so this is naturally
+    // tiny and needs no row cap at all.
+    const PeerCandidateProfileSchema = z.object({
+      PMC_NAME: z.string(),
+      PROPERTY_STATE: z.string(),
+      UNITS: z.coerce.number().nullable(),
+      RENT: z.coerce.number().nullable(),
+      BILLS: z.coerce.number().nullable(),
+    });
+    // Excluding the subject PMC(s) from the candidate pool HERE, before resolveGeoTier ever
+    // runs, is deliberate and is a KNOWN, CONFIRMED deviation from Flask - do not "fix" this to
+    // match Flask's behavior. Flask's own candidate pool (pmc_state_totals in
+    // _run_benchmark_query, generator/data.py:1530-1587) never excludes the subject before
+    // calling _resolve_geo_tier - the subject trivially matches its own true-1:1-match tier
+    // (100% concentration in its own states, by definition), so it lands in Flask's
+    // overlap_names/geo_names list as one of the "matched" candidates. Only the FINAL SQL query
+    // that computes peer percentiles adds `PMC_NAME != subject` (generator/data.py:1740) to
+    // exclude it - which means Flask's reported peer_count always undercounts the true number
+    // of matching OTHER PMCs by exactly one. Confirmed live for Wellington: Flask showed "7
+    // comparable PMCs", this pool correctly finds 8 real distinct other PMCs matching the same
+    // "true 1:1 match in NC, SC" criteria - the missing 8th is Wellington counting itself, then
+    // subtracting itself back out. Kevin's call (2026-08-13): keep this side correct rather than
+    // reproducing Flask's undercount; Flask should get the equivalent fix (exclude subject
+    // before the candidate pool is built) instead.
+    const peerCandidateSubjectPmcs = second_pmc ? [pmc_name, second_pmc] : [pmc_name];
+    const peerCandidateRowsPromise = ctx.integrations.snowflake_sso.query(
+      `SELECT PMC_NAME, PROPERTY_STATE,
+              SUM(PROPERTY_UNIT_COUNT) AS UNITS,
+              SUM(RENT_PAID_AMOUNT) AS RENT,
+              SUM(BILLS_PAID_COUNT) AS BILLS
+       FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS
+       WHERE IS_INTEGRATED_TOTAL = TRUE
+         AND ROLLOUT_MONTH IS NOT NULL
+         AND PROPERTY_STATE IS NOT NULL AND PROPERTY_STATE != ''
+         AND PMC_NAME NOT IN (${peerCandidateSubjectPmcs.map(() => "?").join(", ")})
+         AND BP_MONTH = (
+            SELECT MAX(BP_MONTH) FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS
+            WHERE BP_MONTH < ? AND IS_INTEGRATED_TOTAL = TRUE
+         )
+       GROUP BY PMC_NAME, PROPERTY_STATE`,
+      PeerCandidateProfileSchema,
+      [...peerCandidateSubjectPmcs, cutoffStr],
+      { label: "Peer-candidate geo profile for tier matching (PMC x state grain, unsampled)" }
+    ).catch(() => [] as z.infer<typeof PeerCandidateProfileSchema>[]);
+
     const rows = await ctx.integrations.snowflake_sso.query(
       `SELECT
           TO_VARCHAR(BP_MONTH, 'YYYY-MM-DD') AS BP_MONTH,
@@ -3702,60 +3766,12 @@ export default api({
     // real ladder tier-for-tier, in the same order, with the same thresholds.
     let lockedPeers: string[] = [];
     let lockedPeersCriteria = "comparable PMCs";
-    // Peer-candidate profile for GEO-TIER matching — a SEPARATE, dedicated query at (PMC, STATE)
-    // grain, deliberately NOT built from networkPoolProps. networkPoolProps is capped (top-20-
-    // properties-per-PMC, 3000 rows total) to survive Superblocks' 5MB step-output limit — fine
-    // for the property-level things it's built for (income lookups, T12 engagement), but fatal
-    // for geo-matching specifically: if a candidate PMC's smaller in-state properties get sampled
-    // out in favor of its bigger properties elsewhere, it looks state-absent here when it isn't,
-    // and a real multi-state overlap match (which Flask found for this exact PMC — "true 1:1
-    // match in NC, SC" — while this port fell through to the region tier instead) never gets a
-    // chance to match. Matches Flask's own pull_rolling_peer_median Step A (generator/data.py:
-    // 4088-4104) exactly: aggregated to (PMC_NAME, PROPERTY_STATE) grain in SQL, not fetched as
-    // raw property rows — a PMC operates in a handful of states, not thousands of properties, so
-    // this is naturally tiny and needs no row cap at all.
-    const PeerCandidateProfileSchema = z.object({
-      PMC_NAME: z.string(),
-      PROPERTY_STATE: z.string(),
-      UNITS: z.coerce.number().nullable(),
-      RENT: z.coerce.number().nullable(),
-      BILLS: z.coerce.number().nullable(),
-    });
-    // Excluding the subject PMC(s) from the candidate pool HERE, before resolveGeoTier ever
-    // runs, is deliberate and is a KNOWN, CONFIRMED deviation from Flask - do not "fix" this to
-    // match Flask's behavior. Flask's own candidate pool (pmc_state_totals in
-    // _run_benchmark_query, generator/data.py:1530-1587) never excludes the subject before
-    // calling _resolve_geo_tier - the subject trivially matches its own true-1:1-match tier
-    // (100% concentration in its own states, by definition), so it lands in Flask's
-    // overlap_names/geo_names list as one of the "matched" candidates. Only the FINAL SQL query
-    // that computes peer percentiles adds `PMC_NAME != subject` (generator/data.py:1740) to
-    // exclude it - which means Flask's reported peer_count always undercounts the true number
-    // of matching OTHER PMCs by exactly one. Confirmed live for Wellington: Flask showed "7
-    // comparable PMCs", this pool correctly finds 8 real distinct other PMCs matching the same
-    // "true 1:1 match in NC, SC" criteria - the missing 8th is Wellington counting itself, then
-    // subtracting itself back out. Kevin's call (2026-08-13): keep this side correct rather than
-    // reproducing Flask's undercount; Flask should get the equivalent fix (exclude subject
-    // before the candidate pool is built) instead.
-    const peerCandidateSubjectPmcs = second_pmc ? [pmc_name, second_pmc] : [pmc_name];
-    const peerCandidateRows = await ctx.integrations.snowflake_sso.query(
-      `SELECT PMC_NAME, PROPERTY_STATE,
-              SUM(PROPERTY_UNIT_COUNT) AS UNITS,
-              SUM(RENT_PAID_AMOUNT) AS RENT,
-              SUM(BILLS_PAID_COUNT) AS BILLS
-       FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS
-       WHERE IS_INTEGRATED_TOTAL = TRUE
-         AND ROLLOUT_MONTH IS NOT NULL
-         AND PROPERTY_STATE IS NOT NULL AND PROPERTY_STATE != ''
-         AND PMC_NAME NOT IN (${peerCandidateSubjectPmcs.map(() => "?").join(", ")})
-         AND BP_MONTH = (
-            SELECT MAX(BP_MONTH) FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS
-            WHERE BP_MONTH < ? AND IS_INTEGRATED_TOTAL = TRUE
-         )
-       GROUP BY PMC_NAME, PROPERTY_STATE`,
-      PeerCandidateProfileSchema,
-      [...peerCandidateSubjectPmcs, cutoffStr],
-      { label: "Peer-candidate geo profile for tier matching (PMC x state grain, unsampled)" }
-    ).catch(() => [] as z.infer<typeof PeerCandidateProfileSchema>[]);
+    // Peer-candidate profile for GEO-TIER matching - query fired at the very top of this
+    // function (right after cutoffStr), not here, so it overlaps with the rows query and the
+    // two query batches in between instead of adding its own sequential stage. See that
+    // definition for the full "why this shape" explanation (geo-matching grain, the deliberate
+    // Flask deviation on excluding the subject PMC, etc.) - unchanged, just relocated.
+    const peerCandidateRows = await peerCandidateRowsPromise;
 
     // For Expansion decks, peer-match against the FULL TARGET portfolio size instead of the
     // current enrolled size when the target is larger — every slide in the deck must agree on
