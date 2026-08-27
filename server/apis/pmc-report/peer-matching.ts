@@ -72,6 +72,43 @@ function median(values: number[]): number {
   return sorted.length % 2 !== 0 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
 }
 
+// Perf fix (Kevin's catch: GetPMCMonthlyReport's slowest non-query step, ~12.7s of pure
+// synchronous "Code" time per Superblocks' own per-step trace): this function is called once
+// PER PROPERTY, PER METRIC (NAR and engagement separately) - hundreds of calls in a single
+// report. Every call re-filtered the entire pool (thousands of rows) down to "same age bucket,
+// PMC excluded" from scratch, even though `pool` and `excludePmcNames` are the exact same
+// values on every single call within one report (only `monthsLive`/ageBucket varies, and there
+// are only 7 possible age buckets total - see propertyAgeBucket above). That's redundant work
+// on a scale of hundreds-of-calls-doing-the-identical-filter, not a few wasted cycles.
+//
+// WeakMap keyed on the `pool` array reference itself, not a module-level cache - a fresh
+// networkPoolProps array is created per report generation (get-pmc-monthly-report.ts), so each
+// report's cache entries become garbage-collectable as soon as that array does, with zero risk
+// of one report's cached candidates leaking into another's. The inner Map still keys on
+// excludePmcNames (not just ageBucket) in case a future caller ever passes a different
+// exclusion set against the same pool reference - correctness over assuming today's single
+// call pattern holds forever.
+const _ageBucketCandidatesCache = new WeakMap<NetworkPoolProperty[], Map<string, NetworkPoolProperty[]>>();
+function _candidatesForAgeBucket(
+  pool: NetworkPoolProperty[],
+  ageBucket: string,
+  excludePmcNames: string[],
+): NetworkPoolProperty[] {
+  let byKey = _ageBucketCandidatesCache.get(pool);
+  if (!byKey) {
+    byKey = new Map();
+    _ageBucketCandidatesCache.set(pool, byKey);
+  }
+  const key = ageBucket + "|" + excludePmcNames.map((n) => n.toUpperCase()).sort().join(",");
+  let candidates = byKey.get(key);
+  if (!candidates) {
+    const excludeUpperSet = new Set(excludePmcNames.map((n) => n.toUpperCase()));
+    candidates = pool.filter((p) => p.ageBucket === ageBucket && !excludeUpperSet.has(p.pmcName.toUpperCase()));
+    byKey.set(key, candidates);
+  }
+  return candidates;
+}
+
 /**
  * Resolve per-property peer metric (NAR or engagement) using tiered matching.
  * metricFn extracts the value from a pool property (e.g. p.nar or p.t12EngPer100).
@@ -90,12 +127,11 @@ function resolvePropertyPeerMetric(
   if (pool.length === 0) return null;
 
   const ageBucket = propertyAgeBucket(monthsLive);
-  const excludeUpperSet = new Set(excludePmcNames.map(n => n.toUpperCase()));
 
-  // Pre-filter to same age bucket, excluding own PMC(s)
-  const candidates = pool.filter(
-    (p) => p.ageBucket === ageBucket && !excludeUpperSet.has(p.pmcName.toUpperCase()),
-  );
+  // Pre-filter to same age bucket, excluding own PMC(s) - memoized per (pool, ageBucket,
+  // excludePmcNames), since this exact filter is otherwise recomputed identically on every
+  // one of the hundreds of calls this function gets per report (see _candidatesForAgeBucket).
+  const candidates = _candidatesForAgeBucket(pool, ageBucket, excludePmcNames);
   if (candidates.length === 0) return null;
 
   const region = STATE_TO_REGION[state];
