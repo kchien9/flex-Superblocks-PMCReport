@@ -1928,6 +1928,109 @@ export default api({
     }
     const cutoffStr = cutoff.toISOString().slice(0, 10);
 
+    // Perf fix (Kevin's catch: the 3 Zendesk queries below - testimonials/CSAT/response-time -
+    // showed up as ~8.6s/7.6s/9.5s in Superblocks' own trace after the peer-matching and
+    // peerCandidateRows fixes landed). Hoisted from their old position (~line 3230, right after
+    // `await Promise.all([networkPoolPromise, propertyPoolPromise, ...])`) to here. A comment
+    // sitting right next to networkPoolPromise below already claimed these followed the same
+    // "fire early, await late" pattern - they didn't; they were only ever DEFINED after that
+    // whole batch had already resolved, so they ran fully serial after it instead of overlapping
+    // it. Both only depend on `pmc_name`/`testimonials`, both already-destructured function
+    // params available from the first line of run() - nothing downstream of them needs to run
+    // first. Moving the definition (not the await - both are still awaited at their original
+    // late call sites, just before the slides that need them) costs nothing and overlaps this
+    // ~9.5s (the slower of the two) with the network/property-pool batch's own ~14s instead of
+    // adding to it.
+    const ZendeskTestimonialSchema = z.object({
+      COMMENT: z.string(),
+      RESIDENT_NAME: z.string().nullable(),
+      PROPERTY_NAME: z.string().nullable(),
+    });
+    const zendeskPromise = testimonials.length > 0
+      ? null // User provided testimonials, no need to query
+      : ctx.integrations.snowflake_sso.query(
+          `WITH latest_prop AS (
+              SELECT CUSTOMER_PUBLIC_ID, PROPERTY_NAME
+              FROM PRODUCTION.ANALYTICS.CUSTOMER_BP_MONTH_OUTCOMES
+              WHERE UPPER(PMC_NAME) = UPPER(?)
+              QUALIFY ROW_NUMBER() OVER (PARTITION BY CUSTOMER_PUBLIC_ID ORDER BY BP_MONTH DESC) = 1
+           )
+           SELECT
+              sr.COMMENT,
+              u.NAME AS RESIDENT_NAME,
+              o.PROPERTY_NAME
+           FROM EXTERNAL_DATA.STITCH_ZENDESK_NEW.SATISFACTION_RATINGS sr
+           JOIN EXTERNAL_DATA.STITCH_ZENDESK_NEW.USERS u
+              ON u.ID = sr.REQUESTER_ID
+           JOIN latest_prop o
+              ON o.CUSTOMER_PUBLIC_ID = u.USER_FIELDS:customer_id::VARCHAR
+           WHERE sr.SCORE = 'good'
+             AND sr.COMMENT IS NOT NULL
+             AND LENGTH(TRIM(sr.COMMENT)) > 50
+           ORDER BY sr.CREATED_AT DESC
+           LIMIT 30`,
+          ZendeskTestimonialSchema,
+          [pmc_name],
+          { label: "Pull Zendesk testimonials for PMC" }
+        ).catch(() => [] as z.infer<typeof ZendeskTestimonialSchema>[]);
+
+    const CsatMonthSchema = z.object({
+      MONTH: z.string(),
+      N_TOTAL: z.number(),
+      N_GOOD: z.number(),
+    });
+    const ResponseMonthSchema = z.object({
+      MONTH: z.string(),
+      N_TICKETS: z.number(),
+      AVG_REPLY_MIN: z.number().nullable(),
+    });
+    const residentTrendPromise = Promise.all([
+      ctx.integrations.snowflake_sso.query(
+        `WITH latest_prop AS (
+            SELECT CUSTOMER_PUBLIC_ID, PROPERTY_NAME
+            FROM PRODUCTION.ANALYTICS.CUSTOMER_BP_MONTH_OUTCOMES
+            WHERE UPPER(PMC_NAME) = UPPER(?)
+            QUALIFY ROW_NUMBER() OVER (PARTITION BY CUSTOMER_PUBLIC_ID ORDER BY BP_MONTH DESC) = 1
+         )
+         SELECT
+            TO_VARCHAR(DATE_TRUNC('month', sr.CREATED_AT), 'YYYY-MM-DD') AS MONTH,
+            COUNT(*) AS N_TOTAL,
+            SUM(CASE WHEN sr.SCORE = 'good' THEN 1 ELSE 0 END) AS N_GOOD
+         FROM EXTERNAL_DATA.STITCH_ZENDESK_NEW.SATISFACTION_RATINGS sr
+         JOIN EXTERNAL_DATA.STITCH_ZENDESK_NEW.USERS u ON u.ID = sr.REQUESTER_ID
+         JOIN latest_prop o ON o.CUSTOMER_PUBLIC_ID = u.USER_FIELDS:customer_id::VARCHAR
+         WHERE sr.SCORE IN ('good', 'bad')
+           AND sr.CREATED_AT >= DATEADD(month, -12, CURRENT_DATE())
+           AND sr.CREATED_AT < DATE_TRUNC('month', CURRENT_DATE())
+         GROUP BY 1 ORDER BY 1`,
+        CsatMonthSchema,
+        [pmc_name],
+        { label: "Pull monthly CSAT trend from Zendesk" }
+      ).catch(() => [] as z.infer<typeof CsatMonthSchema>[]),
+      ctx.integrations.snowflake_sso.query(
+        `WITH latest_prop AS (
+            SELECT CUSTOMER_PUBLIC_ID, PROPERTY_NAME
+            FROM PRODUCTION.ANALYTICS.CUSTOMER_BP_MONTH_OUTCOMES
+            WHERE UPPER(PMC_NAME) = UPPER(?)
+            QUALIFY ROW_NUMBER() OVER (PARTITION BY CUSTOMER_PUBLIC_ID ORDER BY BP_MONTH DESC) = 1
+         )
+         SELECT
+            TO_VARCHAR(DATE_TRUNC('month', t.CREATED_AT), 'YYYY-MM-DD') AS MONTH,
+            COUNT(*) AS N_TICKETS,
+            AVG(tm.REPLY_TIME_IN_MINUTES:business::FLOAT) AS AVG_REPLY_MIN
+         FROM EXTERNAL_DATA.STITCH_ZENDESK_NEW.TICKET_METRICS tm
+         JOIN EXTERNAL_DATA.STITCH_ZENDESK_NEW.TICKETS t ON t.ID = tm.TICKET_ID
+         JOIN EXTERNAL_DATA.STITCH_ZENDESK_NEW.USERS u ON u.ID = t.REQUESTER_ID
+         JOIN latest_prop o ON o.CUSTOMER_PUBLIC_ID = u.USER_FIELDS:customer_id::VARCHAR
+         WHERE t.CREATED_AT >= DATEADD(month, -12, CURRENT_DATE())
+           AND t.CREATED_AT < DATE_TRUNC('month', CURRENT_DATE())
+         GROUP BY 1 ORDER BY 1`,
+        ResponseMonthSchema,
+        [pmc_name],
+        { label: "Pull monthly response-time trend from Zendesk" }
+      ).catch(() => [] as z.infer<typeof ResponseMonthSchema>[]),
+    ]).catch(() => [[], []] as [z.infer<typeof CsatMonthSchema>[], z.infer<typeof ResponseMonthSchema>[]]);
+
     // Peer-candidate profile for GEO-TIER matching - fired here, immediately, rather than at
     // its point of use (~line 3700, after two entire sequential query batches) because its
     // inputs (pmc_name/second_pmc/cutoffStr) are already available and it depends on nothing
@@ -3228,97 +3331,10 @@ export default api({
     }
 
     // --- Testimonials (user-selected from frontend, or auto-pulled from Zendesk) ---
-    // Fire Zendesk query as a non-blocking promise (we await it later, just before slides need it)
-    const ZendeskTestimonialSchema = z.object({
-      COMMENT: z.string(),
-      RESIDENT_NAME: z.string().nullable(),
-      PROPERTY_NAME: z.string().nullable(),
-    });
-    const zendeskPromise = testimonials.length > 0
-      ? null // User provided testimonials, no need to query
-      : ctx.integrations.snowflake_sso.query(
-          `WITH latest_prop AS (
-              SELECT CUSTOMER_PUBLIC_ID, PROPERTY_NAME
-              FROM PRODUCTION.ANALYTICS.CUSTOMER_BP_MONTH_OUTCOMES
-              WHERE UPPER(PMC_NAME) = UPPER(?)
-              QUALIFY ROW_NUMBER() OVER (PARTITION BY CUSTOMER_PUBLIC_ID ORDER BY BP_MONTH DESC) = 1
-           )
-           SELECT
-              sr.COMMENT,
-              u.NAME AS RESIDENT_NAME,
-              o.PROPERTY_NAME
-           FROM EXTERNAL_DATA.STITCH_ZENDESK_NEW.SATISFACTION_RATINGS sr
-           JOIN EXTERNAL_DATA.STITCH_ZENDESK_NEW.USERS u
-              ON u.ID = sr.REQUESTER_ID
-           JOIN latest_prop o
-              ON o.CUSTOMER_PUBLIC_ID = u.USER_FIELDS:customer_id::VARCHAR
-           WHERE sr.SCORE = 'good'
-             AND sr.COMMENT IS NOT NULL
-             AND LENGTH(TRIM(sr.COMMENT)) > 50
-           ORDER BY sr.CREATED_AT DESC
-           LIMIT 30`,
-          ZendeskTestimonialSchema,
-          [pmc_name],
-          { label: "Pull Zendesk testimonials for PMC" }
-        ).catch(() => [] as z.infer<typeof ZendeskTestimonialSchema>[]);
-
-    // --- Resident Experience Trend (CSAT + Response Time from Zendesk) ---
-    const CsatMonthSchema = z.object({
-      MONTH: z.string(),
-      N_TOTAL: z.number(),
-      N_GOOD: z.number(),
-    });
-    const ResponseMonthSchema = z.object({
-      MONTH: z.string(),
-      N_TICKETS: z.number(),
-      AVG_REPLY_MIN: z.number().nullable(),
-    });
-    const residentTrendPromise = Promise.all([
-      ctx.integrations.snowflake_sso.query(
-        `WITH latest_prop AS (
-            SELECT CUSTOMER_PUBLIC_ID, PROPERTY_NAME
-            FROM PRODUCTION.ANALYTICS.CUSTOMER_BP_MONTH_OUTCOMES
-            WHERE UPPER(PMC_NAME) = UPPER(?)
-            QUALIFY ROW_NUMBER() OVER (PARTITION BY CUSTOMER_PUBLIC_ID ORDER BY BP_MONTH DESC) = 1
-         )
-         SELECT
-            TO_VARCHAR(DATE_TRUNC('month', sr.CREATED_AT), 'YYYY-MM-DD') AS MONTH,
-            COUNT(*) AS N_TOTAL,
-            SUM(CASE WHEN sr.SCORE = 'good' THEN 1 ELSE 0 END) AS N_GOOD
-         FROM EXTERNAL_DATA.STITCH_ZENDESK_NEW.SATISFACTION_RATINGS sr
-         JOIN EXTERNAL_DATA.STITCH_ZENDESK_NEW.USERS u ON u.ID = sr.REQUESTER_ID
-         JOIN latest_prop o ON o.CUSTOMER_PUBLIC_ID = u.USER_FIELDS:customer_id::VARCHAR
-         WHERE sr.SCORE IN ('good', 'bad')
-           AND sr.CREATED_AT >= DATEADD(month, -12, CURRENT_DATE())
-           AND sr.CREATED_AT < DATE_TRUNC('month', CURRENT_DATE())
-         GROUP BY 1 ORDER BY 1`,
-        CsatMonthSchema,
-        [pmc_name],
-        { label: "Pull monthly CSAT trend from Zendesk" }
-      ).catch(() => [] as z.infer<typeof CsatMonthSchema>[]),
-      ctx.integrations.snowflake_sso.query(
-        `WITH latest_prop AS (
-            SELECT CUSTOMER_PUBLIC_ID, PROPERTY_NAME
-            FROM PRODUCTION.ANALYTICS.CUSTOMER_BP_MONTH_OUTCOMES
-            WHERE UPPER(PMC_NAME) = UPPER(?)
-            QUALIFY ROW_NUMBER() OVER (PARTITION BY CUSTOMER_PUBLIC_ID ORDER BY BP_MONTH DESC) = 1
-         )
-         SELECT
-            TO_VARCHAR(DATE_TRUNC('month', t.CREATED_AT), 'YYYY-MM-DD') AS MONTH,
-            COUNT(*) AS N_TICKETS,
-            AVG(tm.REPLY_TIME_IN_MINUTES:business::FLOAT) AS AVG_REPLY_MIN
-         FROM EXTERNAL_DATA.STITCH_ZENDESK_NEW.TICKET_METRICS tm
-         JOIN EXTERNAL_DATA.STITCH_ZENDESK_NEW.TICKETS t ON t.ID = tm.TICKET_ID
-         JOIN EXTERNAL_DATA.STITCH_ZENDESK_NEW.USERS u ON u.ID = t.REQUESTER_ID
-         JOIN latest_prop o ON o.CUSTOMER_PUBLIC_ID = u.USER_FIELDS:customer_id::VARCHAR
-         WHERE t.CREATED_AT >= DATEADD(month, -12, CURRENT_DATE())
-           AND t.CREATED_AT < DATE_TRUNC('month', CURRENT_DATE())
-         GROUP BY 1 ORDER BY 1`,
-        ResponseMonthSchema,
-        [pmc_name],
-        { label: "Pull monthly response-time trend from Zendesk" }
-      ).catch(() => [] as z.infer<typeof ResponseMonthSchema>[]),
-    ]).catch(() => [[], []] as [z.infer<typeof CsatMonthSchema>[], z.infer<typeof ResponseMonthSchema>[]]);
+    // zendeskPromise/residentTrendPromise are defined up near cutoffStr now, not here - see the
+    // perf-fix comment there (Kevin's catch: they were only firing after the network/property
+    // pool batch resolved instead of overlapping it). Still awaited below, just before the
+    // slides that need them - only the definition moved, not the await site.
 
     // --- Transform ---
 
