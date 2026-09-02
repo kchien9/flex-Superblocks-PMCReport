@@ -234,8 +234,21 @@ window['initSlide${slideId}'] = (function() {
     if (typeof L === 'undefined') return;
     done = true;
     const map = L.map('map-${slideId}', {center: [39.8, -98.6], zoom: 4});
-    L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png', {
-      attribution: '&copy; OpenStreetMap &copy; CARTO'
+    // Switched from CARTO's Voyager raster tiles (Kevin's catch - "why is the map showing
+    // 'API KEY REQUIRED'"). CARTO locked basemaps.cartocdn.com behind a mandatory API key at
+    // some point; that watermark text is literally CARTO's own tile response when unauthenticated,
+    // burned into the image itself - confirmed by inspecting this exact tile URL directly, not
+    // guessed from "maybe it's an old export." Esri's Light Gray Canvas is the free, no-key,
+    // no-signup replacement most commonly used as a CartoDB Positron/Voyager substitute - two
+    // stacked layers (base + reference for roads/labels), same as Esri's own documented pattern.
+    // No account, no quota to watch, no risk of this specific failure mode recurring.
+    L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Base/MapServer/tile/{z}/{y}/{x}', {
+      attribution: 'Tiles &copy; Esri &mdash; Esri, DeLorme, NAVTEQ',
+      maxZoom: 16
+    }).addTo(map);
+    L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Reference/MapServer/tile/{z}/{y}/{x}', {
+      attribution: 'Tiles &copy; Esri &mdash; Esri, DeLorme, NAVTEQ',
+      maxZoom: 16
     }).addTo(map);
     function isFinitePin(p) { return Number.isFinite(p.lat) && Number.isFinite(p.lon); }
     const networkPins = (${networkPinsJson}).filter(isFinitePin);
