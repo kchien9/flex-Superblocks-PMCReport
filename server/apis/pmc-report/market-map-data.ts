@@ -102,6 +102,11 @@ export interface ProspectPin {
   /** True when matchProspectUsage found a confident match for this exact property in Flex's
    * own network - lets the map renderer draw it with the gold usage ring (Kevin's ask). */
   has_usage?: boolean;
+  /** True when matchProspectOonUsage found real OON self-serve usage (Flex Anywhere/Embed/P2P -
+   * residents paying with no PMC integration) at this exact property. Kept separate from
+   * has_usage - Kevin's call: this is a different, arguably stronger sales story ("residents
+   * already found Flex on their own") and should read as its own callout, not be folded in. */
+  has_oon_usage?: boolean;
 }
 
 export interface MarketGuarantee {
@@ -1303,4 +1308,115 @@ export function sumMatchedUsageForMarket(
     ytd_rent += m.ytd_rent;
   });
   return { matched_count, residents, ytd_rent };
+}
+
+// ─── 12. Match prospect properties against OON self-serve usage (Flex Anywhere/Embed/P2P) ──
+
+const OonCandidateRow = z.object({
+  PROPERTY_PUBLIC_ID: z.string(),
+  PROPERTY_ZIP: z.string().nullable(),
+  PROPERTY_ADDRESS_LINE1: z.string().nullable(),
+  RESIDENTS: z.coerce.number(),
+  YTD_RENT: z.coerce.number(),
+});
+
+/**
+ * Match prospect properties against Flex's OON self-serve usage - residents who signed up for
+ * Flex Anywhere/Embed/P2P on their own, with no PMC integration at all (Kevin's ask, and a
+ * correction to the first version of this feature which only checked in-network usage).
+ *
+ * Deliberately does NOT filter by any specific placeholder PMC_ID (2476/1941/3175 etc.) -
+ * confirmed live there are multiple such internal buckets (Embed, Flex Anywhere, P2P each have
+ * their own), and a hardcoded bucket-ID list is exactly the kind of thing that goes stale
+ * silently. CUSTOMER_BP_MONTH_OUTCOMES.NETWORK_TYPE = 'OON' is the durable, resident-level
+ * signal that covers all of them uniformly - confirmed live it takes exactly two values
+ * (IN/OON) network-wide, so this isn't guessing at an enum.
+ *
+ * Same address+zip strictness as matchProspectUsage (house number + core street-name token,
+ * see streetCore above) - geo isn't required here since OON placeholder property records
+ * aren't reliably geocoded into PROPERTY_CENSUS_DISTRICTS the way real onboarded network
+ * properties are, so requiring it would silently drop otherwise-good matches rather than add
+ * real protection. Candidates are pre-filtered to properties with real calendar-YTD dollars
+ * paid (not just a resident record that never actually paid - see Hillcrest I in Kevin's own
+ * test case: a real OON resident record existed with HAS_BILL_PAID=false every single month),
+ * so this never surfaces a property with signup-but-no-usage as if it were real activity.
+ */
+export async function matchProspectOonUsage(
+  properties: GeocodedProperty[],
+  bpMonth: string,
+  yearStart: string,
+  sfClient: SnowflakeClient
+): Promise<ProspectUsageMatch[]> {
+  const NO_MATCH: ProspectUsageMatch = { matched: false, residents: 0, ytd_rent: 0 };
+
+  const zips = [...new Set(
+    properties.map((p) => normalizeZip5(p.zip || p.csvZip || "")).filter((z) => z.length === 5)
+  )];
+  if (zips.length === 0) return properties.map(() => NO_MATCH);
+
+  const placeholders = zips.map(() => "?").join(", ");
+  const sql = `
+    WITH oon_rows AS (
+       SELECT PROPERTY_PUBLIC_ID, CUSTOMER_PUBLIC_ID, BP_MONTH, HAS_BILL_PAID, BILL_PAYMENT_AMOUNT
+       FROM PRODUCTION.ANALYTICS.CUSTOMER_BP_MONTH_OUTCOMES
+       WHERE NETWORK_TYPE = 'OON'
+         AND BP_MONTH BETWEEN ?::DATE AND ?::DATE
+    ),
+    ytd_per_property AS (
+       SELECT PROPERTY_PUBLIC_ID, SUM(COALESCE(BILL_PAYMENT_AMOUNT, 0)) AS YTD_RENT
+       FROM oon_rows
+       GROUP BY PROPERTY_PUBLIC_ID
+       HAVING SUM(COALESCE(BILL_PAYMENT_AMOUNT, 0)) > 0
+    ),
+    latest_paid_month AS (
+       SELECT PROPERTY_PUBLIC_ID, MAX(BP_MONTH) AS latest_mo
+       FROM oon_rows
+       WHERE HAS_BILL_PAID = TRUE
+       GROUP BY PROPERTY_PUBLIC_ID
+    ),
+    residents_per_property AS (
+       SELECT o.PROPERTY_PUBLIC_ID, COUNT(DISTINCT o.CUSTOMER_PUBLIC_ID) AS RESIDENTS
+       FROM oon_rows o
+       JOIN latest_paid_month l
+         ON l.PROPERTY_PUBLIC_ID = o.PROPERTY_PUBLIC_ID AND o.BP_MONTH = l.latest_mo
+       WHERE o.HAS_BILL_PAID = TRUE
+       GROUP BY o.PROPERTY_PUBLIC_ID
+    ),
+    prop_meta AS (
+       SELECT PROPERTY_PUBLIC_ID, PROPERTY_ZIP, PROPERTY_ADDRESS_LINE1,
+              ROW_NUMBER() OVER (PARTITION BY PROPERTY_PUBLIC_ID ORDER BY CREATED_AT_UTC DESC) AS rn
+       FROM PRODUCTION.ANALYTICS.DIM_PROPERTIES_PMCS
+       WHERE PROPERTY_ZIP IN (${placeholders})
+    )
+    SELECT m.PROPERTY_PUBLIC_ID, m.PROPERTY_ZIP, m.PROPERTY_ADDRESS_LINE1,
+           COALESCE(r.RESIDENTS, 0) AS RESIDENTS, y.YTD_RENT
+    FROM ytd_per_property y
+    JOIN prop_meta m ON m.PROPERTY_PUBLIC_ID = y.PROPERTY_PUBLIC_ID AND m.rn = 1
+    LEFT JOIN residents_per_property r ON r.PROPERTY_PUBLIC_ID = y.PROPERTY_PUBLIC_ID
+  `;
+
+  let candidateRows: z.infer<typeof OonCandidateRow>[];
+  try {
+    candidateRows = await sfClient.query(
+      sql,
+      OonCandidateRow,
+      [yearStart, bpMonth, ...zips],
+      { label: "Match ALN prospect properties against Flex OON self-serve usage (usage callout)" }
+    );
+  } catch {
+    // Soft-fail: this is a nice-to-have callout, never worth breaking deck generation over.
+    return properties.map(() => NO_MATCH);
+  }
+
+  return properties.map((p) => {
+    if (!p.address) return NO_MATCH;
+    const propZip = normalizeZip5(p.zip || p.csvZip || "");
+    if (!propZip) return NO_MATCH;
+    const hit = candidateRows.find((c) =>
+      c.PROPERTY_ZIP && normalizeZip5(c.PROPERTY_ZIP) === propZip &&
+      c.PROPERTY_ADDRESS_LINE1 && addressCoreMatches(p.address, c.PROPERTY_ADDRESS_LINE1)
+    );
+    if (!hit) return NO_MATCH;
+    return { matched: true, residents: hit.RESIDENTS || 0, ytd_rent: hit.YTD_RENT || 0 };
+  });
 }

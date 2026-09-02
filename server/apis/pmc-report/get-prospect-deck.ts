@@ -35,6 +35,7 @@ import {
   filterPinsNearAny,
   deriveStatesFromProperties,
   matchProspectUsage,
+  matchProspectOonUsage,
   sumMatchedUsageForMarket,
   type GeocodedProperty,
   type Market,
@@ -1624,6 +1625,11 @@ export default api({
         const usageMatches: ProspectUsageMatch[] = await matchProspectUsage(
           geocodedProperties, bpMonth, yearStart, ctx.integrations.snowflake_sso
         );
+        // Separate OON self-serve check (Kevin's catch: the first version only checked
+        // in-network usage, missing Flex Anywhere/Embed/P2P entirely as a category).
+        const oonUsageMatches: ProspectUsageMatch[] = await matchProspectOonUsage(
+          geocodedProperties, bpMonth, yearStart, ctx.integrations.snowflake_sso
+        );
 
         // Render each market map slide
         for (let rank = 0; rank < marketsWithGuarantee.length; rank++) {
@@ -1637,9 +1643,11 @@ export default api({
             .map(({ p, i }) => ({
               property_name: p.property_name, lat: p.lat, lon: p.lon,
               has_usage: usageMatches[i]?.matched ?? false,
+              has_oon_usage: oonUsageMatches[i]?.matched ?? false,
             }));
 
           const marketUsage = sumMatchedUsageForMarket(geocodedProperties, usageMatches, market.sub_markets);
+          const marketOonUsage = sumMatchedUsageForMarket(geocodedProperties, oonUsageMatches, market.sub_markets);
 
           // Network pins (with escalation + similarity filtering)
           const networkPins = await fetchRelevantNetworkPins(
@@ -1657,7 +1665,7 @@ export default api({
           slideId++;
           const mapSlide = renderMarketMap(
             slideId, market, summaryByDma, prospectPins,
-            filteredNetworkPins.slice(0, 300), market.prospect_units, avgRentInput, marketUsage
+            filteredNetworkPins.slice(0, 300), market.prospect_units, avgRentInput, marketUsage, marketOonUsage
           );
           if (mapSlide.html) slides.push({ key: "market_map", html: mapSlide.html, js: mapSlide.js });
         }

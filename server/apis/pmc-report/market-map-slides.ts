@@ -51,8 +51,11 @@ function fmtAbbrev(v: number, decimals = 0): string {
 const NETWORK_PURPLE = "#6A3DB8";
 const NEW_HIGHLIGHT = "#DDC6F9";
 const PROSPECT_GREEN = "#1a9e6a";
-/** Gold ring drawn inside a prospect pin already matched to real Flex usage (Kevin's ask). */
+/** Gold ring drawn inside a prospect pin already matched to real in-network Flex usage. */
 const USAGE_HIGHLIGHT_RING = "#F5B841";
+/** Teal ring for OON self-serve usage (Flex Anywhere/Embed/P2P) - deliberately a different
+ * color from the gold in-network ring so the two stories don't visually blur together. */
+const OON_USAGE_HIGHLIGHT_RING = "#2E9CA6";
 
 function pinIconSvg(color: string): string {
   return (
@@ -87,7 +90,8 @@ export function renderMarketMap(
   networkPins: NetworkPin[],
   prospectUnits: number,
   avgRentInput: number | null,
-  usage: MatchedUsageTotals
+  usage: MatchedUsageTotals,
+  oonUsage: MatchedUsageTotals
 ): SlideResult {
   const totals = marketTotals(market, summaryByDma);
   const {
@@ -190,6 +194,19 @@ export function renderMarketMap(
     );
   }
 
+  // OON self-serve usage callout (Kevin's framing): residents already found Flex on their own,
+  // with zero integration - which means zero visibility or control for the PMC today. Worded
+  // to make that gap the point, since it's the actual case for a real integration, not just a
+  // stat. Kept as its own bullet/color, never merged into the in-network one above.
+  if (oonUsage.matched_count > 0) {
+    bulletsHtml += bullet(
+      "Residents already found Flex on their own",
+      `${oonUsage.residents.toLocaleString()} resident${oonUsage.residents === 1 ? "" : "s"} paying`,
+      `${fmtAbbrev(oonUsage.ytd_rent, 1)} YTD at ${oonUsage.matched_count.toLocaleString()} of your propert${oonUsage.matched_count === 1 ? "y" : "ies"} &mdash; with no integration today, you have zero visibility or control over this. A real integration changes that.`,
+      OON_USAGE_HIGHLIGHT_RING
+    );
+  }
+
   // Header
   const headerHtml = `
     <div style="font-size:14px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:${NETWORK_PURPLE};margin-bottom:10px;">FLEX IS ALREADY IN YOUR MARKET</div>
@@ -223,8 +240,9 @@ export function renderMarketMap(
       <div style="position:absolute;bottom:16px;left:16px;z-index:1000;background:rgba(255,255,255,0.92);border-radius:8px;padding:10px 14px;font-size:11px;color:#1D1D1D;box-shadow:0 2px 8px rgba(0,0,0,0.12);">
         <div style="display:flex;align-items:center;gap:7px;margin-bottom:5px;"><span style="width:9px;height:9px;border-radius:50%;background:${PROSPECT_GREEN};display:inline-block;"></span>${prospectLabel}</div>
         <div style="display:flex;align-items:center;gap:7px;margin-bottom:5px;"><span style="width:9px;height:9px;border-radius:50%;background:${NETWORK_PURPLE};display:inline-block;"></span>Flex network</div>
-        <div style="display:flex;align-items:center;gap:7px;${usage.matched_count > 0 ? "margin-bottom:5px;" : ""}"><span style="width:9px;height:9px;border-radius:50%;background:${NEW_HIGHLIGHT};display:inline-block;"></span>New to Flex this year</div>
-        ${usage.matched_count > 0 ? `<div style="display:flex;align-items:center;gap:7px;"><span style="width:9px;height:9px;border-radius:50%;background:${PROSPECT_GREEN};border:2px solid ${USAGE_HIGHLIGHT_RING};display:inline-block;"></span>Already has Flex usage</div>` : ""}
+        <div style="display:flex;align-items:center;gap:7px;${(usage.matched_count > 0 || oonUsage.matched_count > 0) ? "margin-bottom:5px;" : ""}"><span style="width:9px;height:9px;border-radius:50%;background:${NEW_HIGHLIGHT};display:inline-block;"></span>New to Flex this year</div>
+        ${usage.matched_count > 0 ? `<div style="display:flex;align-items:center;gap:7px;${oonUsage.matched_count > 0 ? "margin-bottom:5px;" : ""}"><span style="width:9px;height:9px;border-radius:50%;background:${PROSPECT_GREEN};border:2px solid ${USAGE_HIGHLIGHT_RING};display:inline-block;"></span>Already has Flex usage</div>` : ""}
+        ${oonUsage.matched_count > 0 ? `<div style="display:flex;align-items:center;gap:7px;"><span style="width:9px;height:9px;border-radius:50%;background:${PROSPECT_GREEN};border:2px solid ${OON_USAGE_HIGHLIGHT_RING};display:inline-block;"></span>Residents using Flex on their own</div>` : ""}
         ${notPicturedHtml}
       </div>
     </div>
@@ -240,7 +258,10 @@ export function renderMarketMap(
     networkPins.map(p => ({ lat: p.lat, lon: p.lon, is_new_this_year: p.is_new_this_year }))
   );
   const prospectPinsJson = JSON.stringify(
-    prospectPins.map(p => ({ lat: p.lat, lon: p.lon, property_name: p.property_name, has_usage: !!p.has_usage }))
+    prospectPins.map(p => ({
+      lat: p.lat, lon: p.lon, property_name: p.property_name,
+      has_usage: !!p.has_usage, has_oon_usage: !!p.has_oon_usage,
+    }))
   );
 
   const js = `<script>
@@ -271,13 +292,13 @@ window['initSlide${slideId}'] = (function() {
     const networkPins = (${networkPinsJson}).filter(isFinitePin);
     const prospectPins = (${prospectPinsJson}).filter(isFinitePin);
     const bounds = [];
-    function pinIcon(color, size, hasUsage) {
+    function pinIcon(color, size, ringColor) {
       const w = size || 26, h = w * 32 / 24;
-      // Gold ring drawn INSIDE the pin head (not an outline of the full teardrop) - the
-      // teardrop path already touches the viewBox edges at its widest point, so a stroke
-      // traced on that same path would clip. A ring around the existing white center dot
-      // stays comfortably inside the colored head at every icon size used here.
-      var ring = hasUsage ? '<circle cx="12" cy="12" r="6.5" fill="none" stroke="${USAGE_HIGHLIGHT_RING}" stroke-width="2.2"/>' : '';
+      // Ring drawn INSIDE the pin head (not an outline of the full teardrop) - the teardrop
+      // path already touches the viewBox edges at its widest point, so a stroke traced on
+      // that same path would clip. A ring around the existing white center dot stays
+      // comfortably inside the colored head at every icon size used here.
+      var ring = ringColor ? '<circle cx="12" cy="12" r="6.5" fill="none" stroke="' + ringColor + '" stroke-width="2.2"/>' : '';
       return L.divIcon({
         className: '',
         html: '<svg width="' + w + '" height="' + h + '" viewBox="0 0 24 32" fill="none">'
@@ -294,7 +315,8 @@ window['initSlide${slideId}'] = (function() {
       bounds.push([p.lat, p.lon]);
     });
     prospectPins.forEach(function(p) {
-      var marker = L.marker([p.lat, p.lon], {icon: pinIcon('${PROSPECT_GREEN}', undefined, p.has_usage), zIndexOffset: 1000}).addTo(map);
+      var ringColor = p.has_usage ? '${USAGE_HIGHLIGHT_RING}' : (p.has_oon_usage ? '${OON_USAGE_HIGHLIGHT_RING}' : null);
+      var marker = L.marker([p.lat, p.lon], {icon: pinIcon('${PROSPECT_GREEN}', undefined, ringColor), zIndexOffset: 1000}).addTo(map);
       if (p.property_name) {
         marker.bindTooltip(p.property_name, {permanent: true, direction: 'right', offset: [10, -14], className: 'market-map-pin-label'});
       }
