@@ -34,6 +34,8 @@ import {
   filterProspectPinsForMarket,
   filterPinsNearAny,
   deriveStatesFromProperties,
+  matchProspectUsage,
+  sumMatchedUsageForMarket,
   type GeocodedProperty,
   type Market,
   type MarketSummary,
@@ -41,6 +43,7 @@ import {
   type ProspectPin,
   type NetworkPin,
   type UploadParseDiagnostic,
+  type ProspectUsageMatch,
 } from "./market-map-data.js";
 import { renderMarketMap } from "./market-map-slides.js";
 import { buildProspectSpeakerNotesHtml } from "./speaker-notes.js";
@@ -1614,6 +1617,14 @@ export default api({
         // Sort by annual guarantee descending
         marketsWithGuarantee.sort((a, b) => b.guarantee - a.guarantee);
 
+        // Match prospect properties against Flex's own network once, up front, for the
+        // "already seeing usage" callout (Kevin's ask) - index-aligned with geocodedProperties,
+        // not a join key, so every per-market slide below just re-slices this same array
+        // instead of re-querying per market.
+        const usageMatches: ProspectUsageMatch[] = await matchProspectUsage(
+          geocodedProperties, bpMonth, yearStart, ctx.integrations.snowflake_sso
+        );
+
         // Render each market map slide
         for (let rank = 0; rank < marketsWithGuarantee.length; rank++) {
           const { market } = marketsWithGuarantee[rank];
@@ -1621,8 +1632,14 @@ export default api({
 
           // Prospect pins in this market
           const rawProspectPins: ProspectPin[] = geocodedProperties
-            .filter(p => market.sub_markets.includes(p.dma))
-            .map(p => ({ property_name: p.property_name, lat: p.lat, lon: p.lon }));
+            .map((p, i) => ({ p, i }))
+            .filter(({ p }) => market.sub_markets.includes(p.dma))
+            .map(({ p, i }) => ({
+              property_name: p.property_name, lat: p.lat, lon: p.lon,
+              has_usage: usageMatches[i]?.matched ?? false,
+            }));
+
+          const marketUsage = sumMatchedUsageForMarket(geocodedProperties, usageMatches, market.sub_markets);
 
           // Network pins (with escalation + similarity filtering)
           const networkPins = await fetchRelevantNetworkPins(
@@ -1640,7 +1657,7 @@ export default api({
           slideId++;
           const mapSlide = renderMarketMap(
             slideId, market, summaryByDma, prospectPins,
-            filteredNetworkPins.slice(0, 300), market.prospect_units, avgRentInput
+            filteredNetworkPins.slice(0, 300), market.prospect_units, avgRentInput, marketUsage
           );
           if (mapSlide.html) slides.push({ key: "market_map", html: mapSlide.html, js: mapSlide.js });
         }

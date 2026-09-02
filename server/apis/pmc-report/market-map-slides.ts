@@ -10,6 +10,7 @@ import type {
   NetworkPin,
   ProspectPin,
   MarketGuarantee,
+  MatchedUsageTotals,
 } from "./market-map-data.js";
 import { marketTotals, marketAnnualGuarantee } from "./market-map-data.js";
 
@@ -50,6 +51,8 @@ function fmtAbbrev(v: number, decimals = 0): string {
 const NETWORK_PURPLE = "#6A3DB8";
 const NEW_HIGHLIGHT = "#DDC6F9";
 const PROSPECT_GREEN = "#1a9e6a";
+/** Gold ring drawn inside a prospect pin already matched to real Flex usage (Kevin's ask). */
+const USAGE_HIGHLIGHT_RING = "#F5B841";
 
 function pinIconSvg(color: string): string {
   return (
@@ -83,7 +86,8 @@ export function renderMarketMap(
   prospectPins: ProspectPin[],
   networkPins: NetworkPin[],
   prospectUnits: number,
-  avgRentInput: number | null
+  avgRentInput: number | null,
+  usage: MatchedUsageTotals
 ): SlideResult {
   const totals = marketTotals(market, summaryByDma);
   const {
@@ -174,6 +178,18 @@ export function renderMarketMap(
       </div>`;
   }
 
+  // "Already seeing usage" callout (Kevin's ask) - only when matchProspectUsage found at least
+  // one confident match; never shows a "0 properties" line. Ties visually to the gold-ringed
+  // pins on the map via the same PROSPECT_GREEN color and an explicit callout to "highlighted".
+  if (usage.matched_count > 0) {
+    bulletsHtml += bullet(
+      "Already seeing usage on Flex",
+      `${usage.residents.toLocaleString()} resident${usage.residents === 1 ? "" : "s"} paying`,
+      `${fmtAbbrev(usage.ytd_rent, 1)} YTD at ${usage.matched_count.toLocaleString()} of your propert${usage.matched_count === 1 ? "y" : "ies"} in this market &mdash; highlighted in gold on the map`,
+      PROSPECT_GREEN
+    );
+  }
+
   // Header
   const headerHtml = `
     <div style="font-size:14px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:${NETWORK_PURPLE};margin-bottom:10px;">FLEX IS ALREADY IN YOUR MARKET</div>
@@ -207,7 +223,8 @@ export function renderMarketMap(
       <div style="position:absolute;bottom:16px;left:16px;z-index:1000;background:rgba(255,255,255,0.92);border-radius:8px;padding:10px 14px;font-size:11px;color:#1D1D1D;box-shadow:0 2px 8px rgba(0,0,0,0.12);">
         <div style="display:flex;align-items:center;gap:7px;margin-bottom:5px;"><span style="width:9px;height:9px;border-radius:50%;background:${PROSPECT_GREEN};display:inline-block;"></span>${prospectLabel}</div>
         <div style="display:flex;align-items:center;gap:7px;margin-bottom:5px;"><span style="width:9px;height:9px;border-radius:50%;background:${NETWORK_PURPLE};display:inline-block;"></span>Flex network</div>
-        <div style="display:flex;align-items:center;gap:7px;"><span style="width:9px;height:9px;border-radius:50%;background:${NEW_HIGHLIGHT};display:inline-block;"></span>New to Flex this year</div>
+        <div style="display:flex;align-items:center;gap:7px;${usage.matched_count > 0 ? "margin-bottom:5px;" : ""}"><span style="width:9px;height:9px;border-radius:50%;background:${NEW_HIGHLIGHT};display:inline-block;"></span>New to Flex this year</div>
+        ${usage.matched_count > 0 ? `<div style="display:flex;align-items:center;gap:7px;"><span style="width:9px;height:9px;border-radius:50%;background:${PROSPECT_GREEN};border:2px solid ${USAGE_HIGHLIGHT_RING};display:inline-block;"></span>Already has Flex usage</div>` : ""}
         ${notPicturedHtml}
       </div>
     </div>
@@ -223,7 +240,7 @@ export function renderMarketMap(
     networkPins.map(p => ({ lat: p.lat, lon: p.lon, is_new_this_year: p.is_new_this_year }))
   );
   const prospectPinsJson = JSON.stringify(
-    prospectPins.map(p => ({ lat: p.lat, lon: p.lon, property_name: p.property_name }))
+    prospectPins.map(p => ({ lat: p.lat, lon: p.lon, property_name: p.property_name, has_usage: !!p.has_usage }))
   );
 
   const js = `<script>
@@ -254,13 +271,19 @@ window['initSlide${slideId}'] = (function() {
     const networkPins = (${networkPinsJson}).filter(isFinitePin);
     const prospectPins = (${prospectPinsJson}).filter(isFinitePin);
     const bounds = [];
-    function pinIcon(color, size) {
+    function pinIcon(color, size, hasUsage) {
       const w = size || 26, h = w * 32 / 24;
+      // Gold ring drawn INSIDE the pin head (not an outline of the full teardrop) - the
+      // teardrop path already touches the viewBox edges at its widest point, so a stroke
+      // traced on that same path would clip. A ring around the existing white center dot
+      // stays comfortably inside the colored head at every icon size used here.
+      var ring = hasUsage ? '<circle cx="12" cy="12" r="6.5" fill="none" stroke="${USAGE_HIGHLIGHT_RING}" stroke-width="2.2"/>' : '';
       return L.divIcon({
         className: '',
         html: '<svg width="' + w + '" height="' + h + '" viewBox="0 0 24 32" fill="none">'
           + '<path d="M12 0C5.37 0 0 5.37 0 12c0 8.5 10.5 18.5 11.3 19.3a1 1 0 0 0 1.4 0'
           + 'C13.5 30.5 24 20.5 24 12 24 5.37 18.63 0 12 0z" fill="' + color + '"/>'
+          + ring
           + '<circle cx="12" cy="12" r="4.2" fill="#FFFFFF"/></svg>',
         iconSize: [w, h], iconAnchor: [w / 2, h],
       });
@@ -271,7 +294,7 @@ window['initSlide${slideId}'] = (function() {
       bounds.push([p.lat, p.lon]);
     });
     prospectPins.forEach(function(p) {
-      var marker = L.marker([p.lat, p.lon], {icon: pinIcon('${PROSPECT_GREEN}'), zIndexOffset: 1000}).addTo(map);
+      var marker = L.marker([p.lat, p.lon], {icon: pinIcon('${PROSPECT_GREEN}', undefined, p.has_usage), zIndexOffset: 1000}).addTo(map);
       if (p.property_name) {
         marker.bindTooltip(p.property_name, {permanent: true, direction: 'right', offset: [10, -14], className: 'market-map-pin-label'});
       }
