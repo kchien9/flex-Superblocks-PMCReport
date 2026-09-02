@@ -51,10 +51,10 @@ function fmtAbbrev(v: number, decimals = 0): string {
 const NETWORK_PURPLE = "#6A3DB8";
 const NEW_HIGHLIGHT = "#DDC6F9";
 const PROSPECT_GREEN = "#1a9e6a";
-/** Gold ring drawn inside a prospect pin already matched to real in-network Flex usage. */
-const USAGE_HIGHLIGHT_RING = "#F5B841";
-/** Teal ring for OON self-serve usage (Flex Anywhere/Embed/P2P) - deliberately a different
- * color from the gold in-network ring so the two stories don't visually blur together. */
+/** Teal ring drawn inside a prospect pin with real OON self-serve usage (Flex Anywhere/Embed/
+ * P2P). No in-network equivalent - removed (Kevin's catch): for a New Logo deck, "already
+ * in-network" is logically almost contradictory (a real match is more likely a stale/former
+ * PMC instance than the prospect's own situation) - see the note above matchProspectOonUsage. */
 const OON_USAGE_HIGHLIGHT_RING = "#2E9CA6";
 
 function pinIconSvg(color: string): string {
@@ -90,7 +90,6 @@ export function renderMarketMap(
   networkPins: NetworkPin[],
   prospectUnits: number,
   avgRentInput: number | null,
-  usage: MatchedUsageTotals,
   oonUsage: MatchedUsageTotals
 ): SlideResult {
   const totals = marketTotals(market, summaryByDma);
@@ -185,15 +184,6 @@ export function renderMarketMap(
   // "Already seeing usage" callout (Kevin's ask) - only when matchProspectUsage found at least
   // one confident match; never shows a "0 properties" line. Ties visually to the gold-ringed
   // pins on the map via the same PROSPECT_GREEN color and an explicit callout to "highlighted".
-  if (usage.matched_count > 0) {
-    bulletsHtml += bullet(
-      "Already seeing usage on Flex",
-      `${usage.residents.toLocaleString()} resident${usage.residents === 1 ? "" : "s"} paying`,
-      `${fmtAbbrev(usage.ytd_rent, 1)} YTD at ${usage.matched_count.toLocaleString()} of your propert${usage.matched_count === 1 ? "y" : "ies"} in this market &mdash; highlighted in gold on the map`,
-      PROSPECT_GREEN
-    );
-  }
-
   // OON self-serve usage callout (Kevin's framing): residents already found Flex on their own,
   // with zero integration - which means zero visibility or control for the PMC today. Worded
   // to make that gap the point, since it's the actual case for a real integration, not just a
@@ -240,8 +230,7 @@ export function renderMarketMap(
       <div style="position:absolute;bottom:16px;left:16px;z-index:1000;background:rgba(255,255,255,0.92);border-radius:8px;padding:10px 14px;font-size:11px;color:#1D1D1D;box-shadow:0 2px 8px rgba(0,0,0,0.12);">
         <div style="display:flex;align-items:center;gap:7px;margin-bottom:5px;"><span style="width:9px;height:9px;border-radius:50%;background:${PROSPECT_GREEN};display:inline-block;"></span>${prospectLabel}</div>
         <div style="display:flex;align-items:center;gap:7px;margin-bottom:5px;"><span style="width:9px;height:9px;border-radius:50%;background:${NETWORK_PURPLE};display:inline-block;"></span>Flex network</div>
-        <div style="display:flex;align-items:center;gap:7px;${(usage.matched_count > 0 || oonUsage.matched_count > 0) ? "margin-bottom:5px;" : ""}"><span style="width:9px;height:9px;border-radius:50%;background:${NEW_HIGHLIGHT};display:inline-block;"></span>New to Flex this year</div>
-        ${usage.matched_count > 0 ? `<div style="display:flex;align-items:center;gap:7px;${oonUsage.matched_count > 0 ? "margin-bottom:5px;" : ""}"><span style="width:9px;height:9px;border-radius:50%;background:${PROSPECT_GREEN};border:2px solid ${USAGE_HIGHLIGHT_RING};display:inline-block;"></span>Already has Flex usage</div>` : ""}
+        <div style="display:flex;align-items:center;gap:7px;${oonUsage.matched_count > 0 ? "margin-bottom:5px;" : ""}"><span style="width:9px;height:9px;border-radius:50%;background:${NEW_HIGHLIGHT};display:inline-block;"></span>New to Flex this year</div>
         ${oonUsage.matched_count > 0 ? `<div style="display:flex;align-items:center;gap:7px;"><span style="width:9px;height:9px;border-radius:50%;background:${PROSPECT_GREEN};border:2px solid ${OON_USAGE_HIGHLIGHT_RING};display:inline-block;"></span>Residents using Flex on their own</div>` : ""}
         ${notPicturedHtml}
       </div>
@@ -258,10 +247,7 @@ export function renderMarketMap(
     networkPins.map(p => ({ lat: p.lat, lon: p.lon, is_new_this_year: p.is_new_this_year }))
   );
   const prospectPinsJson = JSON.stringify(
-    prospectPins.map(p => ({
-      lat: p.lat, lon: p.lon, property_name: p.property_name,
-      has_usage: !!p.has_usage, has_oon_usage: !!p.has_oon_usage,
-    }))
+    prospectPins.map(p => ({ lat: p.lat, lon: p.lon, property_name: p.property_name, has_oon_usage: !!p.has_oon_usage }))
   );
 
   const js = `<script>
@@ -315,7 +301,7 @@ window['initSlide${slideId}'] = (function() {
       bounds.push([p.lat, p.lon]);
     });
     prospectPins.forEach(function(p) {
-      var ringColor = p.has_usage ? '${USAGE_HIGHLIGHT_RING}' : (p.has_oon_usage ? '${OON_USAGE_HIGHLIGHT_RING}' : null);
+      var ringColor = p.has_oon_usage ? '${OON_USAGE_HIGHLIGHT_RING}' : null;
       var marker = L.marker([p.lat, p.lon], {icon: pinIcon('${PROSPECT_GREEN}', undefined, ringColor), zIndexOffset: 1000}).addTo(map);
       if (p.property_name) {
         marker.bindTooltip(p.property_name, {permanent: true, direction: 'right', offset: [10, -14], className: 'market-map-pin-label'});

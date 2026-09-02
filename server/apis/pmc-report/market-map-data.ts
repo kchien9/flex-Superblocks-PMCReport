@@ -99,13 +99,8 @@ export interface ProspectPin {
   property_name: string;
   lat: number;
   lon: number;
-  /** True when matchProspectUsage found a confident match for this exact property in Flex's
-   * own network - lets the map renderer draw it with the gold usage ring (Kevin's ask). */
-  has_usage?: boolean;
   /** True when matchProspectOonUsage found real OON self-serve usage (Flex Anywhere/Embed/P2P -
-   * residents paying with no PMC integration) at this exact property. Kept separate from
-   * has_usage - Kevin's call: this is a different, arguably stronger sales story ("residents
-   * already found Flex on their own") and should read as its own callout, not be folded in. */
+   * residents paying with no PMC integration) at this exact property. */
   has_oon_usage?: boolean;
 }
 
@@ -1164,9 +1159,6 @@ function addressCoreMatches(prospectAddress: string, candidateAddressLine1: stri
   return a.coreToken === b.coreToken;
 }
 
-/** ~500ft - "same building" tolerance for the geo signal below. */
-const USAGE_MATCH_MAX_MILES = 500 / 5280;
-
 export interface ProspectUsageMatch {
   matched: boolean;
   /** Matched property's own most recent reported month's charged-users count - NOT forced to
@@ -1183,114 +1175,22 @@ export interface MatchedUsageTotals {
   ytd_rent: number;
 }
 
-const MatchedCandidateRow = z.object({
-  PROPERTY_PUBLIC_ID: z.string(),
-  PROPERTY_ZIP: z.string().nullable(),
-  PROPERTY_ADDRESS_LINE1: z.string().nullable(),
-  LAT: z.coerce.number(),
-  LON: z.coerce.number(),
-  RESIDENTS: z.coerce.number(),
-  YTD_RENT: z.coerce.number(),
-});
-
-/**
- * Match prospect (ALN-list) properties against Flex's own network, so the Market Map slide can
- * call out ones that already have real Flex usage today (Kevin's ask). Requires TWO independent
- * strict signals to agree, not one:
- *   1. Geo - within 500ft of a real network property (same PROPERTY_CENSUS_DISTRICTS lat/lon
- *      already used for this slide's network pins)
- *   2. Address - same house number + same core street-name token (see streetCore above)
- * A false positive would need the wrong address to ALSO happen to sit within 500ft of the true
- * match - a much higher bar than either signal alone, and the reason this doesn't need
- * pmc-property-matcher's fuzzy/phonetic tiers to be reasonably safe for a prospect-facing slide.
- *
- * Returns one entry per input property, same order/length - callers zip this back onto their
- * own property list by index instead of needing a join key.
- */
-export async function matchProspectUsage(
-  properties: GeocodedProperty[],
-  bpMonth: string,
-  yearStart: string,
-  sfClient: SnowflakeClient
-): Promise<ProspectUsageMatch[]> {
-  const NO_MATCH: ProspectUsageMatch = { matched: false, residents: 0, ytd_rent: 0 };
-
-  const zips = [...new Set(
-    properties.map((p) => normalizeZip5(p.zip || p.csvZip || "")).filter((z) => z.length === 5)
-  )];
-  if (zips.length === 0) return properties.map(() => NO_MATCH);
-
-  const placeholders = zips.map(() => "?").join(", ");
-  const sql = `
-    WITH prop_meta AS (
-       SELECT PROPERTY_PUBLIC_ID, PROPERTY_ZIP, PROPERTY_ADDRESS_LINE1,
-              ROW_NUMBER() OVER (PARTITION BY PROPERTY_PUBLIC_ID ORDER BY CREATED_AT_UTC DESC) AS rn
-       FROM PRODUCTION.ANALYTICS.DIM_PROPERTIES_PMCS
-    ),
-    candidates AS (
-       SELECT t.PROPERTY_PUBLIC_ID, t.BP_MONTH, t.CHARGED_USERS_COUNT, t.RENT_PAID_AMOUNT,
-              m.PROPERTY_ZIP, m.PROPERTY_ADDRESS_LINE1,
-              cd.LATITUDE AS LAT, cd.LONGITUDE AS LON
-       FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS t
-       LEFT JOIN prop_meta m ON m.PROPERTY_PUBLIC_ID = t.PROPERTY_PUBLIC_ID AND m.rn = 1
-       JOIN PRODUCTION.ANALYTICS.PROPERTY_CENSUS_DISTRICTS cd
-         ON cd.PROPERTY_ID = t.PROPERTY_ID AND cd.LATITUDE IS NOT NULL AND cd.LONGITUDE IS NOT NULL
-       WHERE t.IS_IN_NETWORK = TRUE
-         AND m.PROPERTY_ZIP IN (${placeholders})
-         AND t.BP_MONTH BETWEEN ?::DATE AND ?::DATE
-    ),
-    latest_per_property AS (
-       SELECT PROPERTY_PUBLIC_ID, PROPERTY_ZIP, PROPERTY_ADDRESS_LINE1, LAT, LON, CHARGED_USERS_COUNT,
-              ROW_NUMBER() OVER (PARTITION BY PROPERTY_PUBLIC_ID ORDER BY BP_MONTH DESC) AS rn
-       FROM candidates
-    ),
-    ytd_per_property AS (
-       SELECT PROPERTY_PUBLIC_ID, COALESCE(SUM(RENT_PAID_AMOUNT), 0) AS YTD_RENT
-       FROM candidates
-       GROUP BY PROPERTY_PUBLIC_ID
-    )
-    SELECT l.PROPERTY_PUBLIC_ID, l.PROPERTY_ZIP, l.PROPERTY_ADDRESS_LINE1, l.LAT, l.LON,
-           l.CHARGED_USERS_COUNT AS RESIDENTS, y.YTD_RENT
-    FROM latest_per_property l
-    JOIN ytd_per_property y ON y.PROPERTY_PUBLIC_ID = l.PROPERTY_PUBLIC_ID
-    WHERE l.rn = 1
-  `;
-
-  let candidateRows: z.infer<typeof MatchedCandidateRow>[];
-  try {
-    candidateRows = await sfClient.query(
-      sql,
-      MatchedCandidateRow,
-      [...zips, yearStart, bpMonth],
-      { label: "Match ALN prospect properties against Flex network (usage callout)" }
-    );
-  } catch {
-    // Soft-fail: this is a nice-to-have callout, never worth breaking deck generation over.
-    return properties.map(() => NO_MATCH);
-  }
-
-  return properties.map((p) => {
-    if (!Number.isFinite(p.lat) || !Number.isFinite(p.lon) || !p.address) return NO_MATCH;
-    const propZip = normalizeZip5(p.zip || p.csvZip || "");
-    let best: z.infer<typeof MatchedCandidateRow> | null = null;
-    let bestDist = Infinity;
-    for (const c of candidateRows) {
-      if (propZip && c.PROPERTY_ZIP && normalizeZip5(c.PROPERTY_ZIP) !== propZip) continue;
-      if (!c.PROPERTY_ADDRESS_LINE1 || !addressCoreMatches(p.address, c.PROPERTY_ADDRESS_LINE1)) continue;
-      const dist = haversineMiles(p.lat, p.lon, c.LAT, c.LON);
-      if (dist <= USAGE_MATCH_MAX_MILES && dist < bestDist) {
-        best = c;
-        bestDist = dist;
-      }
-    }
-    if (!best) return NO_MATCH;
-    return { matched: true, residents: best.RESIDENTS || 0, ytd_rent: best.YTD_RENT || 0 };
-  });
-}
+// NOTE: an earlier version of this feature also matched prospect properties against Flex's
+// CURRENT in-network usage (IS_IN_NETWORK=TRUE). Removed (Kevin's catch): for a New Logo deck
+// specifically, a real "already in-network" match is logically almost contradictory (a PMC that
+// already has this exact property on Flex wouldn't be a New Logo prospect) and carries real
+// staleness risk - a match is more likely a different/former PMC that happened to manage the
+// same building at some point than the prospect's own current situation. A "this property used
+// to be on Flex" angle was floated as a follow-up idea (proof of historical resident demand at
+// the address) but deliberately not built - it's genuinely double-edged (could read as "why did
+// it stop" or dredge up a predecessor PMC's tenure depending on why it deactivated) and deserves
+// its own design pass, not a bolt-on here. Only the OON self-serve check (matchProspectOonUsage
+// below) remains - that one has no such contradiction, since a prospect's residents finding Flex
+// on their own with zero PMC involvement is exactly the compelling, unambiguous case for it.
 
 /** Sum matched-usage totals for one market grouping's properties (by DMA membership) - mirrors
  * marketTotals' own sub_markets-based rollup pattern. `properties` and `matches` must be the
- * same array/order matchProspectUsage was called with (index-aligned). */
+ * same array/order the matcher was called with (index-aligned). */
 export function sumMatchedUsageForMarket(
   properties: GeocodedProperty[],
   matches: ProspectUsageMatch[],

@@ -34,7 +34,6 @@ import {
   filterProspectPinsForMarket,
   filterPinsNearAny,
   deriveStatesFromProperties,
-  matchProspectUsage,
   matchProspectOonUsage,
   sumMatchedUsageForMarket,
   type GeocodedProperty,
@@ -1622,11 +1621,10 @@ export default api({
         // "already seeing usage" callout (Kevin's ask) - index-aligned with geocodedProperties,
         // not a join key, so every per-market slide below just re-slices this same array
         // instead of re-querying per market.
-        const usageMatches: ProspectUsageMatch[] = await matchProspectUsage(
-          geocodedProperties, bpMonth, yearStart, ctx.integrations.snowflake_sso
-        );
-        // Separate OON self-serve check (Kevin's catch: the first version only checked
-        // in-network usage, missing Flex Anywhere/Embed/P2P entirely as a category).
+        // OON self-serve usage check only (Kevin's catch: an earlier version also checked
+        // in-network usage, but for a New Logo deck that's logically almost contradictory - a
+        // real match is more likely a stale/former PMC instance than the prospect's own
+        // situation - see the note above matchProspectOonUsage in market-map-data.ts).
         const oonUsageMatches: ProspectUsageMatch[] = await matchProspectOonUsage(
           geocodedProperties, bpMonth, yearStart, ctx.integrations.snowflake_sso
         );
@@ -1642,11 +1640,9 @@ export default api({
             .filter(({ p }) => market.sub_markets.includes(p.dma))
             .map(({ p, i }) => ({
               property_name: p.property_name, lat: p.lat, lon: p.lon,
-              has_usage: usageMatches[i]?.matched ?? false,
               has_oon_usage: oonUsageMatches[i]?.matched ?? false,
             }));
 
-          const marketUsage = sumMatchedUsageForMarket(geocodedProperties, usageMatches, market.sub_markets);
           const marketOonUsage = sumMatchedUsageForMarket(geocodedProperties, oonUsageMatches, market.sub_markets);
 
           // Network pins (with escalation + similarity filtering)
@@ -1665,7 +1661,7 @@ export default api({
           slideId++;
           const mapSlide = renderMarketMap(
             slideId, market, summaryByDma, prospectPins,
-            filteredNetworkPins.slice(0, 300), market.prospect_units, avgRentInput, marketUsage, marketOonUsage
+            filteredNetworkPins.slice(0, 300), market.prospect_units, avgRentInput, marketOonUsage
           );
           if (mapSlide.html) slides.push({ key: "market_map", html: mapSlide.html, js: mapSlide.js });
         }
