@@ -86,6 +86,10 @@ export interface SpeakerNotesKpis {
   totalUnits: number;
   currentResidents: number;
   hasNiro: boolean;
+  // How many months the Delinquency slide's trailing window actually covers - up to 12, but
+  // fewer when the PMC doesn't have 12 months of DQ history yet (Kevin's ask: reps need to know
+  // an "8 months" figure means 8 months of real data, not a truncated 12-month view).
+  dqWindowMonths?: number;
 }
 
 export interface SpeakerNotesBenchmark {
@@ -294,7 +298,7 @@ function notesCohortOverview(k: SpeakerNotesKpis): string[] {
 
 function notesRetention(monthly: SpeakerNotesMonthlyRow[]): string[] {
   const notes = [
-    "Retention here means: of residents who paid with Flex last month, what share paid again this month?",
+    "TRUE REPEAT RATE (the hero number on this slide) means: of residents who paid with Flex before, what share are still paying now? Say it plainly if asked — 'of everyone who's tried Flex, this is the share still using it.'",
     "This is one of the stickiest metrics — high retention means residents have built Flex into their routine. Low retention means something is interrupting the habit.",
     "The loyalty tier breakdown (left panel) measures each resident's consistency over their full history: months they paid Flex divided by months Flex was available to them since their first payment. Perfect = every single month; Episodic = less than half.",
   ];
@@ -302,7 +306,17 @@ function notesRetention(monthly: SpeakerNotesMonthlyRow[]): string[] {
     const last = monthly[monthly.length - 1];
     const prev = monthly[monthly.length - 2];
     const recur = Math.max(0, last.billsPaid - last.newSignups);
-    if (prev.billsPaid > 0) notes.push(`Current repeat usage: roughly ${pctStr(recur / prev.billsPaid)} of last month's transacting users (unique payers) paid again this month.`);
+    if (prev.billsPaid > 0) {
+      const rate = recur / prev.billsPaid;
+      notes.push(`Current repeat usage: roughly ${pctStr(rate)} of last month's transacting users (unique payers) paid again this month.`);
+      // Kevin's ask: reps need this spelled out plainly, not left to guess whether a number
+      // over 100% is a mistake. It's real and it's good news - the math allows it because the
+      // numerator (everyone who paid this month who isn't brand new) can include residents who
+      // came BACK after skipping a month, and they were never in last month's denominator.
+      if (rate > 1) {
+        notes.push(`Above 100% is real, not a typo: it means every resident who paid last month paid again this month, PLUS some additional residents who'd skipped a month or more came back on top of that. If asked: 'we didn't just hold on to everyone, we actually won some back.'`);
+      }
+    }
   }
   notes.push("If retention is high (>70%): 'Once residents try Flex, they keep using it. That's the flywheel.' This is a strong value prop for the partner.");
   notes.push("If retention is low: 'The opportunity here is re-engagement. Residents who tried Flex but drifted off are easier to convert than brand new prospects — they already know the product.'");
@@ -344,13 +358,27 @@ function notesPortfolioProjection(k: SpeakerNotesKpis, b: SpeakerNotesBenchmark)
   return notes;
 }
 
-function notesDelinquency(): string[] {
-  return [
+function notesDelinquency(k: SpeakerNotesKpis): string[] {
+  const notes = [
     "This slide shows Flex's delinquency shield: rent Flex guaranteed to you for residents who fell behind, and how much has been recovered.",
     "Lead with the protection angle — Flex absorbed this risk so the PMC didn't have to.",
+  ];
+  // Kevin's ask: state the actual window plainly, and flag when it's short because of real
+  // data availability (a new partner) rather than let a rep get asked "why only 8 months?" and
+  // not have an answer. windowMonths itself is always min(real DQ history, 12) - never a
+  // partial/truncated 12-month view, so "8 months" here always means 8 real months exist.
+  if (k.dqWindowMonths != null) {
+    notes.push(
+      k.dqWindowMonths >= 12
+        ? "This covers the trailing 12 months of DQ history."
+        : `This covers ${k.dqWindowMonths} month${k.dqWindowMonths === 1 ? "" : "s"} — that's ALL the DQ history this PMC has so far (they haven't been on Flex for a full 12 months yet), not a partial view of a longer window. If asked why it's not 12 months: 'there just isn't more history yet — this is everything.'`
+    );
+  }
+  notes.push(
     "If they ask about recovery rates: Flex pursues repayment from residents; the PMC is made whole regardless of outcome.",
     "This data is typically most relevant for PMCs with higher-risk resident profiles or in markets with higher delinquency rates.",
-  ];
+  );
+  return notes;
 }
 
 function notesCustomerExperience(): string[] {
@@ -425,12 +453,13 @@ function notesExpansionBottomLine(k: SpeakerNotesKpis, b: SpeakerNotesBenchmark)
   const p50 = b.p50Nar ?? b.benchmarkNar ?? 0.085;
   const above = k.currentNar >= p50;
   return [
-    "Left panel: proof of what Flex has delivered. Lead with lifetime rent and adoption rate — these are the anchor numbers.",
-    "Right panel: the case for expanding. Points 1-3 are evidence. Point 4 is the ask.",
-    `Point 3 framing: ${k.pmcName} is ${above ? "above" : "below"} the peer median (${pctStr(p50)}). ` +
+    "This slide is the KPI tile grid, not a two-panel layout — lifetime rent up top, then tiles for properties, residents paying, new residents, adoption rate, true repeat rate, and delinquency shielded. Each tile carries a trend sparkline and a change pill vs. the comparison period you picked when generating the deck.",
+    "Lead with lifetime rent and adoption rate — those are the anchor numbers. Use the tiles as proof of what Flex has already delivered, then pivot immediately: 'here's what more of this looks like across the rest of the portfolio.'",
+    `Adoption rate framing: ${k.pmcName} is ${above ? "above" : "below"} the peer median (${pctStr(p50)}). ` +
       (above
         ? "Use this as validation — they're already outperforming. The ask is: let's extend that to the full portfolio."
         : "Don't dwell on being below median — pivot to 'here's what closing the gap looks like in dollars.'"),
+    "If the sparklines or change pills feel like too much detail for this room, both can be hidden live with the buttons on the slide — no need to regenerate the deck.",
     "If the room pushes back on the expansion ask: 'We're not asking you to change what's working — we're asking you to apply it to more doors.'",
   ];
 }
@@ -440,7 +469,6 @@ function notesExpansionGap(): string[] {
     "The purple bars show ACTUAL historical monthly rent — this is what really happened as they enrolled each cohort. If you see bumps or dips, those reflect real onboarding events.",
     "The two scenario lines show STEADY-STATE POTENTIAL for the gap (unenrolled) units — not a time-bound forecast. The red dashed line uses peer-median adoption (the conservative case). The purple dashed line uses this PMC's own current rate (the upside if they replicate what they've already proven).",
     "KEY POINT FOR DATA-SKEPTICAL ROOMS: These lines do NOT assume the gap units instantly inherit today's adoption rate. New properties take 12-24 months to ramp. These lines show the destination, not the journey.",
-    "ENGAGEMENT (PER 100, T12) TABLE — HOW TO READ IT: new bill connections per 100 enrolled units over the trailing 12 months, normalized so you can compare a 50-unit building to a 300-unit one. If a property's observed engagement is below expected (peer P50), the issue is almost always awareness — Flex isn't visible in the resident portal or mentioned at move-in. The fix is cheap (turning on D2C marketing) and compounds.",
   ];
 }
 
@@ -486,7 +514,7 @@ export function getNotesForSlide(
       case 17: return notesTrend("Unit Count", "units", k, monthly);
       case 12: return notesStateBreakdown();
       case 21: return notesPortfolioProjection(k, benchmark);
-      case 26: return notesDelinquency();
+      case 26: return notesDelinquency(k);
       case 39: return notesHighRentAdoption();
       case 44: return notesMultiBenchmark(k, benchmark);
       case 34: return notesAdoptionOpportunities(k);
@@ -667,7 +695,7 @@ export function getNotesForExpansionSlide(
       case "peer_benchmarks": return notesMultiBenchmark(k, benchmark);
       case "retention": return notesRetention(monthly);
       case "high_rent": return notesHighRentAdoption();
-      case "delinquency": return notesDelinquency();
+      case "delinquency": return notesDelinquency(k);
       case "expansion_metrosight": return notesExpansionMetrosight();
       case "expansion_gap": return notesExpansionGap();
       case "testimonials": return notesTestimonialsStandalone();
