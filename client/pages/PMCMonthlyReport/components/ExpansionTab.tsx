@@ -162,7 +162,7 @@ export function ExpansionTab({ pmcNames, pmcLoading, generating, onGenerate }: E
             <label className="text-sm font-medium text-gray-700">Growth trend slides</label>
             <ToggleGroup options={[{ value: "auto", label: "Auto" }, { value: "include", label: "Include" }, { value: "exclude", label: "Exclude" }]} value={growthSlides} onChange={setGrowthSlides} />
           </div>
-          <p className="text-[11px] text-gray-400 mt-1">Auto-included for SMB, off for MM+ by default. Use this toggle to override and force-include or remove the trend slides. Include if you want to highlight historic performance.</p>
+          <p className="text-[11px] text-gray-400 mt-1">Auto: on for SMB (no AM running a separate QBR, so this deck doubles as their performance review), off for MM+/Enterprise (their AM already covers performance in a dedicated QBR, so this stays focused on the expansion ask). Include if this account has no AM, or you want to show the historic trend anyway.</p>
         </div>
         <div>
           <div className="flex items-center justify-between">

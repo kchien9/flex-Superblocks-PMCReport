@@ -2465,6 +2465,45 @@ export default api({
              FROM candidates c
              LEFT JOIN prop_zip p
                ON p.PROPERTY_PUBLIC_ID = c.PROPERTY_PUBLIC_ID AND p.rn = 1`;
+    // Region detail (DMA sub-region breakdown, "By State" slide's drill-down rows) - Kevin's
+    // ask: Expansion's own "By State" slide never got this even though QBR's has had it all
+    // along. Hoisted out of the QBR-only batch below (same "fire early" pattern networkPoolPromise
+    // already uses) and gated on its OWN flag rather than needsQBRQueries, since this one query
+    // is cheap (scoped to a single subject PMC, no network-wide scan, no UDF chain) and safe to
+    // also run for Expansion - unlike network pool/property pool just below, which stay QBR-only
+    // on purpose (that's real, deliberately-tuned query cost this session already fought to keep
+    // under control; Kevin didn't ask for those in Expansion, so they're untouched).
+    const needsRegionDetail = needsQBRQueries || deck_mode === "expansion";
+    const regionDetailPromise = !needsRegionDetail
+      ? Promise.resolve([] as { PROPERTY_STATE: string; PROPERTY_REGION: string; PROPERTIES: number; TOTAL_UNITS: number; BILLS_PAID: number }[])
+      : ctx.integrations.snowflake_sso.query(
+          `WITH prop_zip AS (
+              SELECT PROPERTY_PUBLIC_ID, PROPERTY_ZIP,
+                     ROW_NUMBER() OVER (PARTITION BY PROPERTY_PUBLIC_ID ORDER BY CREATED_AT_UTC DESC) AS rn
+              FROM PRODUCTION.ANALYTICS.DIM_PROPERTIES_PMCS
+           )
+           SELECT
+              t.PROPERTY_STATE                            AS PROPERTY_STATE,
+              COALESCE(dma.DMA_NAME, 'Unknown')           AS PROPERTY_REGION,
+              COUNT(DISTINCT t.PROPERTY_NAME)             AS PROPERTIES,
+              SUM(t.PROPERTY_UNIT_COUNT)                  AS TOTAL_UNITS,
+              SUM(t.BILLS_PAID_COUNT)                     AS BILLS_PAID
+           FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS t
+           LEFT JOIN prop_zip p
+             ON p.PROPERTY_PUBLIC_ID = t.PROPERTY_PUBLIC_ID AND p.rn = 1
+           LEFT JOIN PRODUCTION.SEEDS.SEED_ZIP_CODE_TO_DMA_MAPPING dma
+             ON dma.ZIP_CODE = LEFT(p.PROPERTY_ZIP, 5)
+           WHERE t.PMC_NAME = ?
+             AND t.BP_MONTH = ?
+             AND t.IS_IN_NETWORK = TRUE
+             AND t.PROPERTY_STATE IS NOT NULL AND t.PROPERTY_STATE != ''
+           GROUP BY t.PROPERTY_STATE, COALESCE(dma.DMA_NAME, 'Unknown')
+           ORDER BY t.PROPERTY_STATE, BILLS_PAID DESC`,
+          RegionDetailSchema,
+          [pmc_name, reportingMonthStr],
+          { label: "Pull DMA region detail for geo slide dropdowns" }
+        ).catch(() => [] as { PROPERTY_STATE: string; PROPERTY_REGION: string; PROPERTIES: number; TOTAL_UNITS: number; BILLS_PAID: number }[]);
+
     const networkPoolPromise = !needsQBRQueries
       ? Promise.resolve([] as NetworkPoolRow[])
       : (async (): Promise<NetworkPoolRow[]> => {
@@ -3130,44 +3169,8 @@ export default api({
 
     if (needsQBRQueries) {
       // Network pool query was moved earlier (fires in parallel with the main batch above).
-
-      // Fire region detail in parallel with network pool
-      const regionDetailPromise = ctx.integrations.snowflake_sso.query(
-          `WITH prop_zip AS (
-              SELECT PROPERTY_PUBLIC_ID, PROPERTY_ZIP,
-                     ROW_NUMBER() OVER (PARTITION BY PROPERTY_PUBLIC_ID ORDER BY CREATED_AT_UTC DESC) AS rn
-              FROM PRODUCTION.ANALYTICS.DIM_PROPERTIES_PMCS
-           )
-           SELECT
-              t.PROPERTY_STATE                            AS PROPERTY_STATE,
-              COALESCE(dma.DMA_NAME, 'Unknown')           AS PROPERTY_REGION,
-              COUNT(DISTINCT t.PROPERTY_NAME)             AS PROPERTIES,
-              SUM(t.PROPERTY_UNIT_COUNT)                  AS TOTAL_UNITS,
-              SUM(t.BILLS_PAID_COUNT)                     AS BILLS_PAID
-           FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS t
-           LEFT JOIN prop_zip p
-             ON p.PROPERTY_PUBLIC_ID = t.PROPERTY_PUBLIC_ID AND p.rn = 1
-           LEFT JOIN PRODUCTION.SEEDS.SEED_ZIP_CODE_TO_DMA_MAPPING dma
-             ON dma.ZIP_CODE = LEFT(p.PROPERTY_ZIP, 5)
-           WHERE t.PMC_NAME = ?
-             AND t.BP_MONTH = ?
-             AND t.IS_IN_NETWORK = TRUE
-             AND t.PROPERTY_STATE IS NOT NULL AND t.PROPERTY_STATE != ''
-           GROUP BY t.PROPERTY_STATE, COALESCE(dma.DMA_NAME, 'Unknown')
-           ORDER BY t.PROPERTY_STATE, BILLS_PAID DESC`,
-          RegionDetailSchema,
-          // FIXED (Kevin's catch - "sub region doesn't work", every DMA showing 0%): this used
-          // to bind cutoffStr, an exclusive boundary (1st of the next allowed month) - an exact
-          // BP_MONTH match against that lands on Snowflake's pre-created, not-yet-real stub row
-          // for that month (real BILLS_PAID_COUNT hasn't landed yet), so every region's adoption
-          // rate computed as 0/units. latestCompletedMonth itself isn't computed until later in
-          // this pipeline (see its own definition further down), but reportingMonthStr - defined
-          // above, same "last month with real billing data" concept, confirmed live against
-          // Snowflake to return correct non-zero bills_paid per region - is already in scope
-          // here and is the right value to bind instead.
-          [pmc_name, reportingMonthStr],
-          { label: "Pull DMA region detail for geo slide dropdowns" }
-        ).catch(() => [] as { PROPERTY_STATE: string; PROPERTY_REGION: string; PROPERTIES: number; TOTAL_UNITS: number; BILLS_PAID: number }[]);
+      // regionDetailPromise was moved earlier too (now fires for Expansion as well - see its
+      // new definition and comment next to networkPoolPromise above).
 
       // Subject PMC's own property-level median renter income (same ZIP→FIPS→census UDF
       // chain as the network pool query above) — lets the peer-matching resolver compare
@@ -3824,6 +3827,11 @@ export default api({
         const acctUnits = expPortfolioRow?.TOTAL_COMPANY_UNITS ?? 0;
         expTotalPortfolioEarly = acctUnits > 0 ? acctUnits : (latestMonth?.units ?? 0);
       }
+      // Region detail (Kevin's ask - Expansion's own "By State" slide never got QBR's DMA
+      // sub-region drill-down). QBR awaits this inside its own needsQBRQueries batch further
+      // down (unchanged); Expansion needs its own await since it never reaches that batch at
+      // all - same hoisted promise either way, no duplicate query.
+      regionDetail = await regionDetailPromise;
     }
 
     if (peerCandidateRows.length > 0) {
@@ -4958,6 +4966,9 @@ export default api({
                 portfolioNar: latestMonth?.adoptionRate ?? 0,
                 reportingMonth: latestCompletedMonth,
                 slideId: slideNum,
+                // Was missing here (Kevin's ask) - QBR's own call to this same function a few
+                // hundred lines down already passes this; Expansion just never did.
+                regionDetail,
               });
               pushSlide(sid, r);
             }
