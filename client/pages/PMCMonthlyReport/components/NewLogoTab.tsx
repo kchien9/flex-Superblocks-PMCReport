@@ -211,6 +211,11 @@ export function NewLogoTab({ generating, onGenerate }: NewLogoTabProps) {
 
   return (
     <div className="space-y-4">
+      {/* When to use this deck (Kevin's ask) */}
+      <div className="p-3 bg-[#F5F2FF] border border-[#DCC9F2] rounded-[4px] text-xs text-[#2C194D] leading-relaxed">
+        Use this for prospects who aren&apos;t on Flex yet. It shows real numbers from similar PMCs so they can see what their own performance could look like.
+      </div>
+
       {/* Prospect Account — only required field */}
       <div>
         <ProspectSearch onSelect={handleProspectSelect} />

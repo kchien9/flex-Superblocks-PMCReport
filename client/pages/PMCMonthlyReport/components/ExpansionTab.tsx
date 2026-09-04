@@ -88,6 +88,11 @@ export function ExpansionTab({ pmcNames, pmcLoading, generating, onGenerate }: E
 
   return (
     <div className="space-y-4">
+      {/* When to use this deck (Kevin's ask) */}
+      <div className="p-3 bg-[#F5F2FF] border border-[#DCC9F2] rounded-[4px] text-xs text-[#2C194D] leading-relaxed">
+        Use this when you want to make the case for growing an account&apos;s portfolio. Works best when there&apos;s real whitespace left. Not much left to expand into? Use a QBR instead.
+      </div>
+
       {/* PMC Search — required */}
       <div>
         <PMCSearch label="Property Management Company" placeholder="Search existing Flex customers..." value={selectedPMC} onChange={setSelectedPMC} pmcNames={pmcNames} loading={pmcLoading} />

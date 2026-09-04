@@ -166,6 +166,11 @@ export function QBRTab({ pmcNames, pmcLoading, generating, onGenerate }: QBRTabP
 
   return (
     <div className="space-y-4">
+      {/* When to use this deck (Kevin's ask) */}
+      <div className="p-3 bg-[#F5F2FF] border border-[#DCC9F2] rounded-[4px] text-xs text-[#2C194D] leading-relaxed">
+        Your regular check-in with an existing customer. Use it when there&apos;s not much portfolio left to roll out, or the conversation is more about performance than growth.
+      </div>
+
       {/* Report Basis Toggle */}
       <div className="flex items-center justify-between">
         <label className="text-sm font-medium text-gray-700">Report Basis</label>
