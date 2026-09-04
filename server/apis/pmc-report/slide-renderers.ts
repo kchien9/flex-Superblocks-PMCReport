@@ -1494,19 +1494,8 @@ export function renderDelinquency(input: {
   months: DelinquencyMonth[];
   windowMonths: number;
 }): SlideResult {
-  const { slideId, months, windowMonths } = input;
-
-  if (!months || months.length === 0) {
-    const html = `
-  <div class="slide" id="slide-${slideId}" style="background:#fff;">
-    <div class="slide-header">
-      <div class="slide-label">Delinquency Protection</div>
-      <div class="slide-title">Rent Guaranteed by Flex</div>
-    </div>
-    <div style="color:#524e5b;font-size:15px;padding:40px 0;">No delinquency data available for this PMC.</div>
-  </div>`;
-  return { html, js: "" };
-  }
+  const { slideId, months: monthsInput, windowMonths } = input;
+  const months = monthsInput ?? [];
 
   const windowPhrase = windowMonths >= 12 ? "12 months" : `${windowMonths} months`;
   const windowTitle = windowMonths >= 12 ? "Trailing 12 Months" : `Trailing ${windowMonths} Months`;
@@ -1541,28 +1530,36 @@ export function renderDelinquency(input: {
   const lifetimeShielded = windowedMonths.reduce((s, m) => s + m.totalRentShielded, 0);
   const totalResidents = windowedMonths.reduce((s, m) => s + m.residentsShielded, 0);
 
-  // Pad short histories so the chart has at least 3 slots
-  const padCount = Math.max(0, 3 - months.length);
+  // Hide entirely below a real floor (Kevin's catch, live-verified: a PMC with only 2 real
+  // non-zero DQ months in its whole history rendered a chart with those 2 bars sitting
+  // adjacent to each other 8 calendar months apart, under a "TRAILING 2 MONTHS" title that
+  // was technically accurate (2 real rows) but read as "the last two consecutive months" -
+  // genuinely misleading, not just sparse. This one gate replaces both the old
+  // "months.length === 0" text-only fallback above AND the old no-floor-at-all case below -
+  // one consistent rule, same "return no slide" mechanism every other auto-skipped slide in
+  // this codebase already uses.
+  const realMonths = windowedMonths.filter((m) => m.totalRentShielded > 0);
+  if (realMonths.length < 3) return { html: "", js: "" };
+
+  // Full CONTIGUOUS calendar-month axis (Kevin's catch) - the old version pushed only the
+  // rows `months` happened to contain, silently skipping real zero-DQ months in between (the
+  // underlying pull's GROUP BY omits a month entirely rather than emitting a zero row for it).
+  // Every slot in the window now gets a real value - 0 when no row exists for that month
+  // (a genuine fact: nothing was shielded that month, not missing data) - so two real bars
+  // months apart can never again render as if they were adjacent.
+  const totalSlots = Math.max(windowMonths, 3);
+  const byMonth = new Map(windowedMonths.map((m) => [m.month.slice(0, 7), m]));
   const chartMonths: string[] = [];
   const chartVals: (number | null)[] = [];
   const residentsVals: (number | null)[] = [];
-
-  if (padCount > 0) {
-    const earliest = months[0].month;
-    const [ey, em] = earliest.split("-").map(Number);
-    for (let i = padCount; i > 0; i--) {
-      const d = new Date(ey, em - 1 - i, 1);
-      const lbl = d.toLocaleDateString("en-US", { month: "short", year: "numeric" });
-      chartMonths.push(lbl);
-      chartVals.push(null);
-      residentsVals.push(null);
-    }
-  }
-
-  for (const m of months) {
-    chartMonths.push(monthLabel(m.month).slice(0, 3) + " " + m.month.slice(0, 4));
-    chartVals.push(Math.round(m.totalRentShielded));
-    residentsVals.push(m.residentsShielded);
+  const [ly, lm] = dqLatestMonth!.split("-").map(Number);
+  for (let i = totalSlots - 1; i >= 0; i--) {
+    const d = new Date(ly, lm - 1 - i, 1);
+    const monthKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+    const row = byMonth.get(monthKey);
+    chartMonths.push(monthLabel(`${monthKey}-01`));
+    chartVals.push(row ? Math.round(row.totalRentShielded) : 0);
+    residentsVals.push(row ? row.residentsShielded : 0);
   }
 
   const realResidents = residentsVals.filter((v): v is number => v !== null && v > 0);
@@ -2416,7 +2413,15 @@ export function renderHighRentAdoption(input: RentBucketInput): { html: string; 
   const filledLabels = bucketOrder.filter((l) => bucketAgg[l].users > 0);
   if (filledLabels.length === 0) return { html: "", js: "" };
 
-  const totalUsers = filledLabels.reduce((s, l) => s + bucketAgg[l].users, 0) || 1;
+  const totalUsersRaw = filledLabels.reduce((s, l) => s + bucketAgg[l].users, 0);
+  // Hide entirely below a real sample floor (Kevin's catch, live-verified: a 2-resident PMC
+  // split 50/50 into 2 buckets cleared the old ">= 2 active properties" bar and rendered a
+  // technically-non-empty chart that still looked broken - not a real distribution, just 2
+  // people in 2 boxes). 15 real residents across up to 5 buckets means no single bucket is
+  // resting on 1-2 people alone. Same established "return no slide" mechanism this function
+  // already used for the true-zero cases above; only the bar moved.
+  if (totalUsersRaw < 15) return { html: "", js: "" };
+  const totalUsers = totalUsersRaw || 1;
   // Largest remainder method for integer percentages that sum to exactly 100
   const rawShares = filledLabels.map((l) => bucketAgg[l].users / totalUsers * 100);
   const floored = rawShares.map((v) => Math.floor(v));
