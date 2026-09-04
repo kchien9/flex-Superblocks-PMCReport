@@ -144,6 +144,8 @@ export default function PMCMonthlyReportPage() {
       presenting_mode: state.delivery === "presenting",
       comparison_months: state.comparison_months ?? 1,
       growth_slides: state.growth_slides as "auto" | "include" | "exclude",
+      sparklines: state.sparklines as "auto" | "include" | "exclude",
+      period_comparison: state.period_comparison as "auto" | "include" | "exclude",
       terminology: state.terminology as "resident" | "household",
       imported_slides: state.imported_slides,
     };

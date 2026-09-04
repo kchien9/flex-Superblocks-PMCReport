@@ -380,6 +380,13 @@ interface ExecSummaryInput {
   dqSinceComparison: number | null;
   execNotes?: string;
   showSparklines?: boolean;
+  // Kevin's ask: an explicit form-level control over the exec tile's period-comparison pills
+  // (rent %, DQ $, etc. - anything using the shared "_vs" delta pill builder below), independent
+  // of showSparklines. The live in-deck toggle button (deltaToggle below) already lets an AE
+  // flip this DURING a meeting; this just sets which state it STARTS in when the deck is
+  // generated, same relationship showSparklines already has to the individual sparkline
+  // toggle buttons.
+  hidePeriodComparison?: boolean;
   vsLabel?: string;
   // Keys: active_properties, residents_paying, new_residents, adoption_rate, true_repeat_rate,
   // delinquency_shielded. Chosen at generation time (Kevin's ask) - see hidden_kpi_tiles on the
@@ -591,8 +598,12 @@ function renderExecSummary(d: ExecSummaryInput): { html: string; js: string } {
   const pillNar = pill(nar, d.prevNar, "pp");
   const anyDelta = !!(pillProps || pillResidents || pillNar || heroPill);
 
+  // Starts hidden when the form-level toggle forces it (Kevin's ask) - the button and its
+  // onclick logic are otherwise unchanged, so the live in-deck override still works exactly the
+  // same either way, just flipped from its new starting point.
+  const startDeltasHidden = anyDelta && d.hidePeriodComparison === true;
   const deltaToggle = anyDelta
-    ? `<button class="presenter-control" onclick="var s=document.getElementById('slide-${slideId}');s.classList.toggle('hide-deltas');this.textContent=s.classList.contains('hide-deltas')?'Show change ${_vs}':'Hide change ${_vs}';" style="padding:4px 10px;border-radius:5px;border:1px solid #e5e7eb;background:#fff;color:#6b7280;font-size:10px;font-weight:600;cursor:pointer;letter-spacing:0.04em;font-family:'Lexend',sans-serif;">Hide change ${_vs}</button>`
+    ? `<button class="presenter-control" onclick="var s=document.getElementById('slide-${slideId}');s.classList.toggle('hide-deltas');this.textContent=s.classList.contains('hide-deltas')?'Show change ${_vs}':'Hide change ${_vs}';" style="padding:4px 10px;border-radius:5px;border:1px solid #e5e7eb;background:#fff;color:#6b7280;font-size:10px;font-weight:600;cursor:pointer;letter-spacing:0.04em;font-family:'Lexend',sans-serif;">${startDeltasHidden ? `Show change ${_vs}` : `Hide change ${_vs}`}</button>`
     : "";
 
   // ── Sparkline toggle controls ──────────────────────────────────────────────
@@ -608,7 +619,7 @@ function renderExecSummary(d: ExecSummaryInput): { html: string; js: string } {
     : "";
 
   const html = `
-  <div class="slide" id="slide-${slideId}" style="background:#fff;flex-direction:column;padding:44px 56px 36px;overflow:hidden;">
+  <div class="slide${startDeltasHidden ? " hide-deltas" : ""}" id="slide-${slideId}" style="background:#fff;flex-direction:column;padding:44px 56px 36px;overflow:hidden;">
     <style>#slide-${slideId}.hide-deltas .exec-delta { display: none !important; }</style>
     <div style="flex-shrink:0;margin-bottom:24px;">
       <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;">
@@ -1869,6 +1880,13 @@ export default api({
     // call-site type (breaks QBR/new_logo callers that don't pass it); restored, with the
     // fallback handled at the derivation site instead (`growth_slides ?? "auto"`).
     growth_slides: z.enum(["auto", "include", "exclude"]).optional(),
+    // Exec tile sparklines / period-comparison pills, independent manual overrides (Kevin's
+    // ask - "I want to be able to toggle everything if we want", on top of the implicit
+    // sparklines-follow-growth-slides behavior). "auto" preserves today's derived default for
+    // each; "include"/"exclude" force it either way. Same plain-optional convention as
+    // growth_slides above (not .default()) for the same call-site-required reason.
+    sparklines: z.enum(["auto", "include", "exclude"]).optional(),
+    period_comparison: z.enum(["auto", "include", "exclude"]).optional(),
     // Resident/household terminology, every deck mode (Kevin's ask, 2026-08-19). Plain
     // optional like growth_slides above — same .default() call-site-required gotcha.
     terminology: z.enum(["resident", "household"]).optional(),
@@ -1925,7 +1943,7 @@ export default api({
     skipped_slides: z.array(z.object({ key: z.string(), label: z.string() })).optional(),
   }),
 
-  async run(ctx, { pmc_name, second_pmc, report_name, lookback_months, deck_mode, adoption_target, testimonials, total_portfolio_units, expansion_slides, presenting_mode, comparison_months, growth_slides, terminology, hidden_kpi_tiles, show_adoption_portfolio_avg, show_adoption_peer_median, show_engagement_observed, show_engagement_portfolio_avg, show_engagement_peer_median, imported_slides, hide_d2c }) {
+  async run(ctx, { pmc_name, second_pmc, report_name, lookback_months, deck_mode, adoption_target, testimonials, total_portfolio_units, expansion_slides, presenting_mode, comparison_months, growth_slides, sparklines, period_comparison, terminology, hidden_kpi_tiles, show_adoption_portfolio_avg, show_adoption_peer_median, show_engagement_observed, show_engagement_portfolio_avg, show_engagement_peer_median, imported_slides, hide_d2c }) {
     // Compute bp_safe_cutoff
     const today = new Date();
     const dayOfMonth = today.getDate();
@@ -3831,6 +3849,12 @@ export default api({
     const showGrowthSlides =
       growth_slides === "include" || ((growth_slides ?? "auto") === "auto" && is_smb);
 
+    // Sparklines / period-comparison manual overrides (Kevin's ask) - null means "auto" (no
+    // override; the existing derived default applies unchanged). Derived here, same reasoning
+    // as showGrowthSlides above - needed before the execResult call further down.
+    const sparklinesOverride = sparklines === "include" ? true : sparklines === "exclude" ? false : null;
+    const periodComparisonOverride = period_comparison === "include" ? true : period_comparison === "exclude" ? false : null;
+
     // --- Auto-derive evidence_type from property-level avg rent ---
     // Python logic: median of per-property (rent_paid / bills_paid); if < $950 → "affordable"
     let evidence_type: "high_rent" | "affordable" = "high_rent";
@@ -4740,13 +4764,20 @@ export default api({
       // that slide specifically is included (it renders the same data as a full chart).
       // An empty expansion_slides array means "no filter" (all slides included) per the
       // activeOrder build below — match that semantics here rather than treating [] as "off".
+      // sparklinesOverride is Expansion-only (Kevin's call: QBR stays exactly as-is - it never
+      // shows sparklines regardless, so an override has nothing to attach to there anyway).
+      // `?? ` so "auto" (null) falls through to the existing derived default unchanged.
       showSparklines: deck_mode === "qbr" ? false
-        : deck_mode === "expansion" ? !(showGrowthSlides && (
+        : deck_mode === "expansion" ? (sparklinesOverride ?? !(showGrowthSlides && (
             expansion_slides && expansion_slides.length > 0
               ? expansion_slides.includes("residents_units")
               : true
-          ))
+          )))
         : false,
+      // Same Expansion-only scoping as sparklinesOverride above - QBR's comparison pills always
+      // show today with no override mechanism to hook into, so leaving it false there preserves
+      // that exactly.
+      hidePeriodComparison: deck_mode === "expansion" && periodComparisonOverride === false,
       vsLabel,
     });
 
@@ -5302,6 +5333,7 @@ export default api({
           totalUnits: expTotalPortfolio,
           currentResidents: latestMonth?.billsPaid ?? 0,
           hasNiro: false,
+          dqWindowMonths: Math.min(dqMonths.length, 12),
         };
         const expNotesBenchmark: SpeakerNotesBenchmark = {
           benchmarkNar: canonicalPeerNarP50 ?? segmentNarAvg ?? 0.085,
@@ -5904,6 +5936,7 @@ export default api({
         totalUnits: totalUnitsAll,
         currentResidents: latestMonth?.billsPaid ?? 0,
         hasNiro: false,
+        dqWindowMonths: Math.min(dqMonths.length, 12),
       };
       const notesBenchmark: SpeakerNotesBenchmark = {
         benchmarkNar: canonicalPeerNarP50 ?? segmentNarAvg ?? 0.085,

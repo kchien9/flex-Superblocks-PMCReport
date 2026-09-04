@@ -27,6 +27,8 @@ export interface ExpansionFormState {
   comparison_months: number;
   delivery: string;
   growth_slides: string;
+  sparklines: string;
+  period_comparison: string;
   terminology: string;
   selected_slides: Set<string>;
   selected_metrics: Set<string>;
@@ -51,6 +53,8 @@ export function ExpansionTab({ pmcNames, pmcLoading, generating, onGenerate }: E
   const [comparisonMonths, setComparisonMonths] = useState(3);
   const [delivery, setDelivery] = useState("presenting");
   const [growthSlides, setGrowthSlides] = useState("auto");
+  const [sparklines, setSparklines] = useState("auto");
+  const [periodComparison, setPeriodComparison] = useState("auto");
   const [terminology, setTerminology] = useState("resident");
   const [selectedSlides, setSelectedSlides] = useState<Set<string>>(() => defaultSlideSet(EXPANSION_SLIDES));
   // Fixed — the picker for this was removed (server never reads it; the Peer Benchmarks slide
@@ -70,13 +74,15 @@ export function ExpansionTab({ pmcNames, pmcLoading, generating, onGenerate }: E
       comparison_months: comparisonMonths,
       delivery,
       growth_slides: growthSlides,
+      sparklines,
+      period_comparison: periodComparison,
       terminology,
       selected_slides: selectedSlides,
       selected_metrics: selectedMetrics,
       testimonials,
       imported_slides: importedSlides,
     });
-  }, [selectedPMC, totalPortfolioUnits, propertyIds, ownershipReportName, reviewPeriod, comparisonMonths, delivery, growthSlides, terminology, selectedSlides, selectedMetrics, testimonials, importedSlides, onGenerate]);
+  }, [selectedPMC, totalPortfolioUnits, propertyIds, ownershipReportName, reviewPeriod, comparisonMonths, delivery, growthSlides, sparklines, periodComparison, terminology, selectedSlides, selectedMetrics, testimonials, importedSlides, onGenerate]);
 
   const inputCls = "w-full px-3 py-2 text-sm border border-gray-200 rounded-[4px] focus:outline-none focus:ring-2 focus:ring-[#6A3DB8]/30 focus:border-[#6A3DB8]";
 
@@ -163,6 +169,20 @@ export function ExpansionTab({ pmcNames, pmcLoading, generating, onGenerate }: E
             <ToggleGroup options={[{ value: "auto", label: "Auto" }, { value: "include", label: "Include" }, { value: "exclude", label: "Exclude" }]} value={growthSlides} onChange={setGrowthSlides} />
           </div>
           <p className="text-[11px] text-gray-400 mt-1">Auto: on for SMB (no AM running a separate QBR, so this deck doubles as their performance review), off for MM+/Enterprise (their AM already covers performance in a dedicated QBR, so this stays focused on the expansion ask). Include if this account has no AM, or you want to show the historic trend anyway.</p>
+        </div>
+        <div>
+          <div className="flex items-center justify-between">
+            <label className="text-sm font-medium text-gray-700">Exec tile sparklines</label>
+            <ToggleGroup options={[{ value: "auto", label: "Auto" }, { value: "include", label: "Include" }, { value: "exclude", label: "Exclude" }]} value={sparklines} onChange={setSparklines} />
+          </div>
+          <p className="text-[11px] text-gray-400 mt-1">Auto: shows on the exec tile whenever Growth trend slides above are off (a condensed stand-in for the full charts), hidden when they are on (no need for both). Override either way independent of that setting.</p>
+        </div>
+        <div>
+          <div className="flex items-center justify-between">
+            <label className="text-sm font-medium text-gray-700">Exec tile period comparison</label>
+            <ToggleGroup options={[{ value: "auto", label: "Auto" }, { value: "include", label: "Include" }, { value: "exclude", label: "Exclude" }]} value={periodComparison} onChange={setPeriodComparison} />
+          </div>
+          <p className="text-[11px] text-gray-400 mt-1">Auto/Include: the &quot;vs last period&quot; change pills on the exec tile start visible (AEs can still hide them live in the deck). Exclude starts them hidden instead - useful when you do not want a change callout in front of the room by default.</p>
         </div>
         <div>
           <div className="flex items-center justify-between">
