@@ -3656,9 +3656,17 @@ export default api({
     const lifetimeRent = monthlyTotals.reduce((sum, m) => sum + m.rentPaid, 0);
 
     // --- Compute True Repeat Rate from PARTNER_REPORTING_CORE_METRICS ---
+    // RELIABLE_REPEAT_RATE_MIN (Kevin's catch, live-verified against a real "100.0% of
+    // eligible residents came back" hero stat on a small portfolio): this ratio is a real,
+    // correctly-computed number that's still meaningless as a headline when the denominator is
+    // tiny - 1 resident paying again out of 1 who paid last month is a genuine 100%, not a
+    // real retention story. Same bug class as the rent-bucket/delinquency floors added this
+    // session; this metric had none at all. Applied to BOTH sources below (this MoM fallback
+    // and the cohort-derived value near retentionCohortRows), same threshold either way.
+    const RELIABLE_REPEAT_RATE_MIN = 10;
     const latestMetrics = metricsRows.find((r) => r.BP_MONTH === latestCompletedMonth);
     let trueRepeatRate: number | null = null;
-    if (latestMetrics && latestMetrics.BILLS_PAID_REPEAT != null && latestMetrics.BILLS_PAID_PREV_MONTH != null && latestMetrics.BILLS_PAID_PREV_MONTH > 0) {
+    if (latestMetrics && latestMetrics.BILLS_PAID_REPEAT != null && latestMetrics.BILLS_PAID_PREV_MONTH != null && latestMetrics.BILLS_PAID_PREV_MONTH >= RELIABLE_REPEAT_RATE_MIN) {
       trueRepeatRate = Math.min(1, latestMetrics.BILLS_PAID_REPEAT / latestMetrics.BILLS_PAID_PREV_MONTH);
     }
 
@@ -4588,8 +4596,12 @@ export default api({
           .reduce((sum, r) => sum + (r.TOTAL_RENT_SHIELDED ?? 0), 0)
       : null;
 
-    // Cohort-based true repeat rate (preferred over MoM aggregate — matches Flask)
-    const cohortTrueRepeatEarly = retentionCohortRows.length > 0
+    // Cohort-based true repeat rate (preferred over MoM aggregate — matches Flask). Gated on
+    // TOTAL_CUSTOMERS (same RELIABLE_REPEAT_RATE_MIN floor as the MoM fallback above) - this is
+    // the single, shared, gated source every downstream reader of the cohort repeat rate uses
+    // (also feeds subjectRepeatValue and cohortTrueRepeatRate below), so the floor can't be
+    // applied at one read site and forgotten at another.
+    const cohortTrueRepeatEarly = (retentionCohortRows.length > 0 && (retentionCohortRows[0]?.TOTAL_CUSTOMERS ?? 0) >= RELIABLE_REPEAT_RATE_MIN)
       ? retentionCohortRows[0]?.TRUE_REPEAT_RATE ?? null
       : null;
     const effectiveTrueRepeat = cohortTrueRepeatEarly ?? trueRepeatRate;
@@ -4679,7 +4691,7 @@ export default api({
     // Computed here (shared by both QBR and expansion mode, which branches before QBR's own
     // later retention-slide computation of the same value) so it exists before either code path
     // that might read it.
-    const subjectRepeatValue = (retentionCohortRows[0]?.TRUE_REPEAT_RATE ?? trueRepeatRate) ?? retentionAvg;
+    const subjectRepeatValue = (cohortTrueRepeatEarly ?? trueRepeatRate) ?? retentionAvg;
 
     let loyaltyBuckets: { name: string; description: string; count: number; color: string }[] | null = null;
     let loyaltyTotal = 0;
@@ -4959,7 +4971,12 @@ export default api({
               slideId: slideNum,
               pmcName: pmcDisplayName,
               reportingMonth: latestCompletedMonth,
-              trueRepeatRate,
+              // Was the bare MoM-based trueRepeatRate directly - unlike QBR's own retention
+              // slide, which already prefers the cohort-derived value (stable lifetime metric,
+              // matches Flask) over the MoM fallback (non-deterministic across months). Fixed
+              // to use the same preference here, so Expansion's hero stat isn't a different,
+              // less-reliable number than QBR's for the same PMC.
+              trueRepeatRate: cohortTrueRepeatEarly ?? trueRepeatRate,
               avgRetention: retentionAvg,
               momRates: momRetentionRates,
               loyaltyBuckets,
@@ -5443,12 +5460,10 @@ export default api({
     // Use cohort-derived true repeat rate (lifetime metric, stable across runs).
     // The MoM fallback (trueRepeatRate) measures a different thing and is non-deterministic
     // across months, so only use it if the cohort query genuinely has no data.
-    let cohortTrueRepeatRate: number | null = null;
-    if (retentionCohortRows.length > 0) {
-      const trueRepeat = retentionCohortRows[0]?.TRUE_REPEAT_RATE;
-      if (trueRepeat != null) cohortTrueRepeatRate = trueRepeat;
-    }
-    const finalTrueRepeatRate = cohortTrueRepeatRate ?? trueRepeatRate;
+    // Reuses cohortTrueRepeatEarly (already gated on RELIABLE_REPEAT_RATE_MIN above) rather
+    // than re-reading TRUE_REPEAT_RATE raw - same value QBR's exec tile and Peer Benchmarks
+    // already use, so this slide's hero stat can't drift from what the rest of the deck shows.
+    const finalTrueRepeatRate = cohortTrueRepeatEarly ?? trueRepeatRate;
 
     // Average rent per resident per month (for KPI card) — from monthlyTotals (real,
     // PROPERTY_BP_MONTH_STATS-derived), not the fabricated PARTNER_REPORTING_CORE_METRICS table.

@@ -1772,7 +1772,7 @@ export function renderRetention(input: {
     <div style="display:flex;flex-direction:column;gap:8px;min-height:0;overflow:hidden;">
       <div style="flex-shrink:0;min-height:56px;">
         <div style="display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;">
-          <div style="font-size:46px;font-weight:400;color:${heroColor};letter-spacing:-0.03em;line-height:1;">${(heroVal * 100).toFixed(1)}%</div>
+          <div style="font-size:46px;font-weight:400;color:${heroColor};letter-spacing:-0.03em;line-height:1;">${Math.round(heroVal * 100)}%</div>
           <div style="font-size:11px;color:#6b7280;">${_e(heroSub)}</div>
         </div>
       </div>
