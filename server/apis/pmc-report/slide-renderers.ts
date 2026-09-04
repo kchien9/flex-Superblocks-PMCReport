@@ -2411,7 +2411,12 @@ export function renderHighRentAdoption(input: RentBucketInput): { html: string; 
 
   // Filter empty buckets and compute shares
   const filledLabels = bucketOrder.filter((l) => bucketAgg[l].users > 0);
-  if (filledLabels.length === 0) return { html: "", js: "" };
+  // Hide entirely below a real bucket-count floor (Kevin's catch, round 2, live-verified:
+  // AMBO Properties had a perfectly healthy resident count - real dollar figures, real
+  // percentages - but the residents landed in only 2 of the up-to-5 rent buckets. "Flex works
+  // at every rent level" isn't a real story with 2 buckets - it's just a binary split, not a
+  // spread. Independent of the resident-count floor below; a big PMC can still fail this one.
+  if (filledLabels.length < 3) return { html: "", js: "" };
 
   const totalUsersRaw = filledLabels.reduce((s, l) => s + bucketAgg[l].users, 0);
   // Hide entirely below a real sample floor (Kevin's catch, live-verified: a 2-resident PMC
