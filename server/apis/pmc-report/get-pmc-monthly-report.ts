@@ -3435,6 +3435,91 @@ export default api({
       ? completedMonths[completedMonths.length - 1].month
       : monthlyTotals[monthlyTotals.length - 1]?.month || "";
 
+    // Resident-level rents for the "Flex For Everyone" rent-bucket slide's Last Month/All Time
+    // toggle (Kevin's ask - Expansion's own "high_rent" case never got this; QBR's has had it
+    // all along, as its own separate query further down used to fire unconditionally). Hoisted
+    // here (first point latestCompletedMonth is available) and shared by both modes instead of
+    // querying twice - both queries are scoped to a single subject PMC, no network-wide scan,
+    // no UDF chain, same "safe to extend to Expansion" profile as regionDetailPromise above.
+    const needsResidentRents = needsQBRQueries || deck_mode === "expansion";
+    const ResidentRentSchema = z.object({ RESIDENT_AMOUNT_PAID: z.number() });
+    const AlltimeResidentSchema = z.object({ RESIDENT_AMOUNT_PAID: z.number(), RESIDENT_TOTAL_PAID: z.number() });
+    const [residentRentRows, alltimeResidentRows] = !needsResidentRents
+      ? [[] as { RESIDENT_AMOUNT_PAID: number }[], [] as { RESIDENT_AMOUNT_PAID: number; RESIDENT_TOTAL_PAID: number }[]]
+      : await Promise.all([
+          ctx.integrations.snowflake_sso.query(
+            `WITH scoped_props AS (
+                SELECT PROPERTY_PUBLIC_ID, BP_MONTH
+                FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS
+                WHERE PMC_NAME = ?
+                  AND IS_IN_NETWORK = TRUE
+             ),
+             latest AS (
+                -- NAR_CHARGED_USERS lags PROPERTY_BP_MONTH_STATS's own BILLS_PAID_COUNT — a
+                -- month can already show as "completed" (bills paid > 0) before this table has
+                -- been populated for it. Requiring an exact match on latestCompletedMonth here
+                -- silently returned zero resident rows, which fell back to inflated property-
+                -- level totals. Mirrors Flask's pull_resident_detail (generator/data.py:3317-
+                -- 3327) exactly: the real "latest" for THIS table is whichever month it
+                -- actually has data joined for.
+                SELECT MAX(p.BP_MONTH) AS BP_MONTH
+                FROM scoped_props p
+                JOIN PRODUCTION.ANALYTICS.NAR_CHARGED_USERS n
+                   ON n.PROPERTY_PUBLIC_ID = p.PROPERTY_PUBLIC_ID AND n.BP_MONTH = p.BP_MONTH
+                WHERE n.HAS_BILL_PAID = TRUE AND p.BP_MONTH <= ?
+             )
+             SELECT n.RENT_AMOUNT AS RESIDENT_AMOUNT_PAID
+             FROM scoped_props p
+             JOIN PRODUCTION.ANALYTICS.NAR_CHARGED_USERS n
+               ON n.PROPERTY_PUBLIC_ID = p.PROPERTY_PUBLIC_ID AND n.BP_MONTH = p.BP_MONTH
+             WHERE p.BP_MONTH = (SELECT BP_MONTH FROM latest)
+               AND n.HAS_BILL_PAID = TRUE
+             LIMIT 50000`,
+            ResidentRentSchema,
+            [pmc_name, latestCompletedMonth],
+            { label: "Pull resident-level rents for rent bucket slide (last month)" }
+          ).catch(() => [] as { RESIDENT_AMOUNT_PAID: number }[]),
+          ctx.integrations.snowflake_sso.query(
+            `WITH active_props AS (
+                -- Only properties still IS_IN_NETWORK as of the latest completed month - mirrors
+                -- Flask's _active_property_pmc_pairs scoping for this exact slide
+                -- (generator/data.py:429, app.py:1501), which keeps All-Time honest by not
+                -- counting a departed property's old residents/rent. Without this, All-Time
+                -- silently included every property ever active under this PMC name, even ones
+                -- since sold/transferred/taken off Flex - which is why Last Month matched
+                -- between Flask and Clark but All-Time didn't (Kevin's catch).
+                SELECT DISTINCT PROPERTY_PUBLIC_ID
+                FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS
+                WHERE PMC_NAME = ? AND IS_IN_NETWORK = TRUE AND BP_MONTH = ?
+             ),
+             scoped_props AS (
+                SELECT PROPERTY_PUBLIC_ID, BP_MONTH
+                FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS
+                WHERE PMC_NAME = ?
+                  AND IS_IN_NETWORK = TRUE
+                  AND BP_MONTH < ?
+                  AND PROPERTY_PUBLIC_ID IN (SELECT PROPERTY_PUBLIC_ID FROM active_props)
+             )
+             SELECT
+                AVG(n.RENT_AMOUNT)   AS RESIDENT_AMOUNT_PAID,
+                SUM(n.RENT_AMOUNT)   AS RESIDENT_TOTAL_PAID
+             FROM scoped_props p
+             JOIN PRODUCTION.ANALYTICS.NAR_CHARGED_USERS n
+               ON n.PROPERTY_PUBLIC_ID = p.PROPERTY_PUBLIC_ID AND n.BP_MONTH = p.BP_MONTH
+             WHERE n.HAS_BILL_PAID = TRUE
+             GROUP BY n.CUSTOMER_PUBLIC_ID
+             LIMIT 50000`,
+            AlltimeResidentSchema,
+            [pmc_name, latestCompletedMonth, pmc_name, cutoffStr],
+            { label: "Pull all-time resident rent averages for rent bucket toggle" }
+          ).catch(() => [] as { RESIDENT_AMOUNT_PAID: number; RESIDENT_TOTAL_PAID: number }[]),
+        ]);
+    const residentRents = residentRentRows.filter((r) => r.RESIDENT_AMOUNT_PAID > 0).map((r) => r.RESIDENT_AMOUNT_PAID);
+    const alltimeResidentRents = alltimeResidentRows.filter((r) => r.RESIDENT_AMOUNT_PAID > 0).map((r) => ({
+      amountPaid: r.RESIDENT_AMOUNT_PAID,
+      totalPaid: r.RESIDENT_TOTAL_PAID,
+    }));
+
     // Property snapshot for latest completed month
     const latestRows = inNetwork.filter((r) => r.BP_MONTH === latestCompletedMonth);
     // Compute cumulative rent & prev-month signups per property for appendix table
@@ -5026,7 +5111,17 @@ export default api({
               const r = renderAffordableHousing({ slideId: slideNum, pmcName: pmcDisplayName, propertySnapshot: expRentBucketProps });
               pushSlide(sid, r);
             } else {
-              const r = renderHighRentAdoption({ slideId: slideNum, pmcName: pmcDisplayName, propertySnapshot: expRentBucketProps });
+              // residentRents/alltimeResidentRents were missing here (Kevin's ask) - QBR's own
+              // call to this same function passes both for the Last Month/All Time toggle;
+              // Expansion never did. Both are now hoisted/shared, computed once near
+              // latestCompletedMonth above.
+              const r = renderHighRentAdoption({
+                slideId: slideNum,
+                pmcName: pmcDisplayName,
+                propertySnapshot: expRentBucketProps,
+                residentRents: residentRents.length >= 4 ? residentRents : undefined,
+                alltimeResidentRents: alltimeResidentRents.length >= 4 ? alltimeResidentRents : undefined,
+              });
               pushSlide(sid, r);
             }
             break;
@@ -5384,87 +5479,8 @@ export default api({
     });
 
     // --- Flex Is For Everyone (high rent adoption) slide ---
-    // Query resident-level rent data for more accurate bucketing + All-Time toggle
-    const ResidentRentSchema = z.object({
-      RESIDENT_AMOUNT_PAID: z.number(),
-    });
-    const AlltimeResidentSchema = z.object({
-      RESIDENT_AMOUNT_PAID: z.number(),
-      RESIDENT_TOTAL_PAID: z.number(),
-    });
-    const [residentRentRows, alltimeResidentRows] = await Promise.all([
-      ctx.integrations.snowflake_sso.query(
-        `WITH scoped_props AS (
-            SELECT PROPERTY_PUBLIC_ID, BP_MONTH
-            FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS
-            WHERE PMC_NAME = ?
-              AND IS_IN_NETWORK = TRUE
-         ),
-         latest AS (
-            -- NAR_CHARGED_USERS lags PROPERTY_BP_MONTH_STATS's own BILLS_PAID_COUNT — a month
-            -- can already show as "completed" (bills paid > 0) before this table has been
-            -- populated for it. Requiring an exact match on latestCompletedMonth here silently
-            -- returned zero resident rows, which fell back to inflated property-level totals.
-            -- Mirrors Flask's pull_resident_detail (generator/data.py:3317-3327) exactly: the
-            -- real "latest" for THIS table is whichever month it actually has data joined for.
-            SELECT MAX(p.BP_MONTH) AS BP_MONTH
-            FROM scoped_props p
-            JOIN PRODUCTION.ANALYTICS.NAR_CHARGED_USERS n
-               ON n.PROPERTY_PUBLIC_ID = p.PROPERTY_PUBLIC_ID AND n.BP_MONTH = p.BP_MONTH
-            WHERE n.HAS_BILL_PAID = TRUE AND p.BP_MONTH <= ?
-         )
-         SELECT n.RENT_AMOUNT AS RESIDENT_AMOUNT_PAID
-         FROM scoped_props p
-         JOIN PRODUCTION.ANALYTICS.NAR_CHARGED_USERS n
-           ON n.PROPERTY_PUBLIC_ID = p.PROPERTY_PUBLIC_ID AND n.BP_MONTH = p.BP_MONTH
-         WHERE p.BP_MONTH = (SELECT BP_MONTH FROM latest)
-           AND n.HAS_BILL_PAID = TRUE
-         LIMIT 50000`,
-        ResidentRentSchema,
-        [pmc_name, latestCompletedMonth],
-        { label: "Pull resident-level rents for rent bucket slide (last month)" }
-      ).catch(() => [] as { RESIDENT_AMOUNT_PAID: number }[]),
-      ctx.integrations.snowflake_sso.query(
-        `WITH active_props AS (
-            -- Only properties still IS_IN_NETWORK as of the latest completed month - mirrors
-            -- Flask's _active_property_pmc_pairs scoping for this exact slide
-            -- (generator/data.py:429, app.py:1501), which keeps All-Time honest by not counting
-            -- a departed property's old residents/rent. Without this, All-Time silently
-            -- included every property ever active under this PMC name, even ones since
-            -- sold/transferred/taken off Flex - which is why Last Month matched between Flask
-            -- and Clark but All-Time didn't (Kevin's catch).
-            SELECT DISTINCT PROPERTY_PUBLIC_ID
-            FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS
-            WHERE PMC_NAME = ? AND IS_IN_NETWORK = TRUE AND BP_MONTH = ?
-         ),
-         scoped_props AS (
-            SELECT PROPERTY_PUBLIC_ID, BP_MONTH
-            FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS
-            WHERE PMC_NAME = ?
-              AND IS_IN_NETWORK = TRUE
-              AND BP_MONTH < ?
-              AND PROPERTY_PUBLIC_ID IN (SELECT PROPERTY_PUBLIC_ID FROM active_props)
-         )
-         SELECT
-            AVG(n.RENT_AMOUNT)   AS RESIDENT_AMOUNT_PAID,
-            SUM(n.RENT_AMOUNT)   AS RESIDENT_TOTAL_PAID
-         FROM scoped_props p
-         JOIN PRODUCTION.ANALYTICS.NAR_CHARGED_USERS n
-           ON n.PROPERTY_PUBLIC_ID = p.PROPERTY_PUBLIC_ID AND n.BP_MONTH = p.BP_MONTH
-         WHERE n.HAS_BILL_PAID = TRUE
-         GROUP BY n.CUSTOMER_PUBLIC_ID
-         LIMIT 50000`,
-        AlltimeResidentSchema,
-        [pmc_name, latestCompletedMonth, pmc_name, cutoffStr],
-        { label: "Pull all-time resident rent averages for rent bucket toggle" }
-      ).catch(() => [] as { RESIDENT_AMOUNT_PAID: number; RESIDENT_TOTAL_PAID: number }[]),
-    ]);
-    const residentRents = residentRentRows.filter((r) => r.RESIDENT_AMOUNT_PAID > 0).map((r) => r.RESIDENT_AMOUNT_PAID);
-    const alltimeResidentRents = alltimeResidentRows.filter((r) => r.RESIDENT_AMOUNT_PAID > 0).map((r) => ({
-      amountPaid: r.RESIDENT_AMOUNT_PAID,
-      totalPaid: r.RESIDENT_TOTAL_PAID,
-    }));
-
+    // residentRents/alltimeResidentRents now computed once, hoisted up near latestCompletedMonth
+    // (shared with Expansion's own "high_rent" case) - see the comment there.
     const flexForEveryoneResult = renderHighRentAdoption({
       slideId: 12,
       pmcName: pmcDisplayName,
