@@ -91,7 +91,15 @@ export function renderExpansionGap(input: ExpansionGapInput): SlideResult {
 
   const currLbl = fmtCurrency(currentRentMo);
   const projLbl = fmtCurrency(projRent);
-  const currRateFullLbl = fmtCurrency(currentRentMo + gapUnits * currentNar * avgRent);
+  // Raw value kept separate from its formatted label (Kevin's catch, live-verified) - the chart's
+  // Y-axis max below was scaled off projRent (the PEER-median scenario) alone, silently assuming
+  // that's always the tallest bar. It isn't, whenever this PMC's own rate beats the peer median
+  // (exactly the showPeer=false case - this PMC's own current rate is what actually gets plotted,
+  // and it can run well above the peer-based projRent). The real bars then exceeded the chart's
+  // own ceiling and got visually clipped flat at the top, with the floating "AT YOUR RATE" label
+  // showing the true (higher) number right next to bars that visibly didn't reach it.
+  const currRateFullRent = currentRentMo + gapUnits * currentNar * avgRent;
+  const currRateFullLbl = fmtCurrency(currRateFullRent);
   const showScenarioLines = totalPortfolio > 0 && gapUnits / Math.max(totalPortfolio, 1) >= 0.03;
   const nearFull = totalPortfolio > 0 && gapUnits / Math.max(totalPortfolio, 1) < 0.05;
 
@@ -312,6 +320,7 @@ window['initSlide${slideId}'] = (function() {
     const barColors = ${barColors};
     const barBorders = ${barBorders};
     const projRent = ${Math.round(projRent)};
+    const currRateFullRent = ${Math.round(currRateFullRent)};
     const currLbl = ${currLblJs};
     const projLbl = ${projLblJs};
     const currRateLbl = ${currRateFullLblJs};
@@ -480,7 +489,19 @@ window['initSlide${slideId}'] = (function() {
           y: {
             stacked: true,
             min: 0,
-            max: Math.ceil(projRent * 1.10 / 500000) * 500000,
+            // Scaled off the actual tallest STACKED bar (base + gap, matching how Chart.js
+            // really renders these two datasets), not a single named scenario value - whichever
+            // of "at your rate" or "at peer rate" is actually higher is what gets plotted, and
+            // the axis has to cover whichever one that turns out to be, not assume it in advance.
+            max: (function() {
+              var stackedMax = 0;
+              for (var i = 0; i < rentBaseVals.length; i++) {
+                var total = rentBaseVals[i] + rentGapVals[i];
+                if (total > stackedMax) stackedMax = total;
+              }
+              var trueMax = Math.max(stackedMax, projRent, currRateFullRent);
+              return Math.ceil(trueMax * 1.10 / 500000) * 500000;
+            })(),
             grid: { color: '#f3f4f6' },
             border: { display: false },
             title: { display: true, text: 'Rent guaranteed / mo', color: '#9ca3af', font: { size: 9 } },
