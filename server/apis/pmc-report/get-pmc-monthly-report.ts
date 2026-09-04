@@ -5088,6 +5088,9 @@ export default api({
               hasNiroActivity: false,
               benchmarkNar: canonicalPeerNarP50 ?? segmentNarAvg ?? 0.085,
               trueRepeatRate,
+              // Names the real window lifetimeDqShielded is summed over (Kevin's catch) -
+              // see the comment at its use inside renderExpansionCaseClose.
+              lookbackMonths: lookback_months,
             });
             pushSlide(sid, r);
             break;

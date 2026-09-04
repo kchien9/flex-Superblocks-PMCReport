@@ -76,9 +76,18 @@ export function renderExpansionGap(input: ExpansionGapInput): SlideResult {
   const p75Nar = _p75 ?? p50Nar * 1.30;
 
   const gapRentMo = Math.floor(gapUnits * currentNar) * avgRent;
-  let projRent = currentRentMo + gapUnits * p50Nar * avgRent;
-  projRent = Math.max(projRent, currentRentMo * 1.01);
-  const multiplier = projRent / Math.max(currentRentMo, 1);
+  // No artificial floor here (Kevin's catch, live-verified) - the old `Math.max(projRent,
+  // currentRentMo * 1.01)` fabricated a fake +1% growth number whenever the real peer-median
+  // NAR resolved to exactly 0 (a real condition for a degenerate/small peer cohort), even though
+  // the honest math says zero growth. Show the real projection, whatever it is.
+  const projRent = currentRentMo + gapUnits * p50Nar * avgRent;
+  // Guard against dividing by near-zero currentRentMo (Kevin's catch, live-verified: a portfolio
+  // in its first live month with $0 current rent produced a "Growth Multiplier" of 92820.0x -
+  // not a multiplier at all in that branch, just raw projected dollars mislabeled as a multiple).
+  // Below this floor there's no meaningful "today" to multiply from, so the multiplier itself
+  // isn't shown (see multiplierHtml below) rather than rendering a number with no real meaning.
+  const hasMeaningfulCurrentRent = currentRentMo >= 100;
+  const multiplier = hasMeaningfulCurrentRent ? projRent / currentRentMo : null;
 
   const currLbl = fmtCurrency(currentRentMo);
   const projLbl = fmtCurrency(projRent);
@@ -107,12 +116,21 @@ export function renderExpansionGap(input: ExpansionGapInput): SlideResult {
 
   if (nearFull) {
     const adoptDelta = (nar: number) => Math.max(0, Math.floor(flexUnits * nar) - residentsNow) * avgRent;
+    const p50Delta = adoptDelta(p50Nar);
+    const p75Delta = adoptDelta(p75Nar);
     leftTitle = "Fully enrolled.<br>Maximize adoption.";
-    leftBody = `${pmc} has ${flexUnits.toLocaleString()} units on Flex. Growing from ${(currentNar * 100).toFixed(1)}% to peer median adds significantly more in guaranteed rent - no new properties needed.`;
+    // Kevin's catch, live-verified: for a PMC already beating BOTH benchmarks (a real, and
+    // notably not rare, case - it's exactly your best customers, ≥95% enrolled and
+    // outperforming peer median), the scenario rows below correctly clamp to +$0/mo, but this
+    // copy used to unconditionally claim growing to peer median "adds significantly more" -
+    // a slide contradicting its own numbers. Branch the claim on whether there's real upside.
+    leftBody = (p50Delta === 0 && p75Delta === 0)
+      ? `${pmc} has ${flexUnits.toLocaleString()} units on Flex, already outperforming both the peer median and top-quartile adoption benchmark. There's no adoption upside left to capture here - the opportunity now is expanding to the rest of the portfolio.`
+      : `${pmc} has ${flexUnits.toLocaleString()} units on Flex. Growing from ${(currentNar * 100).toFixed(1)}% to peer median adds significantly more in guaranteed rent - no new properties needed.`;
     leftSectionLabel = `ADOPTION UPLIFT · ${flexUnits.toLocaleString()} ENROLLED UNITS`;
     scenarioRows =
-      scenRow("Peer Median", p50Nar, "#FCD34D", adoptDelta(p50Nar)) +
-      scenRow("Top Quartile", p75Nar, "#6EE7B7", adoptDelta(p75Nar));
+      scenRow("Peer Median", p50Nar, "#FCD34D", p50Delta) +
+      scenRow("Top Quartile", p75Nar, "#6EE7B7", p75Delta);
     multiplierHtml = "";
   } else {
     leftTitle = "Your model<br>is working.<br>Scale it.";
@@ -123,7 +141,11 @@ export function renderExpansionGap(input: ExpansionGapInput): SlideResult {
       scenRow("Peer Avg", p50Nar, "#FCD34D", enrollDelta(p50Nar)) +
       scenRow("Your Rate", currentNar, "#DDC6F9", enrollDelta(currentNar)) +
       scenRow("Top Performers", p75Nar, "#6EE7B7", enrollDelta(p75Nar));
-    multiplierHtml = `
+    // multiplier is null when currentRentMo is too small to divide by meaningfully (see the
+    // hasMeaningfulCurrentRent guard above) - show the projected dollar figures without the
+    // "×" framing rather than a number with no real meaning.
+    multiplierHtml = multiplier !== null
+      ? `
       <div style="border-top:1px solid rgba(255,255,255,0.12);padding-top:16px;margin-top:20px;">
         <div style="font-size:9px;letter-spacing:0.14em;text-transform:uppercase;color:rgba(255,255,255,0.32);margin-bottom:6px;">Growth Multiplier</div>
         <div style="display:flex;align-items:baseline;gap:3px;margin-bottom:4px;">
@@ -131,6 +153,11 @@ export function renderExpansionGap(input: ExpansionGapInput): SlideResult {
           <div style="font-size:22px;color:rgba(255,255,255,0.35);font-weight:300;">×</div>
         </div>
         <div style="font-size:11px;color:rgba(255,255,255,0.32);">${currLbl} today → ${projLbl} at full enrollment</div>
+      </div>`
+      : `
+      <div style="border-top:1px solid rgba(255,255,255,0.12);padding-top:16px;margin-top:20px;">
+        <div style="font-size:9px;letter-spacing:0.14em;text-transform:uppercase;color:rgba(255,255,255,0.32);margin-bottom:6px;">Growth Opportunity</div>
+        <div style="font-size:24px;font-weight:600;color:#fff;letter-spacing:-0.02em;line-height:1.3;">${projLbl}/mo at full enrollment</div>
       </div>`;
   }
 
@@ -498,6 +525,9 @@ export interface ExpansionCaseCloseInput {
   benchmarkNar?: number;
   /** True repeat rate (0–1) from cohort or aggregate */
   trueRepeatRate?: number | null;
+  /** Window lifetimeDqShielded is actually summed over (the report's Full/Quarter/YTD period),
+   * so proof-point 3's copy can name the real window instead of a hardcoded "12 months". */
+  lookbackMonths?: number;
 }
 
 export function renderExpansionCaseClose(input: ExpansionCaseCloseInput): SlideResult {
@@ -513,13 +543,21 @@ export function renderExpansionCaseClose(input: ExpansionCaseCloseInput): SlideR
     lifetimeDqShielded = 0,
     hasNiroActivity = false,
     benchmarkNar = 0.085,
+    lookbackMonths = 12,
   } = input;
 
   const pmc = _e(pmcName);
   const gapUnits = Math.max(totalPort - flexUnits, 0);
   const avgRentVal = Math.round(currentRent / Math.max(residentsNow, 1)) || 1365;
   const gapRentMo = Math.floor(gapUnits * currentNar) * avgRentVal;
-  const enrollPct = Math.round(flexUnits / Math.max(totalPort, 1) * 100);
+  // Clamped to [0, 100] (Kevin's catch, live-verified) - totalPort comes from a manual AE field
+  // or a Salesforce total-units pull that can legitimately be stale relative to actual
+  // enrollment (e.g. SFDC not yet updated after a portfolio grew). Without the clamp, a stale
+  // totalPort smaller than flexUnits renders "150% of your portfolio on Flex · -50% still to
+  // go" - a nonsensical number on a slide the customer sees live. renderExpansionGap's
+  // equivalent (`gapUnits = Math.max(totalPortfolio - flexUnits, 0)`) already guarded against
+  // the same bad input; this slide was missed.
+  const enrollPct = Math.max(0, Math.min(100, Math.round(flexUnits / Math.max(totalPort, 1) * 100)));
 
   function finding(n: string, headline: string, body: string): string {
     return `
@@ -561,8 +599,14 @@ export function renderExpansionCaseClose(input: ExpansionCaseCloseInput): SlideR
 
   let f3: string;
   if (lifetimeDqShielded > 0) {
+    // "over the last 12 months" was hardcoded regardless of the actual window this dollar
+    // figure is summed over (Kevin's catch, live-verified: lifetimeDqShielded is windowed to
+    // the report's own Full/Quarter/YTD lookback_months upstream - a Quarter run sums 3 months
+    // but the copy claimed 12, understating Flex's real annualized value by ~4x). Same "$
+    // doesn't match its own label" bug class already fixed on the exec-summary tile and the
+    // standalone Delinquency slide - naming the real window here too, same wording pattern.
     f3 = finding("3",
-      `Flex has absorbed ${fmtCurrency(lifetimeDqShielded)} in delinquency risk over the last 12 months - money you kept`,
+      `Flex has absorbed ${fmtCurrency(lifetimeDqShielded)} in delinquency risk over the trailing ${lookbackMonths} month${lookbackMonths === 1 ? "" : "s"} - money you kept`,
       "When residents missed payments, Flex paid you anyway. That guarantee extends across every enrolled unit - and compounds as more of your portfolio joins."
     );
   } else {
@@ -634,7 +678,12 @@ export function renderExpansionMetrosight(input: ExpansionMetrosightInput): Slid
   const { slideId, pmcName, enrolledUnits: flexUnits, totalPortfolioUnits: totalPort, avgRent } = input;
   const pmc = _e(pmcName);
   const gapUnits = Math.max(totalPort - flexUnits, 0);
-  const avgRentVal = avgRent || 1365;
+  // Rounded (Kevin's catch, live-verified) - avgRent arrives unrounded from its call site
+  // (rentPaid / billsPaid), and toLocaleString doesn't round on its own, so an unlucky division
+  // rendered as "$1,427.432/mo" - fractional cents on a slide the customer sees live, right next
+  // to properly-rounded dollar figures elsewhere in the same deck. Every other avg-rent
+  // computation in this file already wraps this same formula in Math.round; this one was missed.
+  const avgRentVal = Math.round(avgRent) || 1365;
 
   const lateCur  = Math.max(1, Math.round(flexUnits * 0.03));
   const vacCur   = Math.max(1, Math.round(flexUnits / 100 * 2.1));
