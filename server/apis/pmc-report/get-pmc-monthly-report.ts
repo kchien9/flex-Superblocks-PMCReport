@@ -1937,6 +1937,37 @@ export default api({
     // not having enough real data to make a credible chart, so the UI can tell them what
     // happened instead of leaving a silent gap they have to notice and wonder about.
     skipped_slides: z.array(z.object({ key: z.string(), label: z.string() })).optional(),
+    // Raw rows for the client-side "Data Workbook" download (Kevin's ask) - QBR + Expansion
+    // only for now. Built client-side, not server-side: this repo already treats server-side
+    // xlsx generation as unreliable inside the Superblocks sandbox (see market-map-data.ts's
+    // dynamic-import-with-soft-fail), while client-side xlsx usage (NewLogoTab.tsx) is a proven
+    // working path - so this just ships the already-computed rows as plain JSON and lets the
+    // browser build the actual .xlsx.
+    workbook_data: z.object({
+      summary: z.object({
+        pmcName: z.string(),
+        reportingMonth: z.string().nullable(),
+        partnerSince: z.string().nullable(),
+        propertyCount: z.number(),
+        currentAdoptionRate: z.number(),
+        currentResidents: z.number(),
+        currentRentPaid: z.number(),
+        lifetimeRent: z.number(),
+      }),
+      historical: z.array(z.object({
+        month: z.string(), billsPaid: z.number(), units: z.number(),
+        rentPaid: z.number(), newSignups: z.number(), adoptionRate: z.number(),
+      })),
+      properties: z.array(z.object({
+        propertyName: z.string(), units: z.number(), billsPaid: z.number(),
+        newSignups: z.number(), adoptionRate: z.number(), propertyState: z.string(),
+        rentPaid: z.number(), cumRent: z.number(), rolloutMonth: z.string().nullable(),
+      })),
+      cohorts: z.array(z.object({
+        rolloutMonth: z.string(), propertyCount: z.number(), totalUnits: z.number(),
+        currentResidents: z.number(), currentRent: z.number(), cohortNar: z.number(),
+      })),
+    }).optional(),
   }),
 
   async run(ctx, { pmc_name, second_pmc, report_name, lookback_months, deck_mode, adoption_target, testimonials, total_portfolio_units, expansion_slides, presenting_mode, comparison_months, growth_slides, sparklines, period_comparison, terminology, hidden_kpi_tiles, show_adoption_portfolio_avg, show_adoption_peer_median, show_engagement_observed, show_engagement_portfolio_avg, show_engagement_peer_median, imported_slides, hide_d2c }) {
@@ -5388,7 +5419,36 @@ export default api({
         console.warn(`[PMC Report] expansion speaker notes generation failed for ${pmc_name}: ${e instanceof Error ? e.message : String(e)}`);
       }
 
-      return { html, empty: false, notes_html: expNotesHtml, skipped_slides: expSkippedSlides };
+      // Data Workbook (Kevin's ask) - raw rows for the client-side .xlsx build. Reuses the
+      // exact same source variables/mappings already used a few lines above for the speaker
+      // notes (propertySnapshot, monthlyTotals, cohorts) - no new derivation.
+      const workbookData = {
+        summary: {
+          pmcName: pmcDisplayName,
+          reportingMonth: latestCompletedMonth,
+          partnerSince,
+          propertyCount: uniqueProperties.size,
+          currentAdoptionRate: latestMonth?.adoptionRate ?? 0,
+          currentResidents: latestMonth?.billsPaid ?? 0,
+          currentRentPaid: latestMonth?.rentPaid ?? 0,
+          lifetimeRent,
+        },
+        historical: monthlyTotals.map((m) => ({
+          month: m.month, billsPaid: m.billsPaid, units: m.units,
+          rentPaid: m.rentPaid, newSignups: m.newSignups, adoptionRate: m.adoptionRate,
+        })),
+        properties: propertySnapshot.map((p) => ({
+          propertyName: p.propertyName, units: p.units, billsPaid: p.billsPaid,
+          newSignups: p.newSignups, adoptionRate: p.adoptionRate, propertyState: p.propertyState,
+          rentPaid: p.rentPaid, cumRent: p.cumRent, rolloutMonth: p.rolloutMonth,
+        })),
+        cohorts: cohorts.map((c) => ({
+          rolloutMonth: c.rolloutMonth, propertyCount: c.propertyCount, totalUnits: c.totalUnits,
+          currentResidents: c.currentResidents, currentRent: c.currentRent, cohortNar: c.cohortNar,
+        })),
+      };
+
+      return { html, empty: false, notes_html: expNotesHtml, skipped_slides: expSkippedSlides, workbook_data: workbookData };
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -5998,6 +6058,35 @@ export default api({
       console.warn(`[PMC Report] speaker notes generation failed for ${pmc_name}: ${e instanceof Error ? e.message : String(e)}`);
     }
 
-    return { html, empty: false, notes_html: notesHtml };
+    // Data Workbook (Kevin's ask) - same shape/mapping as Expansion's own workbookData above,
+    // just reading from QBR's own variable names (displayName instead of pmcDisplayName) for
+    // the same underlying shared source data.
+    const workbookData = {
+      summary: {
+        pmcName: displayName,
+        reportingMonth: latestCompletedMonth,
+        partnerSince,
+        propertyCount: uniqueProperties.size,
+        currentAdoptionRate: latestMonth?.adoptionRate ?? 0,
+        currentResidents: latestMonth?.billsPaid ?? 0,
+        currentRentPaid: latestMonth?.rentPaid ?? 0,
+        lifetimeRent,
+      },
+      historical: monthlyTotals.map((m) => ({
+        month: m.month, billsPaid: m.billsPaid, units: m.units,
+        rentPaid: m.rentPaid, newSignups: m.newSignups, adoptionRate: m.adoptionRate,
+      })),
+      properties: propertySnapshot.map((p) => ({
+        propertyName: p.propertyName, units: p.units, billsPaid: p.billsPaid,
+        newSignups: p.newSignups, adoptionRate: p.adoptionRate, propertyState: p.propertyState,
+        rentPaid: p.rentPaid, cumRent: p.cumRent, rolloutMonth: p.rolloutMonth,
+      })),
+      cohorts: cohorts.map((c) => ({
+        rolloutMonth: c.rolloutMonth, propertyCount: c.propertyCount, totalUnits: c.totalUnits,
+        currentResidents: c.currentResidents, currentRent: c.currentRent, cohortNar: c.cohortNar,
+      })),
+    };
+
+    return { html, empty: false, notes_html: notesHtml, workbook_data: workbookData };
   },
 });

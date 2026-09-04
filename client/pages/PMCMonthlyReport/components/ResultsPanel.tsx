@@ -1,5 +1,6 @@
 import { Loader2, FileBarChart, Download, FileSpreadsheet, FileText, AlertTriangle, Copy, Check, RefreshCw, XCircle, Info } from "lucide-react";
 import { useState, useCallback, useEffect, useRef } from "react";
+import * as XLSX from "xlsx";
 
 // Blob + object-URL download instead of a `data:` URI href. A data: URI encodes the ENTIRE
 // file content into the URL itself — for a full 21-slide deck (now the default selection) or a
@@ -19,9 +20,36 @@ function downloadHtml(content: string, filename: string) {
   URL.revokeObjectURL(url);
 }
 
+interface WorkbookData {
+  summary: {
+    pmcName: string; reportingMonth: string | null; partnerSince: string | null;
+    propertyCount: number; currentAdoptionRate: number; currentResidents: number;
+    currentRentPaid: number; lifetimeRent: number;
+  };
+  historical: { month: string; billsPaid: number; units: number; rentPaid: number; newSignups: number; adoptionRate: number }[];
+  properties: { propertyName: string; units: number; billsPaid: number; newSignups: number; adoptionRate: number; propertyState: string; rentPaid: number; cumRent: number; rolloutMonth: string | null }[];
+  cohorts: { rolloutMonth: string; propertyCount: number; totalUnits: number; currentResidents: number; currentRent: number; cohortNar: number }[];
+}
+
+// Built client-side, not server-side (Kevin's ask, "Data Workbook" button) - this repo already
+// treats server-side xlsx generation as unreliable inside the Superblocks sandbox
+// (market-map-data.ts's dynamic-import-with-soft-fail), while client-side xlsx usage
+// (NewLogoTab.tsx) is a proven working path. XLSX.writeFile is SheetJS's own browser-safe
+// save-file call - no need to hand-roll the Blob/anchor dance downloadHtml above uses (that
+// existed to dodge a data: URI length limit that doesn't apply to a binary file download).
+function downloadWorkbook(data: WorkbookData | undefined, filename: string) {
+  if (!data) return;
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet([data.summary]), "Summary");
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(data.historical), "Historical");
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(data.properties), "Properties");
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(data.cohorts), "Cohorts");
+  XLSX.writeFile(wb, filename);
+}
+
 interface ResultsPanelProps {
   generating: boolean;
-  reportData: { html?: string; empty?: boolean; flags?: string[]; emailDraft?: string; notes_html?: string; skipped_slides?: { key: string; label: string }[] } | null;
+  reportData: { html?: string; empty?: boolean; flags?: string[]; emailDraft?: string; notes_html?: string; skipped_slides?: { key: string; label: string }[]; workbook_data?: WorkbookData } | null;
   delivery: string;
   deckLabel: string;
   error?: unknown;
@@ -135,14 +163,25 @@ export function ResultsPanel({ generating, reportData, delivery, deckLabel, erro
             <Download className="h-3.5 w-3.5" />
             Slide Deck
           </button>
-          <button
-            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-gray-600 border border-gray-200 rounded-[4px] hover:bg-gray-50 transition-colors"
-            title="Data Workbook (Excel) — coming soon"
-            disabled
-          >
-            <FileSpreadsheet className="h-3.5 w-3.5" />
-            Data Workbook
-          </button>
+          {reportData.workbook_data ? (
+            <button
+              type="button"
+              onClick={() => downloadWorkbook(reportData.workbook_data, "data-workbook.xlsx")}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-[#6A3DB8] border border-[#6A3DB8]/30 rounded-[4px] hover:bg-[#EEE2FC] transition-colors"
+            >
+              <FileSpreadsheet className="h-3.5 w-3.5" />
+              Data Workbook
+            </button>
+          ) : (
+            <button
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-gray-600 border border-gray-200 rounded-[4px] hover:bg-gray-50 transition-colors"
+              title="Data Workbook (Excel) — not available for this deck type yet"
+              disabled
+            >
+              <FileSpreadsheet className="h-3.5 w-3.5" />
+              Data Workbook
+            </button>
+          )}
           {delivery === "presenting" && (
             reportData.notes_html ? (
               <button
