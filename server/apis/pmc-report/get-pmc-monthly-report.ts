@@ -316,14 +316,6 @@ function sparklineSvg(values: (number | null)[], color = "#6A3DB8", w = 64, h = 
 // --- HTML Slide Renderers ---
 
 function renderCover(kpis: { pmcName: string; reportingMonth: string; partnerSince: string | null; propertyCount: number; firstMonth: string | null; isExpansion?: boolean }): string {
-  // Reporting Period tile - was entirely missing (Flask's render_cover has a 3rd tile here:
-  // generator/slides.py:91-92, period_range = first_month label - reporting_month label).
-  // firstMonth is the earliest month in this report's own lookback window (monthlyTotals[0]),
-  // same source Flask uses (kpis["first_month"] = monthly["bp_month"].iloc[0]) - not the
-  // lifetime/since-inception window, which is a different, unbounded query (Kevin's catch).
-  const periodRange = kpis.firstMonth
-    ? `${monthLabel(kpis.firstMonth)} – ${monthLabel(kpis.reportingMonth)}`
-    : monthLabel(kpis.reportingMonth);
   // Deck label / props label vary by mode (Flask render_cover, generator/slides.py:53-67).
   // Only branching on is_expansion here (Kevin's catch) — Flask's third branch, is_pitch_mode
   // ("Flex Integration Opportunity" / OON-specific props label), belongs to a genuinely
@@ -331,11 +323,16 @@ function renderCover(kpis: { pmcName: string; reportingMonth: string; partnerSin
   // equivalent wired through this function yet — left as the existing default, not touched here.
   const deckLabel = kpis.isExpansion ? "Portfolio Expansion Opportunity" : "Flex Performance Review";
   const propsLabel = kpis.isExpansion ? "Properties on Flex" : "Properties Active";
-  // "Reporting Period" reads as QBR/review framing (Kevin's call - this isn't a review, it's
-  // an expansion pitch). Relabeled rather than removed on Expansion - the date range itself is
-  // still useful context for the performance slides that follow a few pages later; it's the
-  // word "Reporting" that fights the tone, not the underlying date range.
-  const periodLabel = kpis.isExpansion ? "Track Record" : "Reporting Period";
+  // Third tile ("Reporting Period", firstMonth–reportingMonth range) dropped entirely for
+  // Expansion (Kevin's ask - tried relabeling it "Track Record" first, didn't like that either;
+  // this isn't a review, so nothing needs to fill that slot). QBR keeps its own third tile
+  // exactly as before - Flask's render_cover, generator/slides.py:91-92.
+  const periodRange = kpis.firstMonth
+    ? `${monthLabel(kpis.firstMonth)} – ${monthLabel(kpis.reportingMonth)}`
+    : monthLabel(kpis.reportingMonth);
+  const periodTileHtml = kpis.isExpansion ? "" : `
+      <div><div style="font-size:10px;letter-spacing:0.14em;text-transform:uppercase;color:rgba(255,255,255,0.28);margin-bottom:6px;font-family:'ABCDiatype',sans-serif;">Reporting Period</div>
+           <div style="font-size:16px;font-weight:600;color:rgba(255,255,255,0.85);font-family:'ABCDiatype',sans-serif;">${periodRange}</div></div>`;
   return `
   <div class="slide active" id="slide-1" style="background:#2C194D;justify-content:center;align-items:flex-start;">
     <div style="font-size:11px;letter-spacing:0.18em;text-transform:uppercase;color:#DDC6F9;margin-bottom:20px;font-weight:600;font-family:'ABCDiatype',sans-serif;">${deckLabel}</div>
@@ -346,8 +343,7 @@ function renderCover(kpis: { pmcName: string; reportingMonth: string; partnerSin
            <div style="font-size:16px;font-weight:600;color:rgba(255,255,255,0.85);font-family:'ABCDiatype',sans-serif;">${monthLabel(kpis.partnerSince)}</div></div>
       <div><div style="font-size:10px;letter-spacing:0.14em;text-transform:uppercase;color:rgba(255,255,255,0.28);margin-bottom:6px;font-family:'ABCDiatype',sans-serif;">${propsLabel}</div>
            <div style="font-size:16px;font-weight:600;color:rgba(255,255,255,0.85);font-family:'ABCDiatype',sans-serif;">${kpis.propertyCount}</div></div>
-      <div><div style="font-size:10px;letter-spacing:0.14em;text-transform:uppercase;color:rgba(255,255,255,0.28);margin-bottom:6px;font-family:'ABCDiatype',sans-serif;">${periodLabel}</div>
-           <div style="font-size:16px;font-weight:600;color:rgba(255,255,255,0.85);font-family:'ABCDiatype',sans-serif;">${periodRange}</div></div>
+      ${periodTileHtml}
     </div>
     <div style="position:absolute;right:100px;top:50%;transform:translateY(-50%);width:380px;height:380px;border-radius:50%;background:radial-gradient(circle,rgba(106,61,184,0.22) 0%,transparent 68%);"></div>
     <div style="position:absolute;bottom:60px;right:80px;font-size:28px;font-weight:500;letter-spacing:-0.04em;color:rgba(255,255,255,0.15);font-family:'ABCDiatype',sans-serif;">flex</div>
@@ -5022,6 +5018,23 @@ export default api({
       }
       const expNarPerc = segmentPercentiles.find((s) => s.metric === "NAR");
 
+      // Hoisted so both the Adoption Rate chart's render call (case "adoption_trend" below) and
+      // the speaker-notes payload (expNotesKpis further down) read the same single value,
+      // rather than each recomputing it independently (same "one canonical source" rule this
+      // file already enforces for peer-median numbers).
+      let expMonthsSinceLaunch = 0;
+      if (earliestRollout && latestCompletedMonth) {
+        const [ey, em] = earliestRollout.split("-").map(Number);
+        const [ly, lm] = latestCompletedMonth.split("-").map(Number);
+        expMonthsSinceLaunch = (ly - ey) * 12 + (lm - em) + 1;
+      }
+      // Kevin's ask: the Adoption Rate chart's peer-median line/toggle should only appear on
+      // the Expansion deck when this PMC is genuinely beating peers - showing "you're behind"
+      // undercuts the whole pitch. Uses the same canonical peer value every other Expansion
+      // slide already reads from (see renderExpansionGap's p50Nar a bit further down).
+      const expPeerNarP50 = canonicalPeerNarP50 ?? expNarPerc?.p50 ?? null;
+      const isAbovePeerMedian = expPeerNarP50 != null && (latestMonth?.adoptionRate ?? 0) > expPeerNarP50;
+
       const expRentBucketProps = latestRows
         .map((r) => ({
           propertyName: r.PROPERTY_NAME,
@@ -5098,7 +5111,23 @@ export default api({
           }
 
           case "adoption_trend": {
-            const r = renderAdoptionTrend({ slideId: slideNum, monthly: monthlyTotals });
+            // Was missing kpis entirely (Kevin's catch) - QBR's own call to this same function
+            // passes stage_benchmarks/rolling_peer_median/locked_peers_criteria; Expansion never
+            // did, so the peer-median line + "Hide peer median" toggle never appeared here at
+            // all. Now gated on isAbovePeerMedian (computed above, near expNarPerc) - below/at
+            // median, kpis stays null and renderAdoptionTrend renders with no peer line at all,
+            // same code path QBR hits for a PMC with zero peer data.
+            const r = renderAdoptionTrend({
+              slideId: slideNum,
+              monthly: monthlyTotals,
+              kpis: isAbovePeerMedian ? {
+                pmc_name,
+                months_since_launch: expMonthsSinceLaunch,
+                stage_benchmarks: stageBenchmarksMap,
+                rolling_peer_median: Object.keys(rollingPeerMedianMap).length > 0 ? rollingPeerMedianMap : {},
+                locked_peers_criteria: lockedPeersCriteria,
+              } : null,
+            });
             pushSlide(sid, r);
             break;
           }
@@ -5316,17 +5345,16 @@ export default api({
       // --- Speaker notes ---
       let expNotesHtml: string | undefined;
       try {
-        let expMonthsSinceLaunch = 0;
-        if (earliestRollout && latestCompletedMonth) {
-          const [ey, em] = earliestRollout.split("-").map(Number);
-          const [ly, lm] = latestCompletedMonth.split("-").map(Number);
-          expMonthsSinceLaunch = (ly - ey) * 12 + (lm - em) + 1;
-        }
+        // expMonthsSinceLaunch computed once, above near expNarPerc - reused here rather than
+        // recomputed, so the notes and the Adoption Rate chart never disagree.
         const expNotesKpis: SpeakerNotesKpis = {
           pmcName: displayName,
           reportingMonth: latestCompletedMonth,
           monthsSinceLaunch: expMonthsSinceLaunch,
           currentNar: latestMonth?.adoptionRate ?? 0,
+          // Kevin's ask: when the Adoption Rate chart is showing a favorable peer comparison,
+          // coach the AE to lean into it (see notesAdoptionTrend's use of this field).
+          showingAbovePeerMedian: isAbovePeerMedian,
           currentBillsPaid: latestMonth?.billsPaid ?? 0,
           currentNewSignups: latestMonth?.newSignups ?? 0,
           targetNar: 0.15,

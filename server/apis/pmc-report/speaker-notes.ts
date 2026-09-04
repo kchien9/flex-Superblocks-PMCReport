@@ -90,6 +90,11 @@ export interface SpeakerNotesKpis {
   // fewer when the PMC doesn't have 12 months of DQ history yet (Kevin's ask: reps need to know
   // an "8 months" figure means 8 months of real data, not a truncated 12-month view).
   dqWindowMonths?: number;
+  // True only when Expansion's Adoption Rate chart is showing a peer-median line (i.e. this PMC
+  // is above peer median - see isAbovePeerMedian at its renderAdoptionTrend call site in
+  // get-pmc-monthly-report.ts). Left undefined for QBR, which shows the peer line
+  // unconditionally and has no equivalent gating to explain.
+  showingAbovePeerMedian?: boolean;
 }
 
 export interface SpeakerNotesBenchmark {
@@ -211,14 +216,23 @@ function notesTrend(label: string, col: "billsPaid" | "rentPaid" | "propertyCoun
 
 function notesAdoptionTrend(k: SpeakerNotesKpis, monthly: SpeakerNotesMonthlyRow[]): string[] {
   const stage = stageOf(k.monthsSinceLaunch);
-  const notes = [
-    "Solid purple is the portfolio's adoption rate. Grey dashed is the peer median — comparable PMCs at the same calendar months, not a fixed target.",
-    "If a third, lighter line appears, that's the established-cohort rate — properties past their first rollout month. A gap between that and the solid line means new-property rollouts are still diluting the portfolio number, which is a sign of growth, not underperformance.",
-  ];
+  // showingAbovePeerMedian is only ever explicitly false on Expansion (gated - below/at peer
+  // median, so the peer line genuinely isn't on this slide). Undefined means either QBR (no
+  // gating, peer line always shows when data exists) or Expansion above median - both cases
+  // describe the peer line normally.
+  const notes = k.showingAbovePeerMedian === false
+    ? ["Solid purple is the portfolio's adoption rate. No peer-median line on this one - this PMC isn't clearing peer median right now, so we're not putting a losing comparison in front of them. Keep the conversation on their own trend line instead."]
+    : ["Solid purple is the portfolio's adoption rate. Grey dashed is the peer median — comparable PMCs at the same calendar months, not a fixed target."];
+  notes.push("If a third, lighter line appears, that's the established-cohort rate — properties past their first rollout month. A gap between that and the solid line means new-property rollouts are still diluting the portfolio number, which is a sign of growth, not underperformance.");
   if (monthly.length >= 2) {
     const last = monthly[monthly.length - 1];
     const lastNar = last.units > 0 ? last.billsPaid / last.units : 0;
     notes.push(`Current adoption: ${pctStr(lastNar)} overall.`);
+  }
+  // Kevin's ask: when the peer line IS showing on Expansion, it's because this PMC is winning -
+  // coach the AE to use that as the bridge into the ask, not just report the number.
+  if (k.showingAbovePeerMedian === true) {
+    notes.push("This PMC is beating peer median right now — lean into it. Frame it as the case for expanding: 'you're already outperforming comparable PMCs, so let's get more of the portfolio doing this.' Don't just report the number, use it as the bridge to the ask.");
   }
   if (stage === "new") notes.push("For a new partner: adoption is still being pulled down by properties in their first month or two. Watch the trend direction more than the absolute level.");
   else if (stage === "established") notes.push("For a mature partner: if the portfolio rate and established-cohort rate track closely, that's expected. A big gap suggests a recent wave of new property rollouts — ask: 'Are there new properties we've added recently that are still ramping?'");
