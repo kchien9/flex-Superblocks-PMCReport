@@ -125,6 +125,20 @@ function notesCover(k: SpeakerNotesKpis): string[] {
   ];
 }
 
+// Expansion-specific Cover notes (Kevin's catch: notesCover above is a review/QBR framing -
+// "business review," "partnership review, not a report card." An expansion conversation isn't
+// a review of the past; it's a pitch to grow, using the past as the evidence. Kept as its own
+// function (not a branch inside notesCover) since getNotesForExpansionSlide is a fully separate
+// string-keyed dispatcher from QBR's numeric one - no risk of this touching QBR's copy.
+function notesCoverExpansion(k: SpeakerNotesKpis): string[] {
+  const month = monthStr(k.reportingMonth);
+  return [
+    `Welcome to ${k.pmcName}'s ${month} expansion conversation. This isn't a review of the past ${k.monthsSinceLaunch} months - it's the evidence for what comes next.`,
+    "Set the tone from the first slide: everything after this is proof, building toward one ask - roll Flex out to the rest of the portfolio. Don't let the room settle into 'here's how we did' mode.",
+    "Agenda preview: we'll show what's already working, how that compares to peers, then translate it directly into what rolling out the remainder of the portfolio looks like.",
+  ];
+}
+
 function notesKpis(k: SpeakerNotesKpis, monthly: SpeakerNotesMonthlyRow[]): string[] {
   const stage = stageOf(k.monthsSinceLaunch);
   const notes: string[] = [];
@@ -642,7 +656,7 @@ export function getNotesForExpansionSlide(
 ): string[] {
   try {
     switch (key) {
-      case "cover": return notesCover(k);
+      case "cover": return notesCoverExpansion(k);
       case "exec_bottom_line": return notesExpansionBottomLine(k, benchmark);
       case "by_state": return notesStateBreakdown();
       case "residents_units": return notesResidentsUnitsRent(monthly);
@@ -729,11 +743,21 @@ export function buildExpansionSpeakerNotesHtml(
       Flex &middot; Expansion Speaker Notes
     </div>
     <div style="font-size:24px;font-weight:700;letter-spacing:-0.02em;color:#1d1d1d;">${pmc}</div>
-    <div style="font-size:14px;color:#524e5b;margin-top:4px;">${reportMonth} Business Review</div>
+    <div style="font-size:14px;color:#524e5b;margin-top:4px;">${reportMonth} Expansion Conversation</div>
     <div class="callout">${stageLabel} &middot; ${k.monthsSinceLaunch} months on Flex</div>
     <div style="margin-top:12px;font-size:12px;color:#a09cb0;font-style:italic;">
       Confidential &mdash; for internal use only. Print before the meeting or keep open on a second screen.
     </div>
+  </div>
+  <div style="background:#f8f7ff;border:1px solid #ede9fe;border-radius:10px;padding:18px 22px;margin-bottom:32px;">
+    <div style="font-size:11px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:#6A3DB8;margin-bottom:10px;">How to Frame This Conversation</div>
+    <ul style="margin:0;padding-left:20px;color:#2C194D;font-size:13.5px;">
+      <li style="margin-bottom:8px;line-height:1.55;">This is an expansion conversation, not a performance review. Every slide exists to build one case: what's already working can work for the rest of the portfolio.</li>
+      <li style="margin-bottom:8px;line-height:1.55;">Lead with proof, then pivot immediately: open each performance slide with what's working today, then translate it into "here's what more of this looks like" - don't let the room settle into review mode.</li>
+      <li style="margin-bottom:8px;line-height:1.55;">The ask is the throughline, not one slide. Point back to it after every strong number: "that's exactly why the rest of the portfolio should look like this."</li>
+      <li style="margin-bottom:8px;line-height:1.55;">If a metric is below benchmark or declining, don't dwell on it as a report card - reframe as headroom: "here's what closing that gap is worth."</li>
+      <li style="margin-bottom:0;line-height:1.55;">Close on the ask, not a recap. The room should leave with a specific next step - which properties, what timeline - not a summary of the meeting.</li>
+    </ul>
   </div>
   ${wrapWithPropertyReferenceTabs(talkTrackHtml, propertyReferenceHtml)}
 </body>

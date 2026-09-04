@@ -331,6 +331,11 @@ function renderCover(kpis: { pmcName: string; reportingMonth: string; partnerSin
   // equivalent wired through this function yet — left as the existing default, not touched here.
   const deckLabel = kpis.isExpansion ? "Portfolio Expansion Opportunity" : "Flex Performance Review";
   const propsLabel = kpis.isExpansion ? "Properties on Flex" : "Properties Active";
+  // "Reporting Period" reads as QBR/review framing (Kevin's call - this isn't a review, it's
+  // an expansion pitch). Relabeled rather than removed on Expansion - the date range itself is
+  // still useful context for the performance slides that follow a few pages later; it's the
+  // word "Reporting" that fights the tone, not the underlying date range.
+  const periodLabel = kpis.isExpansion ? "Track Record" : "Reporting Period";
   return `
   <div class="slide active" id="slide-1" style="background:#2C194D;justify-content:center;align-items:flex-start;">
     <div style="font-size:11px;letter-spacing:0.18em;text-transform:uppercase;color:#DDC6F9;margin-bottom:20px;font-weight:600;font-family:'ABCDiatype',sans-serif;">${deckLabel}</div>
@@ -341,7 +346,7 @@ function renderCover(kpis: { pmcName: string; reportingMonth: string; partnerSin
            <div style="font-size:16px;font-weight:600;color:rgba(255,255,255,0.85);font-family:'ABCDiatype',sans-serif;">${monthLabel(kpis.partnerSince)}</div></div>
       <div><div style="font-size:10px;letter-spacing:0.14em;text-transform:uppercase;color:rgba(255,255,255,0.28);margin-bottom:6px;font-family:'ABCDiatype',sans-serif;">${propsLabel}</div>
            <div style="font-size:16px;font-weight:600;color:rgba(255,255,255,0.85);font-family:'ABCDiatype',sans-serif;">${kpis.propertyCount}</div></div>
-      <div><div style="font-size:10px;letter-spacing:0.14em;text-transform:uppercase;color:rgba(255,255,255,0.28);margin-bottom:6px;font-family:'ABCDiatype',sans-serif;">Reporting Period</div>
+      <div><div style="font-size:10px;letter-spacing:0.14em;text-transform:uppercase;color:rgba(255,255,255,0.28);margin-bottom:6px;font-family:'ABCDiatype',sans-serif;">${periodLabel}</div>
            <div style="font-size:16px;font-weight:600;color:rgba(255,255,255,0.85);font-family:'ABCDiatype',sans-serif;">${periodRange}</div></div>
     </div>
     <div style="position:absolute;right:100px;top:50%;transform:translateY(-50%);width:380px;height:380px;border-radius:50%;background:radial-gradient(circle,rgba(106,61,184,0.22) 0%,transparent 68%);"></div>
