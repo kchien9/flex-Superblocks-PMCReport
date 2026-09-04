@@ -59,7 +59,6 @@ export const EXPANSION_SLIDES: SlideOption[] = [
   { id: "retention", label: "Retention", defaultOn: true },
   { id: "high_rent", label: "Flex For Everyone", defaultOn: true },
   { id: "delinquency", label: "Delinquency", defaultOn: true },
-  { id: "peer_benchmarks", label: "Peer Benchmarks", defaultOn: true },
   { id: "expansion_metrosight", label: "MetroSight", defaultOn: true },
   { id: "expansion_gap", label: "Portfolio Gap", defaultOn: true },
   { id: "testimonials", label: "Testimonials", defaultOn: true },

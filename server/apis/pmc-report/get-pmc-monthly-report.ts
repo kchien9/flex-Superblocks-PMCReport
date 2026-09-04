@@ -4824,7 +4824,9 @@ export default api({
         "retention",           // resident behavior / loyalty bucket
         "high_rent",           // rent bucket
         "delinquency",         // DQ shielded
-        "peer_benchmarks",     // benchmarking
+        // "peer_benchmarks" removed (Kevin's call - "we don't need to show that" on Expansion).
+        // Its case in the switch below was removed too - unreachable dead code once it's gone
+        // from this order, same slide id/case still exists and stays live for QBR mode.
         "expansion_metrosight",
         "expansion_gap",
         "testimonials",
@@ -4949,33 +4951,6 @@ export default api({
             const cohortHtml = renderCohortAnalysis({ cohorts, reportingMonth: latestCompletedMonth, cohortMonthly, slideId: slideNum, presentingMode: presenting_mode });
             if (cohortHtml) expSlideHtmls.push(cohortHtml);
             else slideNum--; // no data — don't count this slot
-            break;
-          }
-
-          case "peer_benchmarks": {
-            // Use canonical-resolved metrics for NAR consistency - P25/P75 move WITH P50 from
-            // the same resolved tier (same fix as the QBR peer_benchmarks case above/below;
-            // this Expansion-mode copy had the identical stale-spread bug).
-            const expBenchMetrics = segmentPercentiles.map((m) => {
-              if (m.metric === "NAR" && canonicalPeerNarP50 != null) {
-                return {
-                  ...m,
-                  p50: canonicalPeerNarP50,
-                  p25: canonicalPeerNarP25 ?? m.p25,
-                  p75: canonicalPeerNarP75 ?? m.p75,
-                };
-              }
-              if (m.metric === "REPEAT_RATE" && subjectRepeatValue != null) return { ...m, pmcValue: subjectRepeatValue };
-              return m;
-            });
-            const r = renderPeerBenchmarks({
-              slideId: slideNum,
-              pmcName: pmcDisplayName,
-              segment: lockedPeersCriteria,
-              metrics: expBenchMetrics,
-              peerCount: lockedPeers.length,
-            });
-            pushSlide(sid, r);
             break;
           }
 

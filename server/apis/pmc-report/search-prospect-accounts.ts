@@ -122,6 +122,9 @@ export default api({
       WHERE a.ISDELETED = FALSE
         AND a.ACCOUNT_STATUS__C = 'Prospect'
         AND a.TYPE = 'PMC'
+        -- Deep SMB excluded from every account search in this tool (Kevin's call) - this
+        -- segment isn't a fit for either report type.
+        AND (a.SALES_SEGMENT__C IS NULL OR a.SALES_SEGMENT__C != 'Deep SMB')
         AND UPPER(a.NAME) LIKE UPPER(?)
       QUALIFY ROW_NUMBER() OVER (
           PARTITION BY a.ID
