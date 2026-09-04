@@ -17,7 +17,7 @@ import {
   renderImportedSlide,
 } from "./slide-renderers.js";
 import type { BenchmarkMetric, ResidentTrend, Testimonial, TrendFlag, YearlyData, NewRolloutCandidate, DisabledPropertyRow } from "./slide-renderers.js";
-import { buildSpeakerNotesHtml, buildExpansionSpeakerNotesHtml } from "./speaker-notes.js";
+import { buildSpeakerNotesHtml, buildExpansionSpeakerNotesHtml, EXPANSION_SLIDE_TITLES } from "./speaker-notes.js";
 import type { SpeakerNotesKpis, SpeakerNotesBenchmark, SpeakerNotesMonthlyRow } from "./speaker-notes.js";
 import {
   renderExpansionMetrosight,
@@ -1919,6 +1919,10 @@ export default api({
     html: z.string(),
     empty: z.boolean(),
     notes_html: z.string().optional(),
+    // Expansion only for now (Kevin's ask) - slides the AE selected that got auto-hidden for
+    // not having enough real data to make a credible chart, so the UI can tell them what
+    // happened instead of leaving a silent gap they have to notice and wonder about.
+    skipped_slides: z.array(z.object({ key: z.string(), label: z.string() })).optional(),
   }),
 
   async run(ctx, { pmc_name, second_pmc, report_name, lookback_months, deck_mode, adoption_target, testimonials, total_portfolio_units, expansion_slides, presenting_mode, comparison_months, growth_slides, terminology, hidden_kpi_tiles, show_adoption_portfolio_avg, show_adoption_peer_median, show_engagement_observed, show_engagement_portfolio_avg, show_engagement_peer_median, imported_slides, hide_d2c }) {
@@ -4819,12 +4823,20 @@ export default api({
       // position, in order, for speaker-notes generation below (mirrors Flask's
       // rendered_exp_sids: only slides that actually produced html, not everything attempted).
       const expRenderedKeys: string[] = [];
+      // Slides the AE selected that a renderer decided NOT to show - insufficient real sample
+      // to make a credible chart (Kevin's ask: surface this in the UI so an AE who notices
+      // fewer slides than expected isn't left guessing whether something's broken). Every
+      // Expansion slide funnels through pushSlide except cohort_overview's own raw push below,
+      // which is tracked the same way at its own call site.
+      const expSkippedSlides: { key: string; label: string }[] = [];
 
       const pushSlide = (sid: string, result: { html: string; js: string }) => {
         if (result.html) {
           expSlideHtmls.push(result.html);
           expRenderedKeys.push(sid);
           if (result.js) expSlideJsList.push(result.js);
+        } else {
+          expSkippedSlides.push({ key: sid, label: EXPANSION_SLIDE_TITLES[sid] ?? sid });
         }
       };
 
@@ -4967,7 +4979,10 @@ export default api({
           case "cohort_overview": {
             const cohortHtml = renderCohortAnalysis({ cohorts, reportingMonth: latestCompletedMonth, cohortMonthly, slideId: slideNum, presentingMode: presenting_mode });
             if (cohortHtml) expSlideHtmls.push(cohortHtml);
-            else slideNum--; // no data — don't count this slot
+            else {
+              slideNum--; // no data — don't count this slot
+              expSkippedSlides.push({ key: sid, label: EXPANSION_SLIDE_TITLES[sid] ?? sid });
+            }
             break;
           }
 
@@ -5207,7 +5222,7 @@ export default api({
         console.warn(`[PMC Report] expansion speaker notes generation failed for ${pmc_name}: ${e instanceof Error ? e.message : String(e)}`);
       }
 
-      return { html, empty: false, notes_html: expNotesHtml };
+      return { html, empty: false, notes_html: expNotesHtml, skipped_slides: expSkippedSlides };
     }
 
     // ─────────────────────────────────────────────────────────────────────────

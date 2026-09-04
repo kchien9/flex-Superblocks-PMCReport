@@ -631,7 +631,9 @@ const NOTES_TAB_STYLE = `
 // mode but MetroSight in expansion mode), so this can't safely share getNotesForSlide's numeric
 // switch. Separate string-keyed dispatch avoids reproducing that collision.
 
-const EXPANSION_SLIDE_TITLES: Record<string, string> = {
+// Exported so get-pmc-monthly-report.ts can reuse the same labels for the "N slides didn't
+// render" notice (Kevin's ask) instead of maintaining a second copy of these strings.
+export const EXPANSION_SLIDE_TITLES: Record<string, string> = {
   cover: "Cover",
   exec_bottom_line: "Executive Summary & The Case for Expanding",
   by_state: "Adoption by State",

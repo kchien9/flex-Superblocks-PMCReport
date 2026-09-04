@@ -1,4 +1,4 @@
-import { Loader2, FileBarChart, Download, FileSpreadsheet, FileText, AlertTriangle, Copy, Check, RefreshCw, XCircle } from "lucide-react";
+import { Loader2, FileBarChart, Download, FileSpreadsheet, FileText, AlertTriangle, Copy, Check, RefreshCw, XCircle, Info } from "lucide-react";
 import { useState, useCallback, useEffect, useRef } from "react";
 
 // Blob + object-URL download instead of a `data:` URI href. A data: URI encodes the ENTIRE
@@ -21,7 +21,7 @@ function downloadHtml(content: string, filename: string) {
 
 interface ResultsPanelProps {
   generating: boolean;
-  reportData: { html?: string; empty?: boolean; flags?: string[]; emailDraft?: string; notes_html?: string } | null;
+  reportData: { html?: string; empty?: boolean; flags?: string[]; emailDraft?: string; notes_html?: string; skipped_slides?: { key: string; label: string }[] } | null;
   delivery: string;
   deckLabel: string;
   error?: unknown;
@@ -179,6 +179,23 @@ export function ResultsPanel({ generating, reportData, delivery, deckLabel, erro
                   ))}
                 </ul>
               </div>
+            </div>
+          </div>
+        )}
+
+        {/* Slides auto-hidden for insufficient data (Kevin's ask) - calm/informational, not an
+            error, so an AE who notices fewer slides than they selected isn't left guessing
+            whether something's broken. */}
+        {reportData.skipped_slides && reportData.skipped_slides.length > 0 && (
+          <div className="p-3 bg-[#F5F2FF] border border-[#DCC9F2] rounded-[4px]">
+            <div className="flex items-start gap-2">
+              <Info className="h-4 w-4 text-[#6A3DB8] mt-0.5 shrink-0" />
+              <p className="text-xs text-[#2C194D]">
+                <span className="font-semibold">
+                  {reportData.skipped_slides.length} slide{reportData.skipped_slides.length === 1 ? "" : "s"} did not render
+                </span>
+                {" "}— not enough data yet to tell a reliable story: {reportData.skipped_slides.map((s) => s.label).join(", ")}.
+              </p>
             </div>
           </div>
         )}
