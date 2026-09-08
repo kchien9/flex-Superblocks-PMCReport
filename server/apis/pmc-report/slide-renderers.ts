@@ -3634,22 +3634,35 @@ export function renderCustomerExperience(input: {
         escapedName ? `<span style="font-weight:600;">${escapedName}</span>` : "",
         prop ? `<span style="color:#a09cb0;">\u00b7 ${prop}</span>` : "",
       ].filter(Boolean).join(" ");
-      // Kevin's catch, round 2 - a long quote's 4th line kept getting cropped mid-glyph with no
-      // ellipsis, in BOTH the 1-2-quote centered layout and the 3+-quote grid, so the cause was
-      // this <p> itself, not either layout wrapper. Round 1 (changing `flex:1` to `flex:1 1
-      // auto`, on the theory that flex-basis:0% was fighting line-clamp's own height math)
-      // didn't fix it. Round 2 stops relying on flexbox OR line-clamp to determine the box's
-      // actual pixel height at all: `flex:none` takes it out of flex distribution entirely, and
-      // `max-height:96px` (4 lines at 14px/1.55 ~= 87px, plus ~9px slack for font-metric
-      // rounding) hard-caps it independent of whatever the grid/flex ancestor forces on the
-      // card. -webkit-line-clamp/line-clamp stay on to try to add the "..." where a browser
-      // supports it, but the box can never again render taller than its own 4-line budget
-      // regardless of ancestor sizing, so there's nothing left for an ancestor's overflow:hidden
-      // to mid-glyph crop.
+      // Kevin's catch, round 3 - a quote kept showing a chopped-off glyph at the very end, no
+      // ellipsis. Rounds 1-2 (below) both assumed the QUOTE TEXT itself was too tall for the
+      // box and never fixed it, because that was the wrong read: Kevin's follow-up screenshot
+      // showed the full quote text intact, every word - the ONLY thing clipped was the
+      // decorative closing curly-quote glyph right after it. Real cause: that glyph's span had
+      // `font-size:22px;line-height:0;vertical-align:-0.3em` - line-height:0 means the span
+      // contributes nothing to its own line's height, so the browser positions the (bigger
+      // than the surrounding 14px text) glyph via vertical-align relative to the *existing*
+      // line box instead of expanding it, and the -0.3em downward shift pushes it partly below
+      // that line's bottom edge - which is exactly where the <p>'s overflow:hidden/max-height
+      // boundary sits. Fixed by making the glyph a normal, unshifted inline character instead
+      // of a manually-positioned one: line-height:1.55 (matches the paragraph's own, so it can
+      // never make a line taller than its neighbors) and vertical-align:baseline (no shift) -
+      // it now participates in ordinary line layout and can't render outside its line's own
+      // box for anything to crop. Font-size trimmed 22->16px too, so it reads as a normal
+      // closing quote mark at this size rather than looking oversized without the old shift.
+      //
+      // Rounds 1-2 (kept - real, if not the actual bug here): a long quote's 4th line getting
+      // cropped mid-glyph in BOTH the 1-2-quote centered layout and the 3+-quote grid pointed
+      // at this shared <p>, not either layout wrapper. Round 1 (flex:1 -> flex:1 1 auto, on the
+      // theory flex-basis:0% was fighting line-clamp's height math) didn't fix it. Round 2
+      // stopped relying on flexbox/line-clamp for height at all: flex:none takes it out of flex
+      // distribution, and max-height:96px (4 lines at 14px/1.55 ~= 87px + ~9px slack) hard-caps
+      // it regardless of what any ancestor forces on the card - genuinely useful insurance
+      // against the text itself ever overflowing, kept in place alongside the round-3 fix above.
       return `
         <div style="background:#f7f7f7;border-radius:12px;padding:14px 16px;display:flex;flex-direction:column;gap:8px;border:1px solid #eceaf2;min-height:0;overflow:hidden;">
           <div style="font-size:24px;line-height:1;color:#8d70ee;font-family:'ABCDiatype',sans-serif;margin-bottom:-6px;flex-shrink:0;">\u201c</div>
-          <p style="font-size:14px;line-height:1.55;color:#1d1d1d;font-style:italic;flex:none;max-height:96px;overflow:hidden;display:-webkit-box;-webkit-line-clamp:4;line-clamp:4;-webkit-box-orient:vertical;text-overflow:ellipsis;">${quote}<span style="font-size:22px;line-height:0;vertical-align:-0.3em;color:#8d70ee;font-family:'ABCDiatype',sans-serif;margin-left:2px;">\u201d</span></p>
+          <p style="font-size:14px;line-height:1.55;color:#1d1d1d;font-style:italic;flex:none;max-height:96px;overflow:hidden;display:-webkit-box;-webkit-line-clamp:4;line-clamp:4;-webkit-box-orient:vertical;text-overflow:ellipsis;">${quote}<span style="font-size:16px;line-height:1.55;vertical-align:baseline;color:#8d70ee;font-family:'ABCDiatype',sans-serif;margin-left:2px;">\u201d</span></p>
           <div style="display:flex;align-items:center;gap:8px;flex-shrink:0;">
             <div style="width:28px;height:28px;border-radius:50%;background:${avatarColor};display:flex;align-items:center;justify-content:center;font-size:12px;color:#fff;font-weight:700;flex-shrink:0;">${initial}</div>
             <div>
