@@ -2665,14 +2665,14 @@ export default api({
                 SUM(RENT_NOT_COLLECTED) AS RENT_NOT_COLLECTED,
                 SUM(NUMBER_OF_RESIDENTS) AS NUMBER_OF_RESIDENTS
          FROM PRODUCTION.EXTERNAL_REPORTING.DQ_PROPERTY
-         WHERE PMC_NAME = ?
+         WHERE PMC_NAME IN (${allPmcNames.map(() => "?").join(", ")})
            AND BP_MONTH >= DATEADD('month', -13, CURRENT_DATE())
            AND BP_MONTH < ?
          GROUP BY 1
          ORDER BY 1 DESC
          LIMIT 50`,
         DqShieldedRowSchema,
-        [pmc_name, cutoffStr],
+        [...allPmcNames, cutoffStr],
         { label: "Fetch DQ shielded data from DQ_PROPERTY" }
       ),
       needsQBRQueries
@@ -2686,7 +2686,7 @@ export default api({
                 SUM(CASE WHEN MONTH(BP_MONTH) <= ? THEN BILLS_PAID_COUNT ELSE 0 END) AS YTD_BILLS,
                 COUNT(DISTINCT CASE WHEN MONTH(BP_MONTH) <= ? THEN BP_MONTH END) AS YTD_MONTHS_ACTIVE
              FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS
-             WHERE PMC_NAME = ?
+             WHERE PMC_NAME IN (${allPmcNames.map(() => "?").join(", ")})
                AND BP_MONTH < ?
              GROUP BY 1
              ORDER BY 1
@@ -2699,7 +2699,7 @@ export default api({
             // time. A property's CURRENT network status has no bearing on whether past history
             // happened (Kevin's catch: Flask showed $12.43M/7,239 bills, this showed $12.4M/7,230).
             YearlyRentBillsSchema,
-            [cutoffMonthNum, cutoffMonthNum, cutoffMonthNum, pmc_name, cutoffStr],
+            [cutoffMonthNum, cutoffMonthNum, cutoffMonthNum, ...allPmcNames, cutoffStr],
             { label: "Fetch since-inception yearly totals (unbounded)" }
           )
         : Promise.resolve([] as z.infer<typeof YearlyRentBillsSchema>[]),
@@ -2746,14 +2746,14 @@ export default api({
             -- explains the small residual gap remaining after the first active-properties fix.
             SELECT PROPERTY_NAME
             FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS
-            WHERE PMC_NAME = ?
+            WHERE PMC_NAME IN (${allPmcNames.map(() => "?").join(", ")})
               AND BP_MONTH = ?::DATE
               AND IS_IN_NETWORK = TRUE
          ),
          scoped_props AS (
             SELECT PROPERTY_PUBLIC_ID, BP_MONTH
             FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS
-            WHERE PMC_NAME = ?
+            WHERE PMC_NAME IN (${allPmcNames.map(() => "?").join(", ")})
               AND PROPERTY_NAME IN (SELECT PROPERTY_NAME FROM active_properties)
               AND IS_IN_NETWORK = TRUE
               AND BP_MONTH >= DATEADD('month', -?, ?::DATE)
@@ -2810,11 +2810,11 @@ export default api({
          GROUP BY b.LOYALTY_BUCKET, t.cnt, r.cnt, e.cnt`,
         RetentionCohortSchema,
         // Flask: max(3, lookback_months) (app.py:730) — floor so a very short override can't
-        // starve the cohort window entirely. First two params (pmc_name, reportingMonthStr)
-        // resolve active_properties' latest-month snapshot; third (pmc_name again) is
+        // starve the cohort window entirely. First param group (allPmcNames, reportingMonthStr)
+        // resolves active_properties' latest-month snapshot; second allPmcNames spread is
         // scoped_props' own PMC_NAME filter, needed now that the join key is PROPERTY_NAME
         // (not unique across the whole network) instead of PROPERTY_PUBLIC_ID.
-        [pmc_name, reportingMonthStr, pmc_name, Math.max(3, lookback_months), cutoffStr, cutoffStr, reportingMonthStr, reportingMonthStr],
+        [...allPmcNames, reportingMonthStr, ...allPmcNames, Math.max(3, lookback_months), cutoffStr, cutoffStr, reportingMonthStr, reportingMonthStr],
         { label: "Compute loyalty buckets & true repeat rate from customer cohort" }
       ).catch(() => [] as { LOYALTY_BUCKET: string; BUCKET_COUNT: number; TOTAL_CUSTOMERS: number; TRUE_REPEAT_RATE: number | null }[]),
       ctx.integrations.snowflake_sso.query(
@@ -2931,21 +2931,21 @@ export default api({
         SELECT MIN(o.CLOSED_AT_UTC) AS closed_at
         FROM PRODUCTION.SALES.FCT_SALES_OPPORTUNITIES o
         JOIN PRODUCTION.SALES.DIM_SALES_ACCOUNTS a ON o.SALES_ACCOUNT_KEY = a.SALES_ACCOUNT_KEY
-        JOIN (SELECT DISTINCT PMC_ID FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS WHERE PMC_NAME = ?) p
+        JOIN (SELECT DISTINCT PMC_ID FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS WHERE PMC_NAME IN (${allPmcNames.map(() => "?").join(", ")})) p
              ON a.PMC_ID = p.PMC_ID
         WHERE o.IS_CLOSED_WON = TRUE
         UNION ALL
         SELECT MIN(o.CLOSED_AT_UTC) AS closed_at
         FROM FLEX.SALES.FCT_CRM_OPPORTUNITY o
         JOIN FLEX.SALES.DIM_CRM_ACCOUNT_HISTORY a ON o.CRM_ACCOUNT_SK = a.CRM_ACCOUNT_SK
-        JOIN (SELECT DISTINCT PMC_ID FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS WHERE PMC_NAME = ?) p
+        JOIN (SELECT DISTINCT PMC_ID FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS WHERE PMC_NAME IN (${allPmcNames.map(() => "?").join(", ")})) p
              ON a.PMC_ID = p.PMC_ID
         WHERE a.IS_CURRENT = TRUE
           AND o.IS_CLOSED_WON = TRUE
        )
        SELECT TO_VARCHAR(MIN(closed_at), 'YYYY-MM-DD') AS LAUNCH_MONTH FROM opp_dates`,
       LaunchSchema,
-      [pmc_name, pmc_name],
+      [...allPmcNames, ...allPmcNames],
       { label: "Pull partner launch month from Salesforce opportunities (old + new schema)" }
     ).catch((err) => {
       partnerSinceError = err instanceof Error ? err.message : String(err);
@@ -2968,12 +2968,12 @@ export default api({
        FROM (
            SELECT PROPERTY_PUBLIC_ID, ROLLOUT_MONTH, MIN(BP_MONTH) AS first_billed_month
            FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS
-           WHERE PMC_NAME = ? AND ROLLOUT_MONTH IS NOT NULL
+           WHERE PMC_NAME IN (${allPmcNames.map(() => "?").join(", ")}) AND ROLLOUT_MONTH IS NOT NULL
            GROUP BY PROPERTY_PUBLIC_ID, ROLLOUT_MONTH
        ) t
        WHERE DATEDIFF('month', ROLLOUT_MONTH, first_billed_month) <= 3`,
       LaunchSchema,
-      [pmc_name],
+      [...allPmcNames],
       { label: "Pull guarded earliest rollout month for partner-since comparison" }
     ).catch(() => [{ LAUNCH_MONTH: null }] as { LAUNCH_MONTH: string | null }[]);
 
@@ -2987,15 +2987,19 @@ export default api({
     // CTE, data.py:2035-2043) because peers only feed a percentile position, not a displayed
     // headline number, so the noisier field is tolerated there but not for the subject's own
     // value.
+    // For combined entities, distinct PMC_NAMEs can map to distinct PMC_IDs (and therefore
+    // distinct Salesforce accounts) - dropped the old LIMIT 1 (which assumed exactly one
+    // subject) so every combined entity's account row comes back; downstream consumers now
+    // sum ACCOUNT_TOTAL_COMPANY_UNITS across all returned rows instead of reading a single row.
     const SubjectPortfolioTotalSchema = z.object({ TOTAL_COMPANY_UNITS: z.coerce.number().nullable() });
     let subjectPortfolioTotalError: string | null = null;
     const subjectPortfolioTotalPromise = ctx.integrations.snowflake_sso.query(
       `SELECT acc.ACCOUNT_TOTAL_COMPANY_UNITS AS TOTAL_COMPANY_UNITS
        FROM PRODUCTION.SALES.DIM_SALES_ACCOUNTS acc
-       JOIN (SELECT DISTINCT PMC_ID FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS WHERE PMC_NAME = ? LIMIT 1) p
+       JOIN (SELECT DISTINCT PMC_ID FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS WHERE PMC_NAME IN (${allPmcNames.map(() => "?").join(", ")})) p
             ON acc.PMC_ID = p.PMC_ID`,
       SubjectPortfolioTotalSchema,
-      [pmc_name],
+      [...allPmcNames],
       { label: "Subject PMC's true total company units from Salesforce accounts (for Portfolio Penetration denominator)" }
     ).catch((err) => {
       subjectPortfolioTotalError = err instanceof Error ? err.message : String(err);
@@ -3299,7 +3303,7 @@ export default api({
             `WITH scoped_props AS (
                 SELECT PROPERTY_PUBLIC_ID, BP_MONTH
                 FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS
-                WHERE PMC_NAME = ?
+                WHERE PMC_NAME IN (${allPmcNames.map(() => "?").join(", ")})
                   AND IS_IN_NETWORK = TRUE
              ),
              latest AS (
@@ -3324,7 +3328,7 @@ export default api({
                AND n.HAS_BILL_PAID = TRUE
              LIMIT 50000`,
             ResidentRentSchema,
-            [pmc_name, latestCompletedMonth],
+            [...allPmcNames, latestCompletedMonth],
             { label: "Pull resident-level rents for rent bucket slide (last month)" }
           ).catch(() => [] as { RESIDENT_AMOUNT_PAID: number }[]),
           ctx.integrations.snowflake_sso.query(
@@ -3338,12 +3342,12 @@ export default api({
                 -- between Flask and Clark but All-Time didn't (Kevin's catch).
                 SELECT DISTINCT PROPERTY_PUBLIC_ID
                 FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS
-                WHERE PMC_NAME = ? AND IS_IN_NETWORK = TRUE AND BP_MONTH = ?
+                WHERE PMC_NAME IN (${allPmcNames.map(() => "?").join(", ")}) AND IS_IN_NETWORK = TRUE AND BP_MONTH = ?
              ),
              scoped_props AS (
                 SELECT PROPERTY_PUBLIC_ID, BP_MONTH
                 FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS
-                WHERE PMC_NAME = ?
+                WHERE PMC_NAME IN (${allPmcNames.map(() => "?").join(", ")})
                   AND IS_IN_NETWORK = TRUE
                   AND BP_MONTH < ?
                   AND PROPERTY_PUBLIC_ID IN (SELECT PROPERTY_PUBLIC_ID FROM active_props)
@@ -3358,7 +3362,7 @@ export default api({
              GROUP BY n.CUSTOMER_PUBLIC_ID
              LIMIT 50000`,
             AlltimeResidentSchema,
-            [pmc_name, latestCompletedMonth, pmc_name, cutoffStr],
+            [...allPmcNames, latestCompletedMonth, ...allPmcNames, cutoffStr],
             { label: "Pull all-time resident rent averages for rent bucket toggle" }
           ).catch(() => [] as { RESIDENT_AMOUNT_PAID: number; RESIDENT_TOTAL_PAID: number }[]),
         ]);
@@ -3762,8 +3766,8 @@ export default api({
     if (deck_mode === "expansion") {
       expTotalPortfolioEarly = total_portfolio_units || null;
       if (!expTotalPortfolioEarly) {
-        const [expPortfolioRow] = await subjectPortfolioTotalPromise;
-        const acctUnits = expPortfolioRow?.TOTAL_COMPANY_UNITS ?? 0;
+        const expPortfolioRows = await subjectPortfolioTotalPromise;
+        const acctUnits = expPortfolioRows.reduce((sum, r) => sum + (r.TOTAL_COMPANY_UNITS ?? 0), 0);
         expTotalPortfolioEarly = acctUnits > 0 ? acctUnits : (latestMonth?.units ?? 0);
       }
       // Region detail (Kevin's ask - Expansion's own "By State" slide never got QBR's DMA
@@ -4322,11 +4326,11 @@ export default api({
       // query fails or the PMC has no matching account, Flask leaves pmc_penetration as None
       // rather than falling back to a different, less-trustworthy denominator — matched here
       // by leaving subjectPenetrationValue null instead of using the HubSpot field as a fallback.
-      const [subjectPortfolioRow] = await subjectPortfolioTotalPromise;
+      const subjectPortfolioRows = await subjectPortfolioTotalPromise;
       if (subjectPortfolioTotalError) {
         console.warn(`[PMC Report] subject portfolio-total Salesforce query failed for ${pmc_name}: ${subjectPortfolioTotalError}`);
       }
-      const subjectTotalCompanyUnits = subjectPortfolioRow?.TOTAL_COMPANY_UNITS ?? 0;
+      const subjectTotalCompanyUnits = subjectPortfolioRows.reduce((sum, r) => sum + (r.TOTAL_COMPANY_UNITS ?? 0), 0);
       // Numerator: latestMonth.units (IS_IN_NETWORK-filtered), NOT Flask's literal
       // current["property_unit_count"].sum() (unfiltered df, same missing-filter pattern as
       // the engagement bug fixed earlier). Verified live for Wellington: Flask's own SFDC
@@ -4846,8 +4850,8 @@ export default api({
       // matching ladder ran) rather than re-deriving it here — same value, already computed.
       let expTotalPortfolio = expTotalPortfolioEarly ?? total_portfolio_units;
       if (!expTotalPortfolio) {
-        const [expPortfolioRow] = await subjectPortfolioTotalPromise;
-        const acctUnits = expPortfolioRow?.TOTAL_COMPANY_UNITS ?? 0;
+        const expPortfolioRows = await subjectPortfolioTotalPromise;
+        const acctUnits = expPortfolioRows.reduce((sum, r) => sum + (r.TOTAL_COMPANY_UNITS ?? 0), 0);
         expTotalPortfolio = acctUnits > 0 ? acctUnits : enrolledUnits;
       }
       const expNarPerc = segmentPercentiles.find((s) => s.metric === "NAR");
