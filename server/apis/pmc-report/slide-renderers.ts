@@ -9,6 +9,20 @@ const PURPLE = "#6A3DB8";
 const NAVY = "#2C194D"; // deck's one standard navy (was #1e1145 — a darker, off-brand shade)
 const GRAY = "#6b7280";
 
+// The one "N entities, N distinct colors" palette in this codebase - originally local to the
+// testimonial-quote avatars below, hoisted to module scope (Task 10, Since Inception stacked
+// bar) so both consumers cycle through the literal same array instead of two copies drifting
+// apart. Reuse this, don't invent a second palette, for any future "one color per entity" need.
+const AVATAR_PALETTE = ["#6A3DB8", "#1a9e6a", "#d97706", "#2563eb", "#0891b2", "#9d174d", "#7c3aed"];
+
+function hexToRgba(hex: string, alpha: number): string {
+  const h = hex.replace("#", "");
+  const r = parseInt(h.slice(0, 2), 16);
+  const g = parseInt(h.slice(2, 4), 16);
+  const b = parseInt(h.slice(4, 6), 16);
+  return `rgba(${r},${g},${b},${alpha})`;
+}
+
 function _e(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
@@ -2878,6 +2892,20 @@ export interface YearlyData {
   ytdMonthsActive: number;
 }
 
+// One entry per combined entity's own yearly rent totals (Task 10: Since Inception stacked
+// bar). Built by the call site via groupRowsByPmc(entityYearlyRentRows) - only fetched (and
+// only non-empty) when there's more than 1 combined entity, same "byte-identical when there's
+// only 1" contract as Task 9's ExecSummaryInput.entityBreakdown. Deliberately carries only
+// totalRent/ytdRent per year, not billsPaid/monthsActive - the green "bills paid" dots/line and
+// the incomplete-current-year projection both stay driven off the existing COMBINED yearlyData
+// below, never re-derived per entity (see the Step 2 "Projected bar" decision in the function
+// body for why).
+export interface SinceInceptionEntityYearly {
+  pmcName: string;
+  totalRentByYear: Record<number, number>;
+  ytdRentByYear: Record<number, number>;
+}
+
 export interface SinceInceptionInput {
   slideId: number;
   pmcName: string;
@@ -2888,11 +2916,20 @@ export interface SinceInceptionInput {
    * rollout, or a manual override) — see the firstYear comment below for why this must be
    * threaded through rather than re-derived from yearlyData. */
   partnerSince?: string | null;
+  entityYearlyData?: SinceInceptionEntityYearly[];
 }
 
 export function renderSinceInception(input: SinceInceptionInput): SlideResult {
   const { slideId, pmcName, reportingMonth, yearlyData, monthlyTotals, partnerSince } = input;
   if (yearlyData.length === 0) return { html: "", js: "" };
+
+  // ── Stacked-by-entity (Task 10) ────────────────────────────────────────────
+  // Only stacks when there's more than 1 combined entity - a single-PMC report (or a combined
+  // report whose entityYearlyData wasn't passed) gets entities = [] and isStacked = false, which
+  // keeps every branch below on the exact same single-dataset code path as before this existed.
+  const entities = input.entityYearlyData ?? [];
+  const isStacked = entities.length > 1;
+  const entityColors = entities.map((_, i) => AVATAR_PALETTE[i % AVATAR_PALETTE.length]);
 
   const years = yearlyData.map(y => y.year);
   const rentRaw = yearlyData.map(y => y.totalRent);
@@ -2955,6 +2992,16 @@ export function renderSinceInception(input: SinceInceptionInput): SlideResult {
   const projBillsJs = projBillsVal !== null ? JSON.stringify(projBillsVal) : "null";
   const ghostPctJs = JSON.stringify(ghostPctText);
 
+  // Per-entity rent-by-year, aligned to `years` then padded with the same trailing `null`
+  // ghost column as rentSolidChart (Task 10). The ghost/projected column is deliberately left
+  // null (not 0) for every entity - the projected bar stays a single COMBINED dashed overlay
+  // (see the drawing-plugin comment below for why), never a per-entity projection, so no entity
+  // dataset has a real bar to draw in that column.
+  const entityRentArrays: (number | null)[][] = entities.map(e => {
+    const real = years.map(y => e.totalRentByYear[y] ?? 0);
+    return hasProjection ? [...real, null] : real;
+  });
+
   // ── YTD data: use pre-computed ytd values from yearly query ────
   const reportMonth = parseInt(reportingMonth.slice(5, 7), 10);
   const monthLbl = new Date(reportingMonth + "T00:00:00Z").toLocaleDateString("en-US", { month: "short", timeZone: "UTC" });
@@ -2970,6 +3017,19 @@ export function renderSinceInception(input: SinceInceptionInput): SlideResult {
   const ytdYMaxVal = ytdRent.length > 0 ? Math.max(...ytdRent) : 1;
   const ytdYMax = ytdYMaxVal > 0 ? ytdYMaxVal * 1.22 : 1;
 
+  // Per-entity YTD rent, aligned to ytdYears (Task 10) - no ghost column here since the YTD
+  // view never shows a projection (hasFootnote/projRent are already hardcoded null below).
+  const entityYtdRentArrays: number[][] = entities.map(e => ytdYears.map(y => e.ytdRentByYear[y] ?? 0));
+
+  // One dataset-array per Chart.js dataset, for both the initial render and the Full/YTD
+  // toggle: non-stacked mode keeps a single flat array wrapped in a 1-length outer array
+  // (so the toggle's dataset-index loop below runs exactly once, same as before this existed);
+  // stacked mode has one inner array per entity, same order as entityColors/AVATAR_PALETTE.
+  const fullRentDatasets = isStacked ? entityRentArrays : [rentSolidChart];
+  const ytdRentDatasetsArr = isStacked ? entityYtdRentArrays : [ytdRent];
+  const fullRentDatasetsJs = JSON.stringify(fullRentDatasets);
+  const ytdRentDatasetsJs = JSON.stringify(ytdRentDatasetsArr);
+
   const toggleHtml = hasYtdToggle
     ? `<div class="pdf-export-hide" style="margin-left:12px;flex-shrink:0;">
         <button class="spark-ctrl-btn is-active" id="si-btn-full-${slideId}" onclick="flexToggleSIView('${slideId}','full')" style="padding:3px 9px;border-radius:5px;border:1px solid #e5e7eb;background:#8D70EE;color:#fff;font-size:10px;font-weight:600;cursor:pointer;margin-right:4px;">Full Year</button>
@@ -2980,6 +3040,13 @@ export function renderSinceInception(input: SinceInceptionInput): SlideResult {
   const projLegend = hasProjection
     ? `<span id="si-proj-legend-${slideId}"><span style="display:inline-block;width:10px;height:10px;background:rgba(106,61,184,0.22);border:1px dashed #6A3DB8;border-radius:2px;margin-right:4px;vertical-align:middle;"></span>Projected (full ${currentYear})</span>`
     : `<span id="si-proj-legend-${slideId}" style="display:none;"></span>`;
+
+  // Stacked mode replaces the single "Rent paid / year" swatch with one swatch per entity
+  // (color-coded via AVATAR_PALETTE) so the stacked segments are identifiable - without this,
+  // N colors on the bar with no key would just look like an unexplained rendering change.
+  const rentLegendHtml = isStacked
+    ? entities.map((e, i) => `<span><span style="display:inline-block;width:10px;height:10px;background:${hexToRgba(entityColors[i], 0.6)};border-radius:2px;margin-right:4px;vertical-align:middle;"></span>${_e(e.pmcName)}</span>`).join("")
+    : `<span><span style="display:inline-block;width:10px;height:10px;background:rgba(106,61,184,0.6);border-radius:2px;margin-right:4px;vertical-align:middle;"></span>Rent paid / year</span>`;
 
   const html = `
   <div class="slide" id="slide-${slideId}" style="background:#fff;">
@@ -2992,8 +3059,8 @@ export function renderSinceInception(input: SinceInceptionInput): SlideResult {
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;flex-shrink:0;">
         <div style="font-size:9px;font-weight:600;color:#524e5b;text-transform:uppercase;letter-spacing:0.1em;"><span id="si-eyebrow-full-${slideId}">RENT PAID &amp; BILLS PAID BY YEAR</span><span id="si-eyebrow-ytd-${slideId}" style="display:none;">RENT PAID &amp; BILLS PAID, YTD THROUGH ${_e(monthLbl).toUpperCase()}</span> - ${_e(pmcName)}</div>
         <div style="display:flex;align-items:center;flex-shrink:0;margin-left:16px;">
-          <div style="display:flex;gap:14px;font-size:10px;color:#524e5b;">
-            <span><span style="display:inline-block;width:10px;height:10px;background:rgba(106,61,184,0.6);border-radius:2px;margin-right:4px;vertical-align:middle;"></span>Rent paid / year</span>
+          <div style="display:flex;gap:14px;font-size:10px;color:#524e5b;${isStacked ? "flex-wrap:wrap;" : ""}">
+            ${rentLegendHtml}
             <span><span style="display:inline-block;width:8px;height:8px;background:#1a9e6a;border-radius:50%;margin-right:4px;vertical-align:middle;"></span>Bills paid / year</span>
             ${projLegend}
           </div>
@@ -3007,6 +3074,139 @@ export function renderSinceInception(input: SinceInceptionInput): SlideResult {
     <div id="si-footnote-${slideId}" style="font-size:10px;color:#a09cb0;margin-top:6px;flex-shrink:0;font-style:italic;${hasProjection ? '' : 'display:none;'}">Projected figures extrapolate from year-to-date performance (trailing 3-month run-rate); actual results will vary.</div>
   </div>`;
 
+  // ── Chart.js dataset(s) (Task 10) ───────────────────────────────────────────
+  // Non-stacked branch is the exact original single-dataset object, untouched, so a single-PMC
+  // report's generated JS is byte-identical to before this task. Stacked branch gives each
+  // entity its own bar dataset sharing stack id 'rent' (Chart.js's built-in stacked-bar sum) -
+  // only the LAST entity's dataset carries a datalabel, formatted off the pre-existing combined
+  // rentSolidJs array so the printed total above each bar is the real stack height, not just
+  // that one entity's segment (no separate "total" dataset needed - Chart.js already sums the
+  // stack visually).
+  const datasetsJs = isStacked
+    ? entities.map((e, i) => {
+        const isLast = i === entities.length - 1;
+        const datalabelsJs = isLast
+          ? `{ anchor: 'end', align: 'end', offset: 10, formatter: (v, ctx) => { const t = (${rentSolidJs})[ctx.dataIndex]; return t == null ? '' : fmtRent(t); }, color: '#2C194D', font: { size: 12, weight: '700' } }`
+          : `{ display: false }`;
+        return `{
+          type: 'bar', label: ${JSON.stringify(e.pmcName)},
+          data: ${JSON.stringify(entityRentArrays[i])},
+          backgroundColor: '${hexToRgba(entityColors[i], 0.55)}',
+          borderColor: '${entityColors[i]}', borderWidth: 1.5, borderRadius: 4,
+          stack: 'rent', yAxisID: 'y',
+          datalabels: ${datalabelsJs}
+        }`;
+      }).join(",")
+    : `{
+          type: 'bar', label: 'Rent paid / year',
+          data: ${rentSolidJs},
+          backgroundColor: 'rgba(106,61,184,0.55)',
+          borderColor: '#6A3DB8', borderWidth: 1.5, borderRadius: 4,
+          yAxisID: 'y',
+          datalabels: { anchor: 'end', align: 'end', offset: 10, formatter: v => v == null ? '' : fmtRent(v), color: '#2C194D', font: { size: 12, weight: '700' } }
+        }`;
+
+  // Tooltip: stacked mode shows one row per hovered entity segment ("PMC name: $rent") and
+  // drops the "% vs prior year" afterLabel (that clause reads dataset[0]'s own data as if it
+  // were the combined total, which in stacked mode it isn't - a per-entity trend % isn't
+  // something this task asked for, so it's dropped rather than shown wrong). Non-stacked branch
+  // is the exact original callbacks object, untouched.
+  const tooltipCallbacksJs = isStacked
+    ? `label: ctx => ctx.dataset.label + ': ' + fmtRent(ctx.parsed.y)`
+    : `label: ctx => ctx.dataset.label + ': ' + fmtRent(ctx.parsed.y),
+              afterLabel: ctx => {
+                const i = ctx.dataIndex;
+                const solidData = ctx.chart.data.datasets[0].data;
+                if (i === 0) return '';
+                const prev = solidData[i - 1];
+                if (prev == null) return '';
+                const pct = (ctx.parsed.y - prev) / prev * 100;
+                return (pct >= 0 ? '+' : '') + pct.toFixed(1) + '% vs ' + ctx.chart.data.labels[i - 1];
+              }`;
+
+  const stackedScaleJs = isStacked ? "stacked: true, " : "";
+
+  // Every one of these collapses to the empty string when !isStacked, so the generated JS
+  // below is byte-identical to the pre-Task-10 text for a single-entity report - same
+  // discipline as Task 9's showEntitySwitcher-gated additions to renderExecSummary.
+  const stackedStateJs = isStacked ? `\n      isStacked: true, stackTotals: ${rentSolidJs},` : "";
+  const stackedVarsJs = isStacked ? `\n        const stackTotals = st.stackTotals;` : "";
+  const dotsYCalcJs = isStacked
+    ? `const topY = (stackTotals && stackTotals[i] != null) ? chart.scales.y.getPixelForValue(stackTotals[i]) : el.y;
+          pts.push({ x: el.x, y: (topY + el.base) / 2, val, projected: false, base: el.base });`
+    : `pts.push({ x: el.x, y: (el.y + el.base) / 2, val, projected: false, base: el.base });`;
+  const fullRentDatasetsFieldJs = isStacked ? ` rentDatasets: ${fullRentDatasetsJs},` : "";
+  const ytdRentDatasetsFieldJs = isStacked ? ` rentDatasets: ${ytdRentDatasetsJs},` : "";
+  // flexToggleSIView is a shared, guard-once global (`if (!window.flexToggleSIView)`) whose
+  // full text is still re-emitted by every slide render, so it needs the same all-or-nothing
+  // gating as everything else here: the non-stacked branch is character-for-character the
+  // pre-Task-10 function body. The stacked branch generalizes the single hardcoded
+  // `chart.data.datasets[0].data = active.rent` assignment into a loop over
+  // active.rentDatasets (one entry per entity dataset) and keeps st.stackTotals in sync with
+  // whichever view (Full/YTD) is active, for the dots-position calc above.
+  const toggleFnJs = isStacked
+    ? `if (!window.flexToggleSIView) {
+  window.flexToggleSIView = function(sid, which) {
+    const chart = window['siChart' + sid];
+    const st = window['siState' + sid];
+    if (!chart || !st) return;
+    const showYtd = which === 'ytd';
+    const full = window['siFull' + sid], ytd = window['siYtd' + sid];
+    const active = showYtd ? ytd : full;
+    if (!active) return;
+    chart.data.labels = active.labels;
+    (active.rentDatasets || [active.rent]).forEach(function(data, i) { if (chart.data.datasets[i]) chart.data.datasets[i].data = data; });
+    chart.options.scales.y.suggestedMax = active.yMax;
+    st.billsActual = active.bills;
+    st.projRent = active.projRent;
+    st.projBills = active.projBills;
+    st.ghostPctText = active.ghostPctText;
+    st.nReal = active.nReal;
+    st.stackTotals = active.rent;
+    chart.update();
+    var bFull = document.getElementById('si-btn-full-' + sid), bYtd = document.getElementById('si-btn-ytd-' + sid);
+    if (bFull) { bFull.style.background = showYtd ? '#fff' : '#8D70EE'; bFull.style.color = showYtd ? '#524e5b' : '#fff'; }
+    if (bYtd) { bYtd.style.background = showYtd ? '#8D70EE' : '#fff'; bYtd.style.color = showYtd ? '#fff' : '#524e5b'; }
+    var projLegend = document.getElementById('si-proj-legend-' + sid);
+    if (projLegend) projLegend.style.display = showYtd ? 'none' : '';
+    var eFull = document.getElementById('si-eyebrow-full-' + sid), eYtd = document.getElementById('si-eyebrow-ytd-' + sid);
+    if (eFull) eFull.style.display = showYtd ? 'none' : 'inline';
+    if (eYtd) eYtd.style.display = showYtd ? 'inline' : 'none';
+    var footnote = document.getElementById('si-footnote-' + sid);
+    if (footnote) footnote.style.display = (showYtd || !active.hasFootnote) ? 'none' : '';
+  };
+}`
+    : `if (!window.flexToggleSIView) {
+  window.flexToggleSIView = function(sid, which) {
+    const chart = window['siChart' + sid];
+    const st = window['siState' + sid];
+    if (!chart || !st) return;
+    const showYtd = which === 'ytd';
+    const full = window['siFull' + sid], ytd = window['siYtd' + sid];
+    const active = showYtd ? ytd : full;
+    if (!active) return;
+    chart.data.labels = active.labels;
+    chart.data.datasets[0].data = active.rent;
+    chart.options.scales.y.suggestedMax = active.yMax;
+    st.billsActual = active.bills;
+    st.projRent = active.projRent;
+    st.projBills = active.projBills;
+    st.ghostPctText = active.ghostPctText;
+    st.nReal = active.nReal;
+    chart.update();
+    var bFull = document.getElementById('si-btn-full-' + sid), bYtd = document.getElementById('si-btn-ytd-' + sid);
+    if (bFull) { bFull.style.background = showYtd ? '#fff' : '#8D70EE'; bFull.style.color = showYtd ? '#524e5b' : '#fff'; }
+    if (bYtd) { bYtd.style.background = showYtd ? '#8D70EE' : '#fff'; bYtd.style.color = showYtd ? '#fff' : '#524e5b'; }
+    var projLegend = document.getElementById('si-proj-legend-' + sid);
+    if (projLegend) projLegend.style.display = showYtd ? 'none' : '';
+    var eFull = document.getElementById('si-eyebrow-full-' + sid), eYtd = document.getElementById('si-eyebrow-ytd-' + sid);
+    if (eFull) eFull.style.display = showYtd ? 'none' : 'inline';
+    if (eYtd) eYtd.style.display = showYtd ? 'inline' : 'none';
+    var footnote = document.getElementById('si-footnote-' + sid);
+    if (footnote) footnote.style.display = (showYtd || !active.hasFootnote) ? 'none' : '';
+  };
+}`;
+
   const js = `
 window['initSlide${slideId}'] = (function() {
   let done = false;
@@ -3019,7 +3219,7 @@ window['initSlide${slideId}'] = (function() {
     // Mutable state the drawing plugin reads every redraw
     window['siState${slideId}'] = {
       billsActual: ${billsActualJs}, projBills: ${projBillsJs}, projRent: ${projRentJs},
-      ghostPctText: ${ghostPctJs}, nReal: ${nReal},
+      ghostPctText: ${ghostPctJs}, nReal: ${nReal},${stackedStateJs}
     };
     const centerDots = {
       id: 'centerDots${slideId}',
@@ -3031,7 +3231,7 @@ window['initSlide${slideId}'] = (function() {
         const projBills = st.projBills;
         const projRent = st.projRent;
         const ghostPctText = st.ghostPctText;
-        const nReal = st.nReal;
+        const nReal = st.nReal;${stackedVarsJs}
         let ghostRect = null;
         if (projRent != null) {
           const el = barMeta.data[nReal];
@@ -3066,7 +3266,7 @@ window['initSlide${slideId}'] = (function() {
           if (val == null) return;
           const el = barMeta.data[i];
           if (!el) return;
-          pts.push({ x: el.x, y: (el.y + el.base) / 2, val, projected: false, base: el.base });
+          ${dotsYCalcJs}
         });
         if (projBills != null && ghostRect) {
           pts.push({ x: ghostRect.cx, y: (ghostRect.top + ghostRect.base) / 2, val: projBills, projected: true, base: ghostRect.base });
@@ -3107,14 +3307,7 @@ window['initSlide${slideId}'] = (function() {
       plugins: [centerDots],
       data: {
         labels: ${labelsJs},
-        datasets: [{
-          type: 'bar', label: 'Rent paid / year',
-          data: ${rentSolidJs},
-          backgroundColor: 'rgba(106,61,184,0.55)',
-          borderColor: '#6A3DB8', borderWidth: 1.5, borderRadius: 4,
-          yAxisID: 'y',
-          datalabels: { anchor: 'end', align: 'end', offset: 10, formatter: v => v == null ? '' : fmtRent(v), color: '#2C194D', font: { size: 12, weight: '700' } }
-        }]
+        datasets: [${datasetsJs}]
       },
       options: {
         responsive: true, maintainAspectRatio: false,
@@ -3124,22 +3317,13 @@ window['initSlide${slideId}'] = (function() {
           tooltip: {
             filter: item => item.parsed.y != null,
             callbacks: {
-              label: ctx => ctx.dataset.label + ': ' + fmtRent(ctx.parsed.y),
-              afterLabel: ctx => {
-                const i = ctx.dataIndex;
-                const solidData = ctx.chart.data.datasets[0].data;
-                if (i === 0) return '';
-                const prev = solidData[i - 1];
-                if (prev == null) return '';
-                const pct = (ctx.parsed.y - prev) / prev * 100;
-                return (pct >= 0 ? '+' : '') + pct.toFixed(1) + '% vs ' + ctx.chart.data.labels[i - 1];
-              }
+              ${tooltipCallbacksJs}
             }
           }
         },
         scales: {
-          x: { grid: { display: false }, border: { display: false }, ticks: { color: '#524e5b', font: { size: 12, weight: '600' } } },
-          y: { position: 'left', min: 0, suggestedMax: ${yMax}, grid: { color: '#f3f4f6' }, border: { display: false },
+          x: { ${stackedScaleJs}grid: { display: false }, border: { display: false }, ticks: { color: '#524e5b', font: { size: 12, weight: '600' } } },
+          y: { ${stackedScaleJs}position: 'left', min: 0, suggestedMax: ${yMax}, grid: { color: '#f3f4f6' }, border: { display: false },
               ticks: { color: '#9ca3af', font: { size: 10 }, callback: v => fmtRent(v) },
               title: { display: true, text: 'Rent paid / year', color: '#9ca3af', font: { size: 9 } } }
         }
@@ -3147,43 +3331,14 @@ window['initSlide${slideId}'] = (function() {
     });
   };
 })();
-if (!window.flexToggleSIView) {
-  window.flexToggleSIView = function(sid, which) {
-    const chart = window['siChart' + sid];
-    const st = window['siState' + sid];
-    if (!chart || !st) return;
-    const showYtd = which === 'ytd';
-    const full = window['siFull' + sid], ytd = window['siYtd' + sid];
-    const active = showYtd ? ytd : full;
-    if (!active) return;
-    chart.data.labels = active.labels;
-    chart.data.datasets[0].data = active.rent;
-    chart.options.scales.y.suggestedMax = active.yMax;
-    st.billsActual = active.bills;
-    st.projRent = active.projRent;
-    st.projBills = active.projBills;
-    st.ghostPctText = active.ghostPctText;
-    st.nReal = active.nReal;
-    chart.update();
-    var bFull = document.getElementById('si-btn-full-' + sid), bYtd = document.getElementById('si-btn-ytd-' + sid);
-    if (bFull) { bFull.style.background = showYtd ? '#fff' : '#8D70EE'; bFull.style.color = showYtd ? '#524e5b' : '#fff'; }
-    if (bYtd) { bYtd.style.background = showYtd ? '#8D70EE' : '#fff'; bYtd.style.color = showYtd ? '#fff' : '#524e5b'; }
-    var projLegend = document.getElementById('si-proj-legend-' + sid);
-    if (projLegend) projLegend.style.display = showYtd ? 'none' : '';
-    var eFull = document.getElementById('si-eyebrow-full-' + sid), eYtd = document.getElementById('si-eyebrow-ytd-' + sid);
-    if (eFull) eFull.style.display = showYtd ? 'none' : 'inline';
-    if (eYtd) eYtd.style.display = showYtd ? 'inline' : 'none';
-    var footnote = document.getElementById('si-footnote-' + sid);
-    if (footnote) footnote.style.display = (showYtd || !active.hasFootnote) ? 'none' : '';
-  };
-}
+${toggleFnJs}
 window['siFull${slideId}'] = {
-  labels: ${labelsJs}, rent: ${rentSolidJs}, bills: ${billsActualJs},
+  labels: ${labelsJs}, rent: ${rentSolidJs},${fullRentDatasetsFieldJs} bills: ${billsActualJs},
   projRent: ${projRentJs}, projBills: ${projBillsJs}, ghostPctText: ${ghostPctJs},
   nReal: ${nReal}, yMax: ${yMax}, hasFootnote: ${hasProjection},
 };
 window['siYtd${slideId}'] = {
-  labels: ${ytdLabelsJs}, rent: ${ytdRentJs}, bills: ${ytdBillsJs},
+  labels: ${ytdLabelsJs}, rent: ${ytdRentJs},${ytdRentDatasetsFieldJs} bills: ${ytdBillsJs},
   projRent: null, projBills: null, ghostPctText: '',
   nReal: ${ytdNReal}, yMax: ${ytdYMax}, hasFootnote: false,
 };
@@ -3613,7 +3768,8 @@ export function renderCustomerExperience(input: {
   // ── Quote cards (only when testimonials exist) ──
   let quotesHtml = "";
   if (nQuotes > 0) {
-    const AVATAR_PALETTE = ["#6A3DB8", "#1a9e6a", "#d97706", "#2563eb", "#0891b2", "#9d174d", "#7c3aed"];
+    // AVATAR_PALETTE is now module-level (see top of file) - shared with the Since Inception
+    // stacked bar's per-entity colors (Task 10), not redeclared here.
     const roleColors: Record<string, string> = {
       Resident: "#1a9e6a",
       "Property Manager": "#6A3DB8",

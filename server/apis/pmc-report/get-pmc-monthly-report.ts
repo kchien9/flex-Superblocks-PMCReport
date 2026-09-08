@@ -2301,6 +2301,28 @@ export default api({
       YTD_MONTHS_ACTIVE: z.number().nullable(),
     });
 
+    // Task 10 (Since Inception stacked bar): per-entity breakdown of the SAME yearly rent
+    // history above, for combined multi-PMC reports only. Deliberately a SEPARATE query rather
+    // than adding PMC_NAME to YearlyRentBillsSchema's own GROUP BY - that query's MONTHS_ACTIVE
+    // is COUNT(DISTINCT BP_MONTH) computed across whichever combined entities have data in a
+    // given month; regrouping it by (YEAR, PMC_NAME) would turn that into a per-entity count,
+    // and summing per-entity counts back up would OVERCOUNT months where two entities both had
+    // activity in the same calendar month (which combined entities typically do) - silently
+    // breaking the incomplete-current-year projection logic that reads combined MONTHS_ACTIVE.
+    // TOTAL_RENT/YTD_RENT have no such issue (SUM is additive over any partition), so this query
+    // reuses the exact same WHERE filter (same allPmcNames IN-list, same BP_MONTH < cutoffStr
+    // bound, same deliberately-unfiltered "true history" convention - no IS_IN_NETWORK clause)
+    // as the combined query, just grouped one dimension finer - guaranteeing per-entity totals
+    // sum exactly to the combined ones for the same year (verified in this task's synthetic
+    // check). Only fires for QBR + more than 1 combined entity - a single-PMC report never pays
+    // for it.
+    const EntityYearlyRentSchema = z.object({
+      PMC_NAME: z.string(),
+      YEAR: z.number(),
+      TOTAL_RENT: z.number().nullable(),
+      YTD_RENT: z.number().nullable(),
+    });
+
     const PropertyTrendSchema = z.object({
       PROPERTY_NAME: z.string(),
       BP_MONTH: z.string(),
@@ -2693,7 +2715,7 @@ export default api({
       ROLLOUT_DATE: z.string(),
       FIRST_CONNECTED_AT: z.string(),
     });
-    const [metricsRows, dqShieldedRows, yearlyRentBillsRows, trendRawRows, retentionCohortRows, customerMonthRows, subjectSignupTimingRows] = await Promise.all([
+    const [metricsRows, dqShieldedRows, yearlyRentBillsRows, entityYearlyRentRows, trendRawRows, retentionCohortRows, customerMonthRows, subjectSignupTimingRows] = await Promise.all([
       ctx.integrations.snowflake_sso.query(
         `SELECT TO_VARCHAR(BP_MONTH, 'YYYY-MM-DD') AS BP_MONTH, NAR, SEGMENT_NAR_AVG,
                 BILLS_PAID, BILLS_PAID_NEW, BILLS_PAID_REPEAT, BILLS_PAID_PREV_MONTH,
@@ -2756,6 +2778,28 @@ export default api({
             { label: "Fetch since-inception yearly totals (unbounded)" }
           )
         : Promise.resolve([] as z.infer<typeof YearlyRentBillsSchema>[]),
+      needsQBRQueries && allPmcNames.length > 1
+        ? ctx.integrations.snowflake_sso.query(
+            `SELECT
+                PMC_NAME,
+                YEAR(BP_MONTH) AS YEAR,
+                SUM(RENT_PAID_AMOUNT) AS TOTAL_RENT,
+                SUM(CASE WHEN MONTH(BP_MONTH) <= ? THEN RENT_PAID_AMOUNT ELSE 0 END) AS YTD_RENT
+             FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS
+             WHERE PMC_NAME IN (${allPmcNames.map(() => "?").join(", ")})
+               AND BP_MONTH < ?
+             GROUP BY 1, 2
+             ORDER BY 1, 2
+             LIMIT 500`,
+            // Same unfiltered "true history" convention and same WHERE bounds as
+            // YearlyRentBillsSchema's combined query just above - see the schema comment for
+            // why this has to be a separate query instead of adding PMC_NAME to that one's own
+            // GROUP BY. Gated on allPmcNames.length > 1 - a single-PMC report never fires this.
+            EntityYearlyRentSchema,
+            [cutoffMonthNum, ...allPmcNames, cutoffStr],
+            { label: "Fetch since-inception yearly totals per combined entity (stacked bar)" }
+          )
+        : Promise.resolve([] as z.infer<typeof EntityYearlyRentSchema>[]),
       needsQBRQueries
         ? ctx.integrations.snowflake_sso.query(
             `SELECT PROPERTY_NAME,
@@ -5383,6 +5427,21 @@ export default api({
       ytdMonthsActive: r.YTD_MONTHS_ACTIVE ?? 0,
     }));
 
+    // Per-entity yearly rent breakdown for the Since Inception stacked bar (Task 10). Grouped
+    // from entityYearlyRentRows via the same groupRowsByPmc helper Task 9 introduced -
+    // entityYearlyRentRows is already [] for a single-PMC report (query gated on
+    // allPmcNames.length > 1 above), so this yields [] here too, and renderSinceInception's own
+    // "needs 2+" check keeps the bar unstacked.
+    const entityYearlyData = Array.from(groupRowsByPmc(entityYearlyRentRows).entries()).map(([name, rows]) => {
+      const totalRentByYear: Record<number, number> = {};
+      const ytdRentByYear: Record<number, number> = {};
+      for (const r of rows) {
+        totalRentByYear[r.YEAR] = r.TOTAL_RENT ?? 0;
+        ytdRentByYear[r.YEAR] = r.YTD_RENT ?? 0;
+      }
+      return { pmcName: name, totalRentByYear, ytdRentByYear };
+    });
+
     const sinceInceptionResult = renderSinceInception({
       slideId: 3,
       pmcName: pmcDisplayName,
@@ -5390,6 +5449,7 @@ export default api({
       yearlyData,
       monthlyTotals,
       partnerSince,
+      entityYearlyData,
     });
 
     const residentsUnitsResult = renderResidentsUnitsCombo({
