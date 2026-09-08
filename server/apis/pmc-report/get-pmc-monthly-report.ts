@@ -1901,7 +1901,7 @@ export default api({
     // this is everyone else being combined in. Plain .optional() + resolve the [] default at the
     // call site below, NOT .optional().default([]) - that combo makes the field required in the
     // generated call-site type, the same zod gotcha this file's other optional fields already
-    // avoid (see growth_slides for precedent).
+    // avoid (see sparklines for precedent).
     additional_pmc_names: z.array(z.string()).optional(),
     report_name: z.string().optional().default(""),
     lookback_months: z.number().int().default(12),
@@ -1917,22 +1917,17 @@ export default api({
     expansion_slides: z.array(z.string()).optional(),
     presenting_mode: z.boolean().optional().default(false),
     comparison_months: z.number().int().optional().default(1),
-    // Growth trend slides (residents_units/adoption_trend/cohort_overview) override.
-    // "auto" preserves the SMB-only default; "include"/"exclude" force the segment veto
-    // either way. Plain optional (not .default()) like expansion_slides above — a concurrent
-    // edit changed this to .default("auto"), which makes the field REQUIRED in the generated
-    // call-site type (breaks QBR/new_logo callers that don't pass it); restored, with the
-    // fallback handled at the derivation site instead (`growth_slides ?? "auto"`).
-    growth_slides: z.enum(["auto", "include", "exclude"]).optional(),
     // Exec tile sparklines / period-comparison pills, independent manual overrides (Kevin's
     // ask - "I want to be able to toggle everything if we want", on top of the implicit
-    // sparklines-follow-growth-slides behavior). "auto" preserves today's derived default for
-    // each; "include"/"exclude" force it either way. Same plain-optional convention as
-    // growth_slides above (not .default()) for the same call-site-required reason.
+    // sparklines-follow-growth-trend-slides behavior — see showGrowthSlides below). "auto"
+    // preserves today's derived default for each; "include"/"exclude" force it either way.
+    // Plain optional (not .default()) like expansion_slides above — a concurrent edit changing
+    // either to .default("auto") would make the field REQUIRED in the generated call-site type
+    // (breaks QBR/new_logo callers that don't pass it).
     sparklines: z.enum(["auto", "include", "exclude"]).optional(),
     period_comparison: z.enum(["auto", "include", "exclude"]).optional(),
     // Resident/household terminology, every deck mode (Kevin's ask, 2026-08-19). Plain
-    // optional like growth_slides above — same .default() call-site-required gotcha.
+    // optional like sparklines above — same .default() call-site-required gotcha.
     terminology: z.enum(["resident", "household"]).optional(),
     // Which of the 6 exec-summary KPI tiles to omit entirely (Kevin's ask). Chosen at
     // generation time, not a live post-generation toggle — the download button re-serializes
@@ -1940,7 +1935,7 @@ export default api({
     // a live click-to-hide wouldn't survive into the downloaded file with today's architecture.
     // Valid keys: active_properties, residents_paying, new_residents, adoption_rate,
     // true_repeat_rate, delinquency_shielded.
-    // Plain optional (not .default()), like growth_slides above — a concurrent edit changing
+    // Plain optional (not .default()), like sparklines above — a concurrent edit changing
     // any of these to .default() would make it REQUIRED in the generated call-site type
     // (breaks every caller that doesn't pass it). Fallback handled at the usage site instead:
     // hiddenTileSet = new Set(d.hiddenTiles ?? []), and benchmarkTableHeader/benchmarkRowCells
@@ -2018,7 +2013,7 @@ export default api({
     }).optional(),
   }),
 
-  async run(ctx, { pmc_name, additional_pmc_names, report_name, lookback_months, deck_mode, adoption_target, testimonials, total_portfolio_units, expansion_slides, presenting_mode, comparison_months, growth_slides, sparklines, period_comparison, terminology, hidden_kpi_tiles, show_adoption_portfolio_avg, show_adoption_peer_median, show_engagement_observed, show_engagement_portfolio_avg, show_engagement_peer_median, imported_slides, hide_d2c }) {
+  async run(ctx, { pmc_name, additional_pmc_names, report_name, lookback_months, deck_mode, adoption_target, testimonials, total_portfolio_units, expansion_slides, presenting_mode, comparison_months, sparklines, period_comparison, terminology, hidden_kpi_tiles, show_adoption_portfolio_avg, show_adoption_peer_median, show_engagement_observed, show_engagement_portfolio_avg, show_engagement_peer_median, imported_slides, hide_d2c }) {
     // Single resolved list every downstream query/array-builder reads from - pmc_name first
     // (the "primary" entity), then whatever else is being combined in. Replaces the old
     // old `hasSecondPmc ? [pmc_name, secondPmcName] : [pmc_name]` ternary pattern repeated at 4 call sites below.
@@ -3799,33 +3794,17 @@ export default api({
     // read sites still resolve correctly; hubspotSegment had no remaining reader, removed.
     const segmentNarAvg: number | null = null;
 
-    // --- Auto-derive is_smb (Flask app.py:1551-1553): mode of STATIC_PARENT_TEAM_NAME_OPPORTUNITY
-    // (the internal Flex sales/CS team assignment, aliased SEGMENT_TEAM above) across the PMC's
-    // rows, true when the most common team name is "SMB Manager". This is NOT a HubSpot
-    // company-segment field — PARTNER_REPORTING_CORE_METRICS.HUBSPOT_COMPANY_SEGMENT has no
-    // Flask equivalent and was a fabricated data source; removed.
-    const is_smb = (() => {
-      const counts = new Map<string, number>();
-      for (const r of inNetwork) {
-        if (!r.SEGMENT_TEAM) continue;
-        counts.set(r.SEGMENT_TEAM, (counts.get(r.SEGMENT_TEAM) ?? 0) + 1);
-      }
-      let modeTeam: string | null = null, modeCount = 0;
-      for (const [team, count] of counts) {
-        if (count > modeCount) { modeTeam = team; modeCount = count; }
-      }
-      return modeTeam === "SMB Manager";
-    })();
-
-    // Growth trend slides (residents_units/adoption_trend/cohort_overview) override —
-    // "auto" preserves the is_smb-only default above; "include"/"exclude" let an AE force
-    // the segment veto either way. Derived here (not inline at each gate) since it's needed
-    // by renderExecSummary's showSparklines below, ahead of where activeOrder is built.
-    // (Restored 2026-08-19 — a concurrent Superblocks-side edit reverted this derivation back
-    // to a plain is_smb check in the sparkline ternary below; re-synced with the same fix in
-    // flex-pmc-reports.)
-    const showGrowthSlides =
-      growth_slides === "include" || ((growth_slides ?? "auto") === "auto" && is_smb);
+    // Growth trend slides (residents_units/adoption_trend/cohort_overview) - unconditional for
+    // Expansion now (Kevin's ask: bring in the inception slide, residents paying, and adoption
+    // slide for every Expansion deck, not just SMB). Previously gated on is_smb (mode of
+    // STATIC_PARENT_TEAM_NAME_OPPORTUNITY, aliased SEGMENT_TEAM) with a growth_slides
+    // "auto"/"include"/"exclude" override; both the segment gate and the override input are
+    // gone, so this is now a flat `true`. Kept as a named const (not inlined) since it's still
+    // read by renderExecSummary's showSparklines below, to suppress the exec-tile sparklines
+    // now that the full residents_units chart always renders on Expansion. QBR never reads this
+    // at all (its own showSparklines branch is a hardcoded `false`), so this change is
+    // Expansion-only.
+    const showGrowthSlides = true;
 
     // Sparklines / period-comparison manual overrides (Kevin's ask) - null means "auto" (no
     // override; the existing derived default applies unchanged). Derived here, same reasoning
@@ -4785,8 +4764,9 @@ export default api({
       // Flask: QBR always show_sparklines=False (hardcoded, unconditional).
       // Expansion: show_sparklines = not (_show_growth and 54 in active_exp_order).
       // Since slide 54 = "residents_units", suppress sparklines on expansion when the growth
-      // trend slides are showing (SMB by default, or forced via growth_slides="include") and
-      // that slide specifically is included (it renders the same data as a full chart).
+      // trend slides are showing (always, now that showGrowthSlides is unconditionally true
+      // for Expansion) and that slide specifically is included (it renders the same data as a
+      // full chart).
       // An empty expansion_slides array means "no filter" (all slides included) per the
       // activeOrder build below — match that semantics here rather than treating [] as "off".
       // sparklinesOverride is Expansion-only (Kevin's call: QBR stays exactly as-is - it never
@@ -5017,11 +4997,13 @@ export default api({
         "expansion_case_close",
       ];
 
-      // Growth trend slides are gated by showGrowthSlides (derived earlier, right after
-      // is_smb) rather than a bare is_smb check — "auto" keeps the SMB-only default,
-      // "include"/"exclude" override it. Also feeds the exec-tile sparkline suppression
-      // above, which is why it's derived once, early, instead of redeclared here.
-      const GROWTH_TREND_SLIDES = new Set(["residents_units", "adoption_trend", "cohort_overview"]);
+      // Growth trend slides (residents_units/adoption_trend/cohort_overview) used to be gated
+      // here by showGrowthSlides (a segment-based veto) via a GROWTH_TREND_SLIDES set-membership
+      // check. showGrowthSlides is now unconditionally `true` for Expansion (see its
+      // declaration above), so that gate could never fire and is removed - these 3 slides are
+      // ordinary members of EXPANSION_SLIDE_ORDER now, subject only to the same expansion_slides
+      // selection filter as everything else below. showGrowthSlides itself stays, since it still
+      // feeds the exec-tile sparkline suppression above.
 
       // Build active order: filter by expansion_slides if provided, then
       // force-append expansion_case_close at the end regardless of selection
@@ -5031,7 +5013,6 @@ export default api({
 
       const activeOrder = EXPANSION_SLIDE_ORDER.filter((sid) => {
         if (sid === "expansion_case_close") return false; // always appended below
-        if (GROWTH_TREND_SLIDES.has(sid) && !showGrowthSlides) return false;  // growth trend gate
         if (sid === "testimonials" && testimonials.length === 0) return false;
         return slideFilter === null || slideFilter.has(sid);
       });

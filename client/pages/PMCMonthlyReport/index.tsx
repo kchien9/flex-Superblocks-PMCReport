@@ -70,7 +70,6 @@ export default function PMCMonthlyReportPage() {
       total_portfolio_units: 0,
       presenting_mode: state.delivery === "presenting",
       comparison_months: state.comparison_months ?? 1,
-      growth_slides: "auto" as const,
       // Kevin's catch: this existed on QBRFormState and updated on toggle, but was never
       // actually included in the args sent to the API — the control did nothing.
       terminology: state.terminology as "resident" | "household",
@@ -151,7 +150,6 @@ export default function PMCMonthlyReportPage() {
       expansion_slides: [...state.selected_slides],
       presenting_mode: state.delivery === "presenting",
       comparison_months: state.comparison_months ?? 1,
-      growth_slides: state.growth_slides as "auto" | "include" | "exclude",
       sparklines: state.sparklines as "auto" | "include" | "exclude",
       period_comparison: state.period_comparison as "auto" | "include" | "exclude",
       terminology: state.terminology as "resident" | "household",
