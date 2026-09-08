@@ -47,3 +47,9 @@ yarn-error.log*
 .turbo/
 
 /dist
+
+# Brainstorming visual companion (session-local mockups, not source)
+.superpowers/
+
+# Git worktrees for subagent-driven feature work
+.worktrees/
