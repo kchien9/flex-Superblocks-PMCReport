@@ -22,6 +22,11 @@ export default function PMCMonthlyReportPage() {
 
   const [activeTab, setActiveTab] = useSessionState<TabId>("pmcreport:activeTab", "qbr");
   const [delivery, setDelivery] = useSessionState<string>("pmcreport:delivery", "sharing");
+  // PMC/prospect name of whoever was last generated - used only to name downloaded files
+  // (Kevin's ask: "slide-deck.html" for every report made them impossible to tell apart once
+  // downloaded). Session-cached like the report data itself so a refresh doesn't drop it while
+  // the cached deck is still showing.
+  const [currentSubjectName, setCurrentSubjectName] = useSessionState<string>("pmcreport:subjectName", "");
 
   // ─── API Hooks ──────────────────────────────────────────────────────────────
   const { data: pmcData, loading: pmcLoading } = useApiData("GetPMCNames", {});
@@ -52,6 +57,7 @@ export default function PMCMonthlyReportPage() {
   // ─── Handlers ───────────────────────────────────────────────────────────────
   const handleQBRGenerate = useCallback(async (state: QBRFormState) => {
     setDelivery(state.delivery);
+    setCurrentSubjectName(state.pmc_name || state.ownership_report_name || "Custom Portfolio");
     const lookback = state.review_period === "quarter" ? 3 : state.review_period === "ytd" ? new Date().getMonth() + 1 : 12;
     const args = {
       pmc_name: state.pmc_name || state.ownership_report_name || "Custom Portfolio",
@@ -91,6 +97,7 @@ export default function PMCMonthlyReportPage() {
 
   const handleNewLogoGenerate = useCallback(async (state: NewLogoFormState) => {
     setDelivery(state.delivery);
+    setCurrentSubjectName(state.prospect_account);
     // Map the form state to the GetProspectDeck input schema
     const units = parseInt(state.total_units) || 0;
     const stateVal = state.states.trim();
@@ -130,6 +137,7 @@ export default function PMCMonthlyReportPage() {
 
   const handleExpansionGenerate = useCallback(async (state: ExpansionFormState) => {
     setDelivery(state.delivery);
+    setCurrentSubjectName(state.pmc_name);
     const lookback = state.review_period === "quarter" ? 3 : state.review_period === "ytd" ? new Date().getMonth() + 1 : 12;
     const args = {
       pmc_name: state.pmc_name,
@@ -276,6 +284,8 @@ export default function PMCMonthlyReportPage() {
             reportData={currentReportData ?? null}
             delivery={delivery}
             deckLabel={deckLabel}
+            subjectName={currentSubjectName}
+            reportType={activeTab}
             error={currentError}
             onRetry={handleRetry}
           />

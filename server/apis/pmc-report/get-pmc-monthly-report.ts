@@ -620,7 +620,10 @@ function renderExecSummary(d: ExecSummaryInput): { html: string; js: string } {
     <div style="flex-shrink:0;margin-bottom:24px;">
       <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;">
         <div class="slide-label" style="margin-bottom:10px;">EXECUTIVE SUMMARY</div>
-        ${deltaToggle}
+        <!-- Kevin's ask: the sparkline toggles were the last thing on the slide, easy to miss
+             below the tile grid - moved up next to the other presenter control (deltaToggle)
+             so both are visible together at the top, not hunted for at the bottom. -->
+        <div style="display:flex;align-items:center;gap:8px;">${sparkCtrlHtml}${deltaToggle}</div>
       </div>
       <div class="slide-title" style="margin-bottom:6px;">What we've built together.</div>
       <div style="font-size:12px;color:#6b7280;">${pmc} &middot; ${reportingMonth} &nbsp;&middot;&nbsp; Partner since ${_e(sinceLbl)}</div>
@@ -657,7 +660,6 @@ function renderExecSummary(d: ExecSummaryInput): { html: string; js: string } {
         ${hiddenTileSet.has("delinquency_shielded") ? "" : tile("Delinquency shielded", dqVal, dqSub, dqPill, "", svgShield)}
       </div>
     </div>
-    ${sparkCtrlHtml}
   </div>`;
 
   // flexToggleSpark JS — shared utility, only define once
@@ -1483,7 +1485,10 @@ function buildDeckHtml(params: {
   :fullscreen #editBtn, :-webkit-full-screen #editBtn { display: none; }
   .bm-metric-toggles { display: flex; gap: 6px; margin-top: 12px; flex-wrap: wrap; }
   .stat-toggle-bar { display: flex; gap: 4px; }
-  .spark-ctrl { position: absolute; bottom: 44px; left: 72px; z-index: 49; display: flex; gap: 5px; align-items: center; }
+  /* Kevin's ask: was position:absolute;bottom:44px;left:72px, pinned to the slide corner
+     regardless of where its HTML sits - moved into normal header flow instead (next to
+     deltaToggle) so it's visible at the top without hunting for it at the bottom. */
+  .spark-ctrl { display: flex; gap: 5px; align-items: center; }
   .spark-ctrl-btn { padding: 3px 9px; border-radius: 4px; border: 1px solid #e5e7eb; background: rgba(255,255,255,0.92); color: #9ca3af; font-size: 10px; font-weight: 600; cursor: pointer; font-family: 'ABCDiatype', sans-serif; letter-spacing: 0.04em; backdrop-filter: blur(4px); transition: all 0.12s; }
   .spark-ctrl-btn:hover { background: #f9f5ff; color: #6A3DB8; border-color: #6A3DB8; }
   .spark-ctrl-btn.is-hidden { color: #dc5050; background: #fee2e2; border-color: #fca5a5; text-decoration: line-through; }
@@ -5105,7 +5110,11 @@ export default api({
         slideNum++;
         switch (sid) {
           case "cover": {
-            const coverHtml = renderCover(kpis);
+            // Kevin's catch: renderCover's isExpansion branch (deckLabel "Portfolio Expansion
+            // Opportunity", no third Reporting Period tile, etc.) was built but never actually
+            // wired at this call site - `kpis` alone never carried isExpansion:true anywhere,
+            // so this always rendered the QBR-labeled cover even inside the Expansion branch.
+            const coverHtml = renderCover({ ...kpis, isExpansion: true });
             if (coverHtml) {
               expSlideHtmls.push(coverHtml);
               expRenderedKeys.push(sid);

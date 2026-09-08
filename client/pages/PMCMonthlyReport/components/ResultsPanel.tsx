@@ -47,16 +47,35 @@ function downloadWorkbook(data: WorkbookData | undefined, filename: string) {
   XLSX.writeFile(wb, filename);
 }
 
+// Downloaded filenames were all generic ("slide-deck.html" etc. regardless of who the report
+// was for), making anything downloaded more than once impossible to tell apart (Kevin's ask).
+// Every download now gets stamped with the PMC/prospect name, the report type, and the month
+// it was generated.
+const REPORT_TYPE_LABELS: Record<string, string> = { qbr: "QBR", new_logo: "New_Logo", expansion: "Expansion" };
+
+function sanitizeForFilename(s: string): string {
+  return s.trim().replace(/[^a-zA-Z0-9]+/g, "_").replace(/^_+|_+$/g, "") || "Report";
+}
+
+function buildFilename(subjectName: string, reportType: string, suffix: string): string {
+  const subject = sanitizeForFilename(subjectName);
+  const typeLabel = REPORT_TYPE_LABELS[reportType] ?? sanitizeForFilename(reportType);
+  const dateStamp = new Date().toLocaleDateString("en-US", { month: "short", year: "numeric" }).replace(" ", "");
+  return `${subject}_${typeLabel}_${dateStamp}_${suffix}`;
+}
+
 interface ResultsPanelProps {
   generating: boolean;
   reportData: { html?: string; empty?: boolean; flags?: string[]; emailDraft?: string; notes_html?: string; skipped_slides?: { key: string; label: string }[]; workbook_data?: WorkbookData } | null;
   delivery: string;
   deckLabel: string;
+  subjectName: string;
+  reportType: string;
   error?: unknown;
   onRetry?: () => void;
 }
 
-export function ResultsPanel({ generating, reportData, delivery, deckLabel, error, onRetry }: ResultsPanelProps) {
+export function ResultsPanel({ generating, reportData, delivery, deckLabel, subjectName, reportType, error, onRetry }: ResultsPanelProps) {
   const [copied, setCopied] = useState(false);
   const [elapsedSec, setElapsedSec] = useState(0);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -157,7 +176,7 @@ export function ResultsPanel({ generating, reportData, delivery, deckLabel, erro
         <div className="flex items-center gap-3 flex-wrap">
           <button
             type="button"
-            onClick={() => downloadHtml(reportData.html || "", "slide-deck.html")}
+            onClick={() => downloadHtml(reportData.html || "", buildFilename(subjectName, reportType, "slide-deck.html"))}
             className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-[#6A3DB8] border border-[#6A3DB8]/30 rounded-[4px] hover:bg-[#EEE2FC] transition-colors"
           >
             <Download className="h-3.5 w-3.5" />
@@ -166,7 +185,7 @@ export function ResultsPanel({ generating, reportData, delivery, deckLabel, erro
           {reportData.workbook_data ? (
             <button
               type="button"
-              onClick={() => downloadWorkbook(reportData.workbook_data, "data-workbook.xlsx")}
+              onClick={() => downloadWorkbook(reportData.workbook_data, buildFilename(subjectName, reportType, "data-workbook.xlsx"))}
               className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-[#6A3DB8] border border-[#6A3DB8]/30 rounded-[4px] hover:bg-[#EEE2FC] transition-colors"
             >
               <FileSpreadsheet className="h-3.5 w-3.5" />
@@ -186,7 +205,7 @@ export function ResultsPanel({ generating, reportData, delivery, deckLabel, erro
             reportData.notes_html ? (
               <button
                 type="button"
-                onClick={() => downloadHtml(reportData.notes_html || "", "speaker-notes.html")}
+                onClick={() => downloadHtml(reportData.notes_html || "", buildFilename(subjectName, reportType, "speaker-notes.html"))}
                 className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-[#6A3DB8] border border-[#6A3DB8]/30 rounded-[4px] hover:bg-[#EEE2FC] transition-colors"
               >
                 <FileText className="h-3.5 w-3.5" />
