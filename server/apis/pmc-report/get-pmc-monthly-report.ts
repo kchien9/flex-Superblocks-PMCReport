@@ -34,10 +34,8 @@ import {
 
 const SNOWFLAKE_SSO = "d38ee94a-4e93-46f5-ab44-c65a99b3aea5";
 
-// ─── Module-level cache: network pool (same for all PMCs in a given cutoff month) ───
+// ─── Shared row shape for the property-pool peer-matching query below ───
 type NetworkPoolRow = { PMC_NAME: string; PROPERTY_NAME: string; PROPERTY_STATE: string | null; PROPERTY_UNIT_COUNT: number; RENT_PAID_AMOUNT: number | null; BILLS_PAID_COUNT: number | null; ROLLOUT_MONTH: string | null; T12_CONNECTIONS: number | null; MEDIAN_RENTER_INCOME: number | null };
-let _networkPoolCache: { cutoff: string; data: NetworkPoolRow[]; fetchedAt: number } | null = null;
-const _NETWORK_POOL_TTL_MS = 10 * 60 * 1000; // 10 minutes — unused while caching is disabled, see below
 
 // ─── Peer-matching geo helpers (faithful port of Flask's generator/data.py:1047-1440) ───
 // Ported because the peer-median/Peer Benchmarks cohort was found to diverge from Flask's:
@@ -2361,151 +2359,13 @@ export default api({
     // - trendRawRows: Property trend badges (QBR appendix only)
     const needsQBRQueries = deck_mode === "qbr";
 
-    // --- Network property pool (QBR only) — fired here, BEFORE the batch below, instead of
-    // after it finishes. Per Clark: the "IntegrationError code 4" failures aren't a broken
-    // Snowflake connection (SELECT 1 works fine) — they're the overall API step's time budget
-    // running out and Superblocks killing whatever query is still in flight, which reports back
-    // as a generic integration error rather than a clean timeout. This query used to only start
-    // AFTER the first Promise.all (6 queries) fully resolved, meaning it queued behind ~12 other
-    // queries before even beginning — and it's by far the heaviest single query in the whole
-    // report (15,000-row cap + a UDF chain), so it was consistently the one still running when
-    // the budget ran out. Starting it here, in parallel with everything else, gives it the same
-    // wall-clock head start as every other query instead of a ~12-query handicap.
-    // Currently write-only (its debug-panel reader was removed) - kept, not deleted, since it's
-    // a real query result and this file's own comments document real cost-diagnosis history
-    // around it; underscore-prefixed per this codebase's convention for intentionally-idle
-    // diagnostics rather than silently dropping a traced pipeline.
-    let _networkPool: NetworkPoolRow[] = [];
     // Dedicated property-level peer pool (Flask's pull_network_property_pool,
-    // generator/data.py:4900-5066) — see the full comment on PROPERTY_POOL_SQL below for why
-    // this can't just reuse networkPool.
+    // generator/data.py:4900-5066) — see the full comment on PROPERTY_POOL_SQL below.
     let propertyPool: NetworkPoolRow[] = [];
-    // Also currently write-only (debug-panel reader removed); underscore-prefixed for the same
-    // reason as _networkPool above.
+    // Currently write-only (debug-panel reader removed); underscore-prefixed per this
+    // codebase's convention for intentionally-idle diagnostics rather than silently
+    // dropping a traced pipeline.
     let _propertyPoolError: string | null = null;
-    // TEMPORARY diagnostic — captures the real error instead of silently swallowing it.
-    let _networkPoolError: string | null = null;
-    const NETWORK_POOL_SQL = `WITH prop_zip AS (
-                SELECT PROPERTY_PUBLIC_ID, PROPERTY_ZIP,
-                       ROW_NUMBER() OVER (PARTITION BY PROPERTY_PUBLIC_ID ORDER BY CREATED_AT_UTC DESC) AS rn
-                FROM PRODUCTION.ANALYTICS.DIM_PROPERTIES_PMCS
-             ),
-             latest AS (
-                -- cutoffStr is an EXCLUSIVE upper bound (1st of the next allowed month) — using
-                -- <= here let it match that exact stub month, which Snowflake pre-creates with
-                -- zeroed/null billing columns before it has real data. Every peer's "latest"
-                -- resolved to that empty month, zeroing out NAR/avg-rent for the entire network
-                -- pool and breaking every rent-matched peer tier. Must be strict <.
-                SELECT MAX(BP_MONTH) AS bp_month
-                FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS
-                WHERE BP_MONTH < ? AND IS_INTEGRATED_TOTAL = TRUE
-             ),
-             agg AS (
-                SELECT
-                  PMC_NAME, PROPERTY_NAME,
-                  MAX(CASE WHEN BP_MONTH = (SELECT bp_month FROM latest) THEN PROPERTY_STATE END) AS PROPERTY_STATE,
-                  MAX(CASE WHEN BP_MONTH = (SELECT bp_month FROM latest) THEN PROPERTY_UNIT_COUNT END) AS PROPERTY_UNIT_COUNT,
-                  MAX(CASE WHEN BP_MONTH = (SELECT bp_month FROM latest) THEN RENT_PAID_AMOUNT END) AS RENT_PAID_AMOUNT,
-                  MAX(CASE WHEN BP_MONTH = (SELECT bp_month FROM latest) THEN BILLS_PAID_COUNT END) AS BILLS_PAID_COUNT,
-                  MAX(ROLLOUT_MONTH) AS ROLLOUT_MONTH,
-                  SUM(CASE WHEN BP_MONTH >= DATEADD('month', -12, (SELECT bp_month FROM latest))
-                            AND BP_MONTH <= (SELECT bp_month FROM latest)
-                       THEN NEW_BILL_CONNECTIONS_PROPERTY ELSE 0 END) AS T12_CONNECTIONS,
-                  ANY_VALUE(PROPERTY_PUBLIC_ID) AS PROPERTY_PUBLIC_ID
-                FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS
-                WHERE IS_INTEGRATED_TOTAL = TRUE
-                  AND ROLLOUT_MONTH IS NOT NULL
-                  -- Real fix for the "IntegrationError code 4" failures: this GROUP BY was
-                  -- scanning/aggregating EVERY property's ENTIRE history network-wide with no
-                  -- date bound at all — by far the most expensive thing in the whole report
-                  -- (every other query here is scoped to one PMC or a short peer list). Nothing
-                  -- this CTE computes needs data older than 13 months back from "latest" — the
-                  -- MAX(CASE WHEN BP_MONTH = latest ...) columns only ever read the single latest
-                  -- month, and T12_CONNECTIONS' own SUM(CASE...) already only looks back 12
-                  -- months from latest. Bounding the scan to that same window cuts the aggregated
-                  -- row count by the same ratio as (network lifetime in months / 13) for any
-                  -- property with more history than that, with an identical result.
-                  AND BP_MONTH >= DATEADD('month', -13, (SELECT bp_month FROM latest))
-                  AND BP_MONTH <= (SELECT bp_month FROM latest)
-                GROUP BY PMC_NAME, PROPERTY_NAME
-             ),
-             subject_rows AS (
-                -- ALWAYS include the subject PMC's (and any additional combined PMCs', via
-                -- allPmcNames) own properties, unconditionally, regardless of the peer-sampling
-                -- cap below. A single PMC never
-                -- has anywhere near enough properties to threaten the byte-size cap, but without
-                -- this, an unordered LIMIT over the full network can arbitrarily exclude the very
-                -- PMC this report is being generated for. (Historical note: this originally
-                -- guarded a subjectPoolProps read of this pool for the subject's own engagement
-                -- stat — that stat has since been moved to read directly from allRows/inNetwork
-                -- instead, per the engagement fix elsewhere in this file, so this CTE no longer
-                -- protects that specific stat. Left in place since the general principle — a
-                -- report should never silently lose its own subject's rows to an unordered cap —
-                -- still holds for whatever else reads this pool.)
-                SELECT PMC_NAME, PROPERTY_NAME, PROPERTY_STATE, PROPERTY_UNIT_COUNT,
-                       RENT_PAID_AMOUNT, BILLS_PAID_COUNT, ROLLOUT_MONTH, T12_CONNECTIONS,
-                       PROPERTY_PUBLIC_ID
-                FROM agg
-                WHERE PMC_NAME IN (?, ?)
-             ),
-             peer_candidates AS (
-                -- Peer sample: filtered + capped, but spread across PMCs (top 20 properties per
-                -- PMC by unit count) instead of an arbitrary unordered slice of the whole network.
-                -- An unordered LIMIT lets Snowflake return whatever 3000 rows it happens to scan
-                -- first, which can be dominated by one or two large PMCs and starve the rest --
-                -- this is almost certainly why the peer-median line came back flatter than the
-                -- real (unbounded) calculation. Spreading per-PMC keeps the sample representative
-                -- across the network instead of a lottery draw.
-                SELECT PMC_NAME, PROPERTY_NAME, PROPERTY_STATE, PROPERTY_UNIT_COUNT,
-                       RENT_PAID_AMOUNT, BILLS_PAID_COUNT, ROLLOUT_MONTH, T12_CONNECTIONS,
-                       PROPERTY_PUBLIC_ID
-                FROM (
-                   SELECT PMC_NAME, PROPERTY_NAME, PROPERTY_STATE, PROPERTY_UNIT_COUNT,
-                          RENT_PAID_AMOUNT, BILLS_PAID_COUNT, ROLLOUT_MONTH, T12_CONNECTIONS,
-                          PROPERTY_PUBLIC_ID,
-                          ROW_NUMBER() OVER (PARTITION BY PMC_NAME ORDER BY PROPERTY_UNIT_COUNT DESC) AS rn
-                   FROM agg
-                   WHERE PROPERTY_UNIT_COUNT >= 10
-                     AND PROPERTY_STATE IS NOT NULL AND PROPERTY_STATE != ''
-                     AND PMC_NAME NOT IN (?, ?)
-                )
-                WHERE rn <= 20
-                -- Per Clark: Superblocks enforces a ~5MB step-output size limit, and 15000 rows
-                -- x 9 columns, serialized with full JSON keys per row, plausibly lands right at
-                -- that ceiling -- a FIXED row limit hitting a FIXED byte cap fails identically
-                -- every single time, exactly what was observed across 3 different query bodies.
-                -- Cut hard to 3000 as a decisive test, comfortably clear of 5MB even at a
-                -- generous worst-case ~500 bytes/row (~1.5MB total); can be tuned back up now
-                -- that the cap is confirmed.
-                --
-                -- ORDER BY here is NOT optional. Snowflake gives no row-order guarantee for a
-                -- LIMIT with nothing ordering it -- which 3000 rows out of the full qualifying
-                -- pool actually survive can differ between two runs of the IDENTICAL query
-                -- against IDENTICAL data. That reshuffles which PMCs' properties get counted,
-                -- which reshuffles the tier-matching JS does downstream, which reshuffles who
-                -- ends up in lockedPeers -- this is what made the peer median swing wildly
-                -- between two reports generated 5 minutes apart with no real data change.
-                -- PMC_NAME, rn gives a fully stable, reproducible selection (alphabetical, then
-                -- each PMC's own top properties by size) -- deterministic, at the cost of a
-                -- mild bias toward alphabetically-early PMCs if the true pool exceeds 3000,
-                -- which is a far better trade than "random each run."
-                ORDER BY PMC_NAME, rn
-                LIMIT 3000
-             ),
-             candidates AS (
-                SELECT * FROM subject_rows
-                UNION ALL
-                SELECT * FROM peer_candidates
-             )
-             SELECT c.PMC_NAME, c.PROPERTY_NAME, c.PROPERTY_STATE, c.PROPERTY_UNIT_COUNT,
-                    c.RENT_PAID_AMOUNT, c.BILLS_PAID_COUNT, c.ROLLOUT_MONTH, c.T12_CONNECTIONS,
-                    PRODUCTION.ANALYTICS.FIPS_TO_CENSUS_DATA(
-                        PRODUCTION.ANALYTICS.ZIP_TO_FIPS(LEFT(p.PROPERTY_ZIP, 5)),
-                        'median_renter_household_income'
-                    ) AS MEDIAN_RENTER_INCOME
-             FROM candidates c
-             LEFT JOIN prop_zip p
-               ON p.PROPERTY_PUBLIC_ID = c.PROPERTY_PUBLIC_ID AND p.rn = 1`;
     // Region detail (DMA sub-region breakdown, "By State" slide's drill-down rows) - Kevin's
     // ask: Expansion's own "By State" slide never got this even though QBR's has had it all
     // along. Hoisted out of the QBR-only batch below (same "fire early" pattern networkPoolPromise
@@ -2544,58 +2404,6 @@ export default api({
           [pmc_name, reportingMonthStr],
           { label: "Pull DMA region detail for geo slide dropdowns" }
         ).catch(() => [] as { PROPERTY_STATE: string; PROPERTY_REGION: string; PROPERTIES: number; TOTAL_UNITS: number; BILLS_PAID: number }[]);
-
-    const networkPoolPromise = !needsQBRQueries
-      ? Promise.resolve([] as NetworkPoolRow[])
-      : (async (): Promise<NetworkPoolRow[]> => {
-          // Retry-with-backoff is separate, cheap insurance against any additional transient
-          // blip on top of the timeout fix above — harmless if the timeout fix alone is enough.
-          const maxAttempts = 3;
-          let lastErr: unknown = null;
-          for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-            try {
-              // allPmcNames is used directly here - sized to however many entities are actually
-              // being combined (1 to N), not padded/capped to exactly 2. Both the IN and NOT IN
-              // clauses below get the same list, so this scales correctly regardless of how many
-              // additional_pmc_names were passed.
-              const subjectPmcsForPool = allPmcNames;
-              const netRows = await ctx.integrations.snowflake_sso.query(
-                NETWORK_POOL_SQL,
-                NetworkPoolSchema,
-                [cutoffStr, ...subjectPmcsForPool, ...subjectPmcsForPool],
-                { label: "Pull network property pool for peer matching (incl. median renter income for RTI tier)" }
-              );
-              _networkPoolCache = { cutoff: cutoffStr, data: netRows, fetchedAt: Date.now() };
-              return netRows;
-            } catch (err) {
-              lastErr = err;
-              if (attempt < maxAttempts) {
-                await new Promise((resolve) => setTimeout(resolve, 750 * attempt));
-              }
-            }
-          }
-          // TEMPORARY diagnostic — err.message alone was just a generic Superblocks wrapper
-          // ("Integration ... failed during 'query'") with no real Snowflake-side detail. Walk
-          // every own-enumerable property (err.cause, err.response, err.details, etc. — whatever
-          // this integration error shape actually carries) so the debug panel surfaces the real
-          // underlying failure instead of the wrapper text alone.
-          const err = lastErr;
-          const base = err instanceof Error ? err.message : String(err);
-          let extra = "";
-          try {
-            const props = err && typeof err === "object" ? Object.getOwnPropertyNames(err) : [];
-            const extraProps = props.filter((p) => p !== "message" && p !== "stack");
-            if (extraProps.length > 0) {
-              const dump: Record<string, unknown> = {};
-              for (const p of extraProps) dump[p] = (err as Record<string, unknown>)[p];
-              extra = " | extra: " + JSON.stringify(dump, null, 0).slice(0, 2000);
-            }
-          } catch {
-            // ignore — best-effort diagnostic only
-          }
-          _networkPoolError = `${base}${extra} (failed after ${maxAttempts} attempts)`;
-          return [] as NetworkPoolRow[];
-        })();
 
     // Dedicated property-level peer pool — Flask's real pull_network_property_pool
     // (generator/data.py:4900-5066), NOT a reuse of networkPool above. networkPool is
@@ -3367,11 +3175,10 @@ export default api({
       // section now reads that directly instead of this separate, broken query - see the
       // newRolloutCandidates loop below.
 
-      const [networkPoolResult, propertyPoolResult, regionDetailResult, subjectIncomeRows, tenurePercentileRows, disabledPropertyResult] = await Promise.all([
-        networkPoolPromise, propertyPoolPromise, regionDetailPromise, subjectIncomePromise, tenurePercentilePromise,
+      const [propertyPoolResult, regionDetailResult, subjectIncomeRows, tenurePercentileRows, disabledPropertyResult] = await Promise.all([
+        propertyPoolPromise, regionDetailPromise, subjectIncomePromise, tenurePercentilePromise,
         disabledPropertiesPromise,
       ]);
-      _networkPool = networkPoolResult;
       propertyPool = propertyPoolResult;
       regionDetail = regionDetailResult;
       disabledPropertyRows = disabledPropertyResult;
