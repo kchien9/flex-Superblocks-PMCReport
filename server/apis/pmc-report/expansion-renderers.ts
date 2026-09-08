@@ -549,6 +549,14 @@ export interface ExpansionCaseCloseInput {
   /** Window lifetimeDqShielded is actually summed over (the report's Full/Quarter/YTD period),
    * so proof-point 3's copy can name the real window instead of a hardcoded "12 months". */
   lookbackMonths?: number;
+  /** Kevin's catch (real client, AJH): this slide kept citing "your residents use Flex at
+   * every rent level" as a proof point even when the rent-bucket slide itself auto-hid for
+   * not having enough real variance to show - a claim with no slide in the deck to back it up.
+   * Every finding below is now gated on its source slide key actually being in this set (the
+   * same expRenderedKeys already built for the "N slides didn't render" UI notice) - a finding
+   * whose slide didn't render just doesn't appear, rather than showing a generic version that
+   * implies evidence the AE can't actually point to. */
+  renderedSlideKeys?: Set<string> | string[];
 }
 
 export function renderExpansionCaseClose(input: ExpansionCaseCloseInput): SlideResult {
@@ -565,6 +573,7 @@ export function renderExpansionCaseClose(input: ExpansionCaseCloseInput): SlideR
     hasNiroActivity = false,
     benchmarkNar = 0.085,
     lookbackMonths = 12,
+    renderedSlideKeys,
   } = input;
 
   const pmc = _e(pmcName);
@@ -580,7 +589,7 @@ export function renderExpansionCaseClose(input: ExpansionCaseCloseInput): SlideR
   // the same bad input; this slide was missed.
   const enrollPct = Math.max(0, Math.min(100, Math.round(flexUnits / Math.max(totalPort, 1) * 100)));
 
-  function finding(n: string, headline: string, body: string): string {
+  function finding(n: number, headline: string, body: string): string {
     return `
         <div style="background:#f8f7ff;border:1px solid #ede9fe;
                     border-radius:10px;padding:16px 22px;display:flex;flex-direction:column;gap:8px;">
@@ -594,56 +603,70 @@ export function renderExpansionCaseClose(input: ExpansionCaseCloseInput): SlideR
         </div>`;
   }
 
+  // Kevin's catch: each candidate below names the ONE slide it's actually evidence for.
+  // Candidates whose slide isn't in renderedSlideKeys get dropped entirely, rather than
+  // falling back to a generic version that still implies a chart the deck doesn't have. No
+  // renderedSlideKeys provided at all (undefined) means "don't filter" - keeps this function
+  // safe to call without the new input, though the one real call site always passes it now.
+  const rendered = renderedSlideKeys
+    ? (renderedSlideKeys instanceof Set ? renderedSlideKeys : new Set(renderedSlideKeys))
+    : null;
+  const isRendered = (slideKey: string) => rendered === null || rendered.has(slideKey);
+
   const trueRepeat = input.trueRepeatRate;
-  const f1 = trueRepeat != null && trueRepeat > 0
-    ? finding("1",
-        "Residents who use Flex keep coming back",
-        `${(trueRepeat * 100).toFixed(1)}% of eligible residents came back in a given month \u2013 once residents start using Flex, most keep using it.`
-      )
-    : finding("1",
-        "Residents who use Flex keep coming back",
-        "Once residents start using Flex, most keep using it, month after month."
-      );
-
-  let f2: string;
-  if (evidenceType === "affordable") {
-    f2 = finding("2",
-      "Flex works hardest for residents who need it most",
-      "In affordable housing, 73% of residents said Flex helped them stay housed and avoid eviction. Your residents aren't just using a payment tool - they're using a housing stability tool."
-    );
-  } else {
-    f2 = finding("2",
-      "Your residents choose Flex at every rent level",
-      "Flex usage isn't limited to rent-burdened residents. The driver is timing: payday and rent due dates don't line up regardless of income. It's a universal problem."
-    );
-  }
-
-  let f3: string;
-  if (lifetimeDqShielded > 0) {
-    // "over the last 12 months" was hardcoded regardless of the actual window this dollar
-    // figure is summed over (Kevin's catch, live-verified: lifetimeDqShielded is windowed to
-    // the report's own Full/Quarter/YTD lookback_months upstream - a Quarter run sums 3 months
-    // but the copy claimed 12, understating Flex's real annualized value by ~4x). Same "$
-    // doesn't match its own label" bug class already fixed on the exec-summary tile and the
-    // standalone Delinquency slide - naming the real window here too, same wording pattern.
-    f3 = finding("3",
-      `Flex has absorbed ${fmtCurrency(lifetimeDqShielded)} in delinquency risk over the trailing ${lookbackMonths} month${lookbackMonths === 1 ? "" : "s"} - money you kept`,
-      "When residents missed payments, Flex paid you anyway. That guarantee extends across every enrolled unit - and compounds as more of your portfolio joins."
-    );
-  } else {
-    f3 = finding("3",
-      "Flex guarantees rent to you regardless of what residents pay",
-      "Every enrolled unit carries the same protection: Flex covers rent when residents miss. You collect on-time rent without chasing individual payments."
-    );
-  }
-
+  const affordable = evidenceType === "affordable";
   const lateCur = Math.max(1, Math.round(flexUnits * 0.03));
   const vacCur = Math.max(1, Math.round(flexUnits / 100 * 2.1));
   const turnsCur = Math.max(1, Math.round(flexUnits * (1 / 24.2 - 1 / 27.9) * 12));
-  const f4 = finding("4",
-    "Market research confirms the outcomes - and they compound with scale",
-    `MetroSight studied 488 real properties across 25 states. Across your ${flexUnits.toLocaleString()} enrolled units, that's already ~${lateCur.toLocaleString()} fewer past-due payments, ~${vacCur.toLocaleString()} fewer vacant units, and ~${turnsCur.toLocaleString()} fewer resident turns per year.`
-  );
+
+  const candidates: { slideKey: string; category: string; headline: string; body: string }[] = [
+    {
+      slideKey: "retention",
+      category: "Repeat usage",
+      headline: "Residents who use Flex keep coming back",
+      body: trueRepeat != null && trueRepeat > 0
+        ? `${(trueRepeat * 100).toFixed(1)}% of eligible residents came back in a given month \u2013 once residents start using Flex, most keep using it.`
+        : "Once residents start using Flex, most keep using it, month after month.",
+    },
+    {
+      // Affordable housing's evidence lives on the same "high_rent" slide slot (renderAffordableHousing
+      // is what actually renders there when evidenceType is "affordable") - same slide key either way.
+      slideKey: "high_rent",
+      category: affordable ? "Housing stability" : "Cross-rent adoption",
+      headline: affordable ? "Flex works hardest for residents who need it most" : "Your residents choose Flex at every rent level",
+      body: affordable
+        ? "In affordable housing, 73% of residents said Flex helped them stay housed and avoid eviction. Your residents aren't just using a payment tool - they're using a housing stability tool."
+        : "Flex usage isn't limited to rent-burdened residents. The driver is timing: payday and rent due dates don't line up regardless of income. It's a universal problem.",
+    },
+    {
+      slideKey: "delinquency",
+      category: "Delinquency shield",
+      // "over the last 12 months" was hardcoded regardless of the actual window this dollar
+      // figure is summed over (Kevin's catch, live-verified: lifetimeDqShielded is windowed to
+      // the report's own Full/Quarter/YTD lookback_months upstream - a Quarter run sums 3 months
+      // but the copy claimed 12, understating Flex's real annualized value by ~4x). Same "$
+      // doesn't match its own label" bug class already fixed on the exec-summary tile and the
+      // standalone Delinquency slide - naming the real window here too, same wording pattern.
+      headline: lifetimeDqShielded > 0
+        ? `Flex has absorbed ${fmtCurrency(lifetimeDqShielded)} in delinquency risk over the trailing ${lookbackMonths} month${lookbackMonths === 1 ? "" : "s"} - money you kept`
+        : "Flex guarantees rent to you regardless of what residents pay",
+      body: lifetimeDqShielded > 0
+        ? "When residents missed payments, Flex paid you anyway. That guarantee extends across every enrolled unit - and compounds as more of your portfolio joins."
+        : "Every enrolled unit carries the same protection: Flex covers rent when residents miss. You collect on-time rent without chasing individual payments.",
+    },
+    {
+      slideKey: "expansion_metrosight",
+      category: "Market research",
+      headline: "Market research confirms the outcomes - and they compound with scale",
+      body: `MetroSight studied 488 real properties across 25 states. Across your ${flexUnits.toLocaleString()} enrolled units, that's already ~${lateCur.toLocaleString()} fewer past-due payments, ~${vacCur.toLocaleString()} fewer vacant units, and ~${turnsCur.toLocaleString()} fewer resident turns per year.`,
+    },
+  ];
+
+  const survivors = candidates.filter((c) => isRendered(c.slideKey));
+  const findingsHtml = survivors.map((c, i) => finding(i + 1, c.headline, c.body)).join("");
+  const NUMBER_WORDS = ["Zero", "One", "Two", "Three", "Four"];
+  const pointsTitle = `${NUMBER_WORDS[survivors.length] ?? survivors.length} proof point${survivors.length === 1 ? "" : "s"}.`;
+  const categoriesSubtitle = survivors.map((c) => c.category).join(" \u00b7 ");
 
   // Opportunity bar
   const oppNiro = hasNiroActivity ? " There's already proven demand at properties not yet on Flex." : "";
@@ -667,11 +690,11 @@ export function renderExpansionCaseClose(input: ExpansionCaseCloseInput): SlideR
       <div style="font-size:9px;letter-spacing:0.18em;text-transform:uppercase;
                   color:#6A3DB8;font-weight:600;margin-bottom:10px;">THE CASE FOR EXPANDING</div>
       <div style="font-size:32px;font-weight:700;color:#1d1d1d;line-height:1.15;
-                  letter-spacing:-0.02em;margin-bottom:6px;">Four proof points.</div>
-      <div style="font-size:12px;color:#9ca3af;">Repeat usage · Cross-rent adoption · Delinquency shield · Market research</div>
+                  letter-spacing:-0.02em;margin-bottom:6px;">${_e(pointsTitle)}</div>
+      <div style="font-size:12px;color:#9ca3af;">${_e(categoriesSubtitle)}</div>
     </div>
     <div style="flex:1;display:grid;grid-template-columns:1fr;gap:10px;align-content:start;">
-      ${f1}${f2}${f3}${f4}
+      ${findingsHtml}
     </div>
     ${oppHtml}
   </div>`;

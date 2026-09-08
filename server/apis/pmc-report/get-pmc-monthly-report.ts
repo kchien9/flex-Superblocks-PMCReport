@@ -5309,6 +5309,10 @@ export default api({
               // Names the real window lifetimeDqShielded is summed over (Kevin's catch) -
               // see the comment at its use inside renderExpansionCaseClose.
               lookbackMonths: lookback_months,
+              // Kevin's catch (real client, AJH) - makes this slide "smart" about which of its
+              // own proof points actually have a slide behind them. expRenderedKeys is already
+              // complete by this point since this case is always last in activeOrder.
+              renderedSlideKeys: expRenderedKeys,
             });
             pushSlide(sid, r);
             break;
