@@ -386,6 +386,15 @@ interface ExecSummaryInput {
   // delinquency_shielded. Chosen at generation time (Kevin's ask) - see hidden_kpi_tiles on the
   // top-level input schema for why this isn't a live post-generation toggle.
   hiddenTiles?: string[];
+  // One entry per combined entity's own current-month numbers (Task 9: Exec Summary switcher).
+  // Built by the call site via groupRowsByPmc(latestRows), grouped + aggregated once per entity
+  // instead of once overall. A switcher is rendered only when this has more than 1 entry - a
+  // single-PMC report passes either [] or a 1-entry array and gets no switcher at all, with
+  // output identical to before this field existed. Deliberately does NOT carry prior-period
+  // figures (no prevResidents/prevRent/prevNar per entity) - switching entities swaps the tile
+  // values themselves; the period-comparison pills/sparklines have no per-entity comparison data
+  // and keep showing the Combined view's delta regardless of which entity is selected.
+  entityBreakdown?: { pmcName: string; currentResidents: number; currentRent: number; currentNar: number; propertyCount: number; totalUnits: number }[];
 }
 
 function renderExecSummary(d: ExecSummaryInput): { html: string; js: string } {
@@ -562,14 +571,14 @@ function renderExecSummary(d: ExecSummaryInput): { html: string; js: string } {
   }
 
   // ── Small tile helper ─────────────────────────────────────────────────────
-  function tile(label: string, value: string, sublabel: string, pillHtml: string, sparkHtml = "", icon = ""): string {
+  function tile(label: string, value: string, sublabel: string, pillHtml: string, sparkHtml = "", icon = "", valueId = ""): string {
     const labelRow = icon
       ? `<div style="display:flex;align-items:center;gap:6px;margin-bottom:10px;">${iconCircle(icon)}<div style="font-size:13px;color:#2d2550;font-weight:700;">${label}</div></div>`
       : `<div style="font-size:13px;color:#2d2550;font-weight:700;margin-bottom:10px;">${label}</div>`;
     return `<div style="padding:18px 18px 16px;border-radius:10px;background:#f8f7ff;display:flex;flex-direction:column;">
       ${labelRow}
       <div style="flex:1;display:flex;flex-direction:column;justify-content:center;">
-        <div style="font-size:34px;font-weight:700;color:#1a1040;letter-spacing:-0.03em;line-height:1;">${value}</div>
+        <div style="font-size:34px;font-weight:700;color:#1a1040;letter-spacing:-0.03em;line-height:1;"${valueId ? ` id="${valueId}"` : ""}>${value}</div>
         ${pillHtml}${sparkHtml}${sublabel ? `<div style="font-size:11px;color:#6b7280;font-weight:500;margin-top:6px;">${sublabel}</div>` : ""}
       </div>
     </div>`;
@@ -585,6 +594,50 @@ function renderExecSummary(d: ExecSummaryInput): { html: string; js: string } {
   const visibleTileCount = ALL_TILE_KEYS.filter((k) => !hiddenTileSet.has(k)).length;
   const TILE_COLS_BY_VISIBLE_COUNT: Record<number, number> = { 0: 1, 1: 1, 2: 2, 3: 3, 4: 2, 5: 3, 6: 3 };
   const tileCols = TILE_COLS_BY_VISIBLE_COUNT[visibleTileCount] ?? 3;
+
+  // ── Entity switcher (Task 9: combined multi-PMC exec summary) ─────────────
+  // Only rendered when entityBreakdown has 2+ entries. Everything else in this function stays
+  // untouched when it doesn't - the value-tile ids below are only added when the switcher is
+  // actually rendered, so a single-PMC report's HTML is byte-identical to before this existed.
+  const entities = d.entityBreakdown ?? [];
+  const showEntitySwitcher = entities.length > 1;
+  let entitySwitcherHtml = "";
+  let entitySwitcherJs = "";
+  if (showEntitySwitcher) {
+    const fmtEntity = (residents: number, rent: number, narVal: number, properties: number) => ({
+      residents: residents.toLocaleString(),
+      rent: fmtCurrency(rent),
+      nar: fmtPct(narVal),
+      properties: properties.toLocaleString(),
+      avg: residents > 0 ? `avg $${Math.round(rent / residents).toLocaleString()}/resident` : "",
+    });
+    // Combined entry mirrors exactly what the tile grid already shows (d.currentResidents etc,
+    // same numbers the un-switched tiles render below) - not re-derived from entities, so
+    // "Combined" always matches today's existing behavior regardless of how entityBreakdown was
+    // built upstream.
+    const payload = [
+      { label: "Combined", ...fmtEntity(d.currentResidents, d.currentRent, nar, d.propertyCount) },
+      ...entities.map((e) => ({ label: e.pmcName, ...fmtEntity(e.currentResidents, e.currentRent, e.currentNar, e.propertyCount) })),
+    ];
+    // Index-based onclick (not the entity name) - sidesteps having to escape arbitrary PMC names
+    // (apostrophes, quotes, etc.) into a JS string literal inside an HTML attribute.
+    const btns = payload.map((p, i) =>
+      `<button class="spark-ctrl-btn${i === 0 ? " is-active" : ""}" onclick="flexSwitchEntity(${slideId},${i},this)">${_e(p.label)}</button>`
+    ).join("");
+    entitySwitcherHtml = `<div class="spark-ctrl presenter-control" style="flex-wrap:wrap;max-width:460px;">${btns}</div>`;
+    // Embed everything as JSON in a script variable, toggle via a shared function defined once -
+    // same convention as flexToggleSpark just above. Escape "<" so a PMC name containing
+    // "</script>" can't break out of the inline script tag.
+    const jsonPayload = JSON.stringify(payload).replace(/</g, "\\u003c");
+    entitySwitcherJs = `window.execEntityData=window.execEntityData||{};window.execEntityData[${slideId}]=${jsonPayload};`
+      + `if(!window.flexSwitchEntity){window.flexSwitchEntity=function(slideId,idx,btn){`
+      + `var d=(window.execEntityData[slideId]||[])[idx];if(!d)return;`
+      + `function setTxt(id,txt){var el=document.getElementById(id);if(el&&txt!==undefined)el.textContent=txt;}`
+      + `setTxt('ev_props_'+slideId,d.properties);setTxt('ev_res_'+slideId,d.residents);`
+      + `setTxt('ev_nar_'+slideId,d.nar);setTxt('ev_rent_'+slideId,d.rent);setTxt('ev_avg_'+slideId,d.avg);`
+      + `var row=btn.parentElement;if(row){Array.prototype.forEach.call(row.children,function(b){b.classList.toggle('is-active',b===btn);});}`
+      + `};}`;
+  }
 
   // ── Delta toggle check ────────────────────────────────────────────────────
   const pillProps = pill(d.propertyCount, d.prevPropertyCount, "abs");
@@ -621,7 +674,7 @@ function renderExecSummary(d: ExecSummaryInput): { html: string; js: string } {
         <!-- Kevin's ask: the sparkline toggles were the last thing on the slide, easy to miss
              below the tile grid - moved up next to the other presenter control (deltaToggle)
              so both are visible together at the top, not hunted for at the bottom. -->
-        <div style="display:flex;align-items:center;gap:8px;">${sparkCtrlHtml}${deltaToggle}</div>
+        <div style="display:flex;align-items:center;gap:8px;">${entitySwitcherHtml}${sparkCtrlHtml}${deltaToggle}</div>
       </div>
       <div class="slide-title" style="margin-bottom:6px;">What we've built together.</div>
       <div style="font-size:12px;color:#6b7280;">${pmc} &middot; ${reportingMonth} &nbsp;&middot;&nbsp; Partner since ${_e(sinceLbl)}</div>
@@ -640,9 +693,9 @@ function renderExecSummary(d: ExecSummaryInput): { html: string; js: string } {
           <div style="font-size:13px;color:rgba(255,255,255,0.75);font-weight:700;margin-bottom:5px;">Rent guaranteed this month</div>
           <div style="display:flex;align-items:flex-end;justify-content:space-between;gap:8px;">
             <div>
-              <div style="font-size:28px;font-weight:700;color:#fff;letter-spacing:-0.02em;">${fmtCurrency(d.currentRent)}</div>
+              <div style="font-size:28px;font-weight:700;color:#fff;letter-spacing:-0.02em;"${showEntitySwitcher ? ` id="ev_rent_${slideId}"` : ""}>${fmtCurrency(d.currentRent)}</div>
               ${heroPill}
-              ${avgPayment > 0 ? `<div style="font-size:11px;color:rgba(255,255,255,0.40);margin-top:5px;">avg $${avgPayment.toLocaleString()}/resident</div>` : ""}
+              ${avgPayment > 0 ? `<div style="font-size:11px;color:rgba(255,255,255,0.40);margin-top:5px;"${showEntitySwitcher ? ` id="ev_avg_${slideId}"` : ""}>avg $${avgPayment.toLocaleString()}/resident</div>` : ""}
             </div>
             ${moRentSparkSvg ? `<div style="flex-shrink:0;">${moRentSparkSvg}</div>` : ""}
           </div>
@@ -650,10 +703,10 @@ function renderExecSummary(d: ExecSummaryInput): { html: string; js: string } {
       </div>
       <!-- 6 Metric Tiles (3-wide grid, rows auto-size to however many remain after hiding) -->
       <div style="display:grid;grid-template-columns:repeat(${tileCols},1fr);grid-auto-rows:1fr;gap:12px;">
-        ${hiddenTileSet.has("active_properties") ? "" : tile("Active properties", d.propertyCount.toLocaleString(), "", pillProps, "", svgBldg)}
-        ${hiddenTileSet.has("residents_paying") ? "" : tile("Residents paying", d.currentResidents.toLocaleString(), "", pillResidents, residentsSparkHtml, svgPerson)}
+        ${hiddenTileSet.has("active_properties") ? "" : tile("Active properties", d.propertyCount.toLocaleString(), "", pillProps, "", svgBldg, showEntitySwitcher ? `ev_props_${slideId}` : "")}
+        ${hiddenTileSet.has("residents_paying") ? "" : tile("Residents paying", d.currentResidents.toLocaleString(), "", pillResidents, residentsSparkHtml, svgPerson, showEntitySwitcher ? `ev_res_${slideId}` : "")}
         ${hiddenTileSet.has("new_residents") ? "" : tile("New residents paying this month", d.currentNewSignups.toLocaleString(), signupsSub, "", signupsSparkHtml, svgNewP)}
-        ${hiddenTileSet.has("adoption_rate") ? "" : tile("Adoption rate", fmtPct(nar), "", pillNar, narSparkHtml, svgPct)}
+        ${hiddenTileSet.has("adoption_rate") ? "" : tile("Adoption rate", fmtPct(nar), "", pillNar, narSparkHtml, svgPct, showEntitySwitcher ? `ev_nar_${slideId}` : "")}
         ${hiddenTileSet.has("true_repeat_rate") ? "" : tile("True repeat rate", retentionVal, retentionSub, "", "", svgRepeat)}
         ${hiddenTileSet.has("delinquency_shielded") ? "" : tile("Delinquency shielded", dqVal, dqSub, dqPill, "", svgShield)}
       </div>
@@ -665,7 +718,7 @@ function renderExecSummary(d: ExecSummaryInput): { html: string; js: string } {
     ? `if(!window.flexToggleSpark){window.flexToggleSpark=function(id,btn){var el=document.getElementById(id);if(!el)return;var h=el.style.display==="none";el.style.display=h?"":"none";btn.classList.toggle("is-hidden",!h);};}`
     : "";
 
-  return { html, js: sparkJs };
+  return { html, js: sparkJs + entitySwitcherJs };
 }
 
 
@@ -3202,6 +3255,21 @@ export default api({
 
     // --- Transform ---
 
+    // Groups already-merged rows by their own PMC_NAME - no new query needed, since the main
+    // pull (case allPmcNames.length > 1) keeps per-row entity attribution through the merge.
+    // Used by the Exec Summary switcher, Since Inception's stacked bar, Adoption Trend's
+    // per-entity lines, the Residents/Units/Rent switcher, and the Portfolio Comparison table -
+    // one grouping utility, five consumers.
+    function groupRowsByPmc<T extends { PMC_NAME: string }>(rows: T[]): Map<string, T[]> {
+      const map = new Map<string, T[]>();
+      for (const r of rows) {
+        const list = map.get(r.PMC_NAME);
+        if (list) list.push(r);
+        else map.set(r.PMC_NAME, [r]);
+      }
+      return map;
+    }
+
     // Monthly totals
     const monthMap = new Map<string, { billsPaid: number; units: number; rentPaid: number; newSignups: number; chargedUsers: number; propertyNames: Set<string> }>();
     for (const row of inNetwork) {
@@ -4566,6 +4634,27 @@ export default api({
       : null;
     const effectiveTrueRepeat = cohortTrueRepeatEarly ?? trueRepeatRate;
 
+    // Per-entity current-month numbers for the Exec Summary switcher (Task 9). Grouped from
+    // latestRows - the exact same row set the combined currentResidents/currentRent/totalUnits
+    // above are summed from (latestMonth's monthMap totals and totalUnitsAll are both built by
+    // reducing over this same inNetwork-filtered-to-latestCompletedMonth set) - so summing these
+    // per-entity numbers reproduces the combined figures exactly, not just approximately. A
+    // single-PMC report yields a 1-entry array here, which renderExecSummary treats as "no
+    // switcher" (needs 2+).
+    const entityBreakdown = Array.from(groupRowsByPmc(latestRows).entries()).map(([name, rows]) => {
+      const residents = rows.reduce((s, r) => s + r.BILLS_PAID, 0);
+      const rent = rows.reduce((s, r) => s + r.RENT_PAID, 0);
+      const units = rows.reduce((s, r) => s + r.PROPERTY_UNIT_COUNT, 0);
+      return {
+        pmcName: name,
+        currentResidents: residents,
+        currentRent: rent,
+        currentNar: units > 0 ? residents / units : 0,
+        propertyCount: new Set(rows.map((r) => r.PROPERTY_NAME)).size,
+        totalUnits: units,
+      };
+    });
+
     const execResult = renderExecSummary({
       pmcName: pmcDisplayName,
       reportingMonth: latestCompletedMonth,
@@ -4590,6 +4679,7 @@ export default api({
       lifetimeDqShielded: lifetimeDqShielded > 0 ? lifetimeDqShielded : null,
       dqSinceComparison: dqSinceComparison != null && dqSinceComparison > 0 ? dqSinceComparison : null,
       hiddenTiles: hidden_kpi_tiles,
+      entityBreakdown,
       slideId: 2,
       // Flask: QBR always show_sparklines=False (hardcoded, unconditional).
       // Expansion: show_sparklines = not (_show_growth and 54 in active_exp_order).
