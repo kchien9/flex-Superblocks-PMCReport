@@ -3634,10 +3634,22 @@ export function renderCustomerExperience(input: {
         escapedName ? `<span style="font-weight:600;">${escapedName}</span>` : "",
         prop ? `<span style="color:#a09cb0;">\u00b7 ${prop}</span>` : "",
       ].filter(Boolean).join(" ");
+      // Kevin's catch, round 2 - a long quote's 4th line kept getting cropped mid-glyph with no
+      // ellipsis, in BOTH the 1-2-quote centered layout and the 3+-quote grid, so the cause was
+      // this <p> itself, not either layout wrapper. Round 1 (changing `flex:1` to `flex:1 1
+      // auto`, on the theory that flex-basis:0% was fighting line-clamp's own height math)
+      // didn't fix it. Round 2 stops relying on flexbox OR line-clamp to determine the box's
+      // actual pixel height at all: `flex:none` takes it out of flex distribution entirely, and
+      // `max-height:96px` (4 lines at 14px/1.55 ~= 87px, plus ~9px slack for font-metric
+      // rounding) hard-caps it independent of whatever the grid/flex ancestor forces on the
+      // card. -webkit-line-clamp/line-clamp stay on to try to add the "..." where a browser
+      // supports it, but the box can never again render taller than its own 4-line budget
+      // regardless of ancestor sizing, so there's nothing left for an ancestor's overflow:hidden
+      // to mid-glyph crop.
       return `
         <div style="background:#f7f7f7;border-radius:12px;padding:14px 16px;display:flex;flex-direction:column;gap:8px;border:1px solid #eceaf2;min-height:0;overflow:hidden;">
           <div style="font-size:24px;line-height:1;color:#8d70ee;font-family:'ABCDiatype',sans-serif;margin-bottom:-6px;flex-shrink:0;">\u201c</div>
-          <p style="font-size:14px;line-height:1.55;color:#1d1d1d;font-style:italic;flex:1 1 auto;min-height:0;overflow:hidden;display:-webkit-box;-webkit-line-clamp:4;-webkit-box-orient:vertical;text-overflow:ellipsis;">${quote}<span style="font-size:22px;line-height:0;vertical-align:-0.3em;color:#8d70ee;font-family:'ABCDiatype',sans-serif;margin-left:2px;">\u201d</span></p>
+          <p style="font-size:14px;line-height:1.55;color:#1d1d1d;font-style:italic;flex:none;max-height:96px;overflow:hidden;display:-webkit-box;-webkit-line-clamp:4;line-clamp:4;-webkit-box-orient:vertical;text-overflow:ellipsis;">${quote}<span style="font-size:22px;line-height:0;vertical-align:-0.3em;color:#8d70ee;font-family:'ABCDiatype',sans-serif;margin-left:2px;">\u201d</span></p>
           <div style="display:flex;align-items:center;gap:8px;flex-shrink:0;">
             <div style="width:28px;height:28px;border-radius:50%;background:${avatarColor};display:flex;align-items:center;justify-content:center;font-size:12px;color:#fff;font-weight:700;flex-shrink:0;">${initial}</div>
             <div>
@@ -3659,15 +3671,9 @@ export function renderCustomerExperience(input: {
       const innerCols = nQuotes === 2 ? "1fr 1fr" : "1fr";
       const maxW = nQuotes === 2 ? "900px" : "560px";
       const gridStyle = `display:flex;align-items:center;justify-content:center;${fill}min-height:0;`;
-      // Kevin's catch (Flask deck screenshot): a long quote's 4th line was getting cropped
-      // mid-glyph with no ellipsis - the "..." -webkit-line-clamp:4 (in quoteCard above) is
-      // supposed to add. Root cause: the <p>'s old `flex:1` (shorthand for flex-basis:0%) made
-      // the flex layout compute the paragraph's height from scratch rather than starting from
-      // its own natural 4-line-clamped size, so the two competing height calculations (flexbox
-      // vs. line-clamp) could disagree by a few px and the card's own overflow:hidden cropped
-      // whatever didn't fit. Fixed at the source (flex:1 1 auto on the <p>, so flexbox starts
-      // from the clamped natural height instead of zero) - this max-height bump (220->260) is
-      // just extra headroom on top of that, not the actual fix.
+      // Extra headroom on top of quoteCard's own now-fixed-height <p> (see its comment) - not
+      // load-bearing for the clipping fix itself, just margin so this branch's dedicated
+      // max-height never becomes the new bottleneck.
       quotesHtml = `<div style="${gridStyle}"><div style="display:grid;grid-template-columns:${innerCols};gap:16px;width:100%;max-width:${maxW};max-height:260px;">${cards}</div></div>`;
     }
   }
