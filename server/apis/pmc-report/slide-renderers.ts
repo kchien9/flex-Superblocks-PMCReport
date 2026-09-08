@@ -2745,13 +2745,41 @@ function flexRentBucket(sid, period) {
 
 // ─── render_residents_units_combo (Slide 54) ────────────────────────────────
 
+// One entry per combined entity's own monthly residents/units/rent (Task 12: Combined-or-one-
+// entity view switcher). Built by the call site via groupRowsByPmc(inNetwork) - the exact same
+// row set the combined `monthlyTotals` above is built from, one dimension finer. Deliberately
+// its own minimal shape (not MonthlyTotal) - mirrors the AdoptionTrendMonthly/
+// AdoptionTrendEntityMonthly precedent from Task 11, one dedicated shape per renderer rather
+// than reusing the wider MonthlyTotal fields this chart doesn't need (newSignups, adoptionRate,
+// propertyCount).
+export interface ResidentsUnitsMonth {
+  month: string;
+  billsPaid: number;
+  units: number;
+  rentPaid: number;
+}
+
+export interface ResidentsUnitsEntityMonthly {
+  pmcName: string;
+  monthly: ResidentsUnitsMonth[];
+}
+
 export interface ResidentsUnitsInput {
   slideId: number;
   monthlyTotals: MonthlyTotal[];
+  // Only rendered as a switcher when this has 2+ entries - a single-PMC report passes [] or a
+  // 1-entry array and the chart renders exactly as before this field existed (same "byte-
+  // identical when <=1 entity" contract as Tasks 9-11's entityBreakdown/entityYearlyData/
+  // entityMonthlyData). Unlike Task 11's per-entity Adoption Trend lines (deliberately sparse,
+  // real gaps left as null), this is a SINGLE-select switcher - only one dataset is ever drawn
+  // at a time, so each entity's series is aligned onto monthlyTotals' own month axis with
+  // missing months filled as 0 rather than left sparse, keeping the x-axis stable across
+  // switches (see the alignment loop below).
+  entityMonthlyData?: ResidentsUnitsEntityMonthly[];
 }
 
 export function renderResidentsUnitsCombo(input: ResidentsUnitsInput): SlideResult {
-  const { slideId, monthlyTotals } = input;
+  const { slideId, monthlyTotals, entityMonthlyData } = input;
 
   if (monthlyTotals.length < 2) {
     const val = monthlyTotals.length > 0 ? monthlyTotals[monthlyTotals.length - 1].billsPaid : 0;
@@ -2789,12 +2817,68 @@ export function renderResidentsUnitsCombo(input: ResidentsUnitsInput): SlideResu
   const y2Min = Math.max(0, rentMin - rentPad);
   const y2Max = rentMax + rentPad;
 
+  // ── View switcher: Combined or one entity, always exactly 3 lines (Task 12) ───────────────
+  // Same established switcher pattern as Task 9's Exec Summary (.spark-ctrl/.spark-ctrl-btn/
+  // .is-active CSS, index-based onclick, all states embedded as JSON keyed by slideId at
+  // generation time, no re-fetch) - deliberately NOT literally window.flexSwitchEntity, since
+  // that shared function swaps DOM textContent for a tile grid and has no way to touch a
+  // Chart.js instance. This chart needs its own swap function (mirrors the existing
+  // flexRentBucket precedent a few hundred lines up, which already rebuilds a Chart.js
+  // dataset + rescales an axis on a button click) - same UI/data-embedding conventions, the
+  // minimum adaptation the chart-vs-tile-grid difference requires. Explicitly NOT additive
+  // toggles - Kevin picked the single-select switcher specifically for this chart (compared
+  // both live) because 3 metrics x several toggled-on entities gets noisy fast; every view,
+  // Combined or one entity, draws exactly the same 3 lines this chart always has.
+  const entities = entityMonthlyData ?? [];
+  const showEntitySwitcher = entities.length > 1;
+  let entitySwitcherHtml = "";
+  let entitySwitcherJs = "";
+  let comboChartExposeJs = "";
+  if (showEntitySwitcher) {
+    const payload = [
+      { label: "Combined", residents, units, rent },
+      ...entities.map((e) => {
+        const byMonth = new Map(e.monthly.map((m) => [m.month, m]));
+        const eResidents = monthlyTotals.map((m) => byMonth.get(m.month)?.billsPaid ?? 0);
+        const eUnits = monthlyTotals.map((m) => byMonth.get(m.month)?.units ?? 0);
+        const eRent = monthlyTotals.map((m) => Math.round((byMonth.get(m.month)?.rentPaid ?? 0) * 100) / 100);
+        return { label: e.pmcName, residents: eResidents, units: eUnits, rent: eRent };
+      }),
+    ];
+    // Index-based onclick (not the entity name) - same reason Task 9 used it: sidesteps
+    // escaping arbitrary PMC names (apostrophes, quotes) into a JS string literal.
+    const btns = payload.map((p, i) =>
+      `<button class="spark-ctrl-btn${i === 0 ? " is-active" : ""}" onclick="flexSwitchResUnitsView(${slideId},${i},this)">${_e(p.label)}</button>`
+    ).join("");
+    // Leading newline+indent baked into the string itself (not the surrounding template) so
+    // the single-PMC/<=1-entity case - where this stays "" - leaves the html template's own
+    // whitespace between slide-header and the legend row completely untouched (byte-identical
+    // to pre-Task-12 HEAD).
+    entitySwitcherHtml = `\n    <div class="spark-ctrl presenter-control" style="flex-wrap:wrap;max-width:620px;margin:-4px 0 8px;">${btns}</div>`;
+    // Escape "<" so a PMC name containing "</script>" can't break out of the inline script tag -
+    // same convention as Task 9's jsonPayload.
+    const jsonPayload = JSON.stringify(payload).replace(/</g, "\\u003c");
+    comboChartExposeJs = `window['comboChart${slideId}'] = _comboChart;\n    `;
+    entitySwitcherJs = `window.ruEntityData=window.ruEntityData||{};window.ruEntityData[${slideId}]=${jsonPayload};`
+      + `if(!window.flexSwitchResUnitsView){window.flexSwitchResUnitsView=function(slideId,idx,btn){`
+      + `var d=(window.ruEntityData[slideId]||[])[idx];if(!d)return;`
+      + `var chart=window['comboChart'+slideId];if(!chart)return;`
+      + `chart.data.datasets[0].data=d.residents;chart.data.datasets[1].data=d.units;`
+      + `chart.data.datasets[2].data=d.residents;chart.data.datasets[3].data=d.rent;`
+      + `var rMin=Math.min.apply(null,d.rent),rMax=Math.max.apply(null,d.rent);`
+      + `var rSpan=rMax-rMin;var rPad=rSpan>0?rSpan*0.6:Math.max(rMax*0.15,1);`
+      + `chart.options.scales.y2.min=Math.max(0,rMin-rPad);chart.options.scales.y2.max=rMax+rPad;`
+      + `chart.update();`
+      + `var row=btn.parentElement;if(row){Array.prototype.forEach.call(row.children,function(b){b.classList.toggle('is-active',b===btn);});}`
+      + `};}`;
+  }
+
   const html = `
   <div class="slide" id="slide-${slideId}" style="background:#fff;">
     <div class="slide-header">
       <div class="slide-label">Portfolio</div>
       <div class="slide-title">Residents paying against your unit base, plus the rent behind it.</div>
-    </div>
+    </div>${entitySwitcherHtml}
     <div style="display:flex;gap:16px;font-size:11px;color:#524e5b;margin:-6px 0 6px;">
       <span><span style="display:inline-block;width:14px;height:3px;background:#6A3DB8;border-radius:2px;margin-right:5px;vertical-align:middle;"></span>Residents Paying</span>
       <span><span style="display:inline-block;width:14px;height:3px;background:#2563EB;border-radius:2px;margin-right:5px;vertical-align:middle;"></span>Units in Network</span>
@@ -2945,10 +3029,10 @@ window['initSlide${slideId}'] = (function() {
         }
       }
     });
-    requestAnimationFrame(() => { _comboChart.resize(); });
+    ${comboChartExposeJs}requestAnimationFrame(() => { _comboChart.resize(); });
   };
 })();
-`;
+${entitySwitcherJs}`;
 
   return { html, js };
 }

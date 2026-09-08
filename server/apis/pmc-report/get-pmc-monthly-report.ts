@@ -3391,6 +3391,29 @@ export default api({
       return { pmcName: name, monthly: entityMonthly };
     });
 
+    // Per-entity monthly residents/units/rent for the Residents/Units/Rent view switcher
+    // (Task 12: Combined-or-one-entity). Same source rows (inNetwork) and same groupRowsByPmc
+    // helper as entityMonthlyData above - one more per-entity breakdown off the same grouping,
+    // no new query. Kept sparse here (only months an entity actually has rows for) - the
+    // renderer itself aligns each entity's series onto monthlyTotals' own month axis and fills
+    // any gap as 0 (a single-select switcher shows one dataset at a time, so a stable shared
+    // axis matters more here than the sparse-honest null gaps Adoption Trend's additive lines
+    // use above).
+    const residentsUnitsEntityMonthlyData = Array.from(groupRowsByPmc(inNetwork).entries()).map(([name, rows]) => {
+      const ruMap = new Map<string, { billsPaid: number; units: number; rentPaid: number }>();
+      for (const row of rows) {
+        const existing = ruMap.get(row.BP_MONTH) || { billsPaid: 0, units: 0, rentPaid: 0 };
+        existing.billsPaid += row.BILLS_PAID;
+        existing.units += row.PROPERTY_UNIT_COUNT;
+        existing.rentPaid += row.RENT_PAID;
+        ruMap.set(row.BP_MONTH, existing);
+      }
+      const monthly = Array.from(ruMap.entries())
+        .map(([month, { billsPaid, units, rentPaid }]) => ({ month, billsPaid, units, rentPaid }))
+        .sort((a, b) => a.month.localeCompare(b.month));
+      return { pmcName: name, monthly };
+    });
+
     // ── True first-time-payer counts (excluding win-backs) ──────────────────
     // Flask: pull_customer_monthly_signups() — customers whose first-ever payment
     // falls in that month. Overrides the simpler NEW_SIGNUPS_COUNT which includes
@@ -5104,7 +5127,7 @@ export default api({
           }
 
           case "residents_units": {
-            const r = renderResidentsUnitsCombo({ slideId: slideNum, monthlyTotals });
+            const r = renderResidentsUnitsCombo({ slideId: slideNum, monthlyTotals, entityMonthlyData: residentsUnitsEntityMonthlyData });
             pushSlide(sid, r);
             break;
           }
@@ -5479,6 +5502,7 @@ export default api({
     const residentsUnitsResult = renderResidentsUnitsCombo({
       slideId: 4,
       monthlyTotals,
+      entityMonthlyData: residentsUnitsEntityMonthlyData,
     });
 
     // Adoption Trend = slide 5
