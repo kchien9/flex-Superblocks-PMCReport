@@ -15,8 +15,10 @@ import {
   renderCustomerExperience,
   computePropertyTrendFlags,
   renderImportedSlide,
+  renderPortfolioComparison,
+  sparklineSvg,
 } from "./slide-renderers.js";
-import type { BenchmarkMetric, ResidentTrend, Testimonial, TrendFlag, YearlyData, NewRolloutCandidate, DisabledPropertyRow } from "./slide-renderers.js";
+import type { BenchmarkMetric, ResidentTrend, Testimonial, TrendFlag, YearlyData, NewRolloutCandidate, DisabledPropertyRow, PortfolioComparisonEntity } from "./slide-renderers.js";
 import { buildSpeakerNotesHtml, buildExpansionSpeakerNotesHtml, EXPANSION_SLIDE_TITLES } from "./speaker-notes.js";
 import type { SpeakerNotesKpis, SpeakerNotesBenchmark, SpeakerNotesMonthlyRow } from "./speaker-notes.js";
 import {
@@ -291,25 +293,9 @@ function rentWindowLabel(opts: { partnerSince: string | null; lookbackMonths: nu
   return `last ${opts.lookbackMonths} months`;
 }
 
-function sparklineSvg(values: (number | null)[], color = "#6A3DB8", w = 64, h = 20): string {
-  const vals = values.filter((v): v is number => v !== null);
-  if (vals.length < 2) return "";
-  const mn = Math.min(...vals);
-  const mx = Math.max(...vals);
-  const rng = mx > mn ? mx - mn : 0.001;
-  const n = vals.length;
-  const pts = vals
-    .map((v, i) => `${(i * w / (n - 1)).toFixed(1)},${(h - 2 - ((v - mn) / rng) * (h - 4)).toFixed(1)}`)
-    .join(" ");
-  const lx = w;
-  const ly = (h - 2 - ((vals[vals.length - 1] - mn) / rng) * (h - 4)).toFixed(1);
-  return (
-    `<svg width="${w}" height="${h}" style="overflow:visible;display:block;">` +
-    `<polyline points="${pts}" fill="none" stroke="${color}" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>` +
-    `<circle cx="${lx}" cy="${ly}" r="2.5" fill="${color}"/>` +
-    `</svg>`
-  );
-}
+// sparklineSvg moved to slide-renderers.ts (Task 13) - exported and imported from there now, so
+// the new Portfolio Comparison table's per-row trend cell reuses this exact mechanism instead of
+// a second one, and this file no longer keeps its own separate copy.
 
 // --- HTML Slide Renderers ---
 
@@ -4745,6 +4731,31 @@ export default api({
       };
     });
 
+    // Per-entity rows for the new Portfolio Comparison slide (Task 13). Reuses entityBreakdown
+    // above (Task 9's per-entity current-month totals) and entityMonthlyData (Task 11's per-
+    // entity monthly adoption series, built earlier from the same groupRowsByPmc(inNetwork)
+    // grouping) - no new aggregation, no new query. Shared by both QBR and Expansion below
+    // (same "build once, both branches read it" convention Tasks 8-12 already established for
+    // entityBreakdown/entityYearlyData/entityMonthlyData themselves). A single-PMC report
+    // yields a 1-entry array here, which renderPortfolioComparison's own "needs 2+" check keeps
+    // the slide from rendering at all.
+    const portfolioComparisonEntities: PortfolioComparisonEntity[] = entityBreakdown.map((eb) => {
+      const em = entityMonthlyData.find((e) => e.pmcName === eb.pmcName);
+      return {
+        pmcName: eb.pmcName,
+        unitsOnFlex: eb.totalUnits,
+        payingResidents: eb.currentResidents,
+        adoptionRate: eb.currentNar,
+        rentPaid: eb.currentRent,
+        monthlySeries: (em?.monthly ?? []).map((m) => m.adoptionRate),
+      };
+    });
+    // The Combined row's own trend sparkline - the real combined adoption-rate-by-month series
+    // (same monthlyTotals the bold Adoption Trend line draws), not summed/averaged from the
+    // entities' own series above (see PortfolioComparisonInput's doc comment for why that would
+    // be wrong).
+    const portfolioComparisonCombinedSeries = monthlyTotals.map((m) => m.adoptionRate);
+
     const execResult = renderExecSummary({
       pmcName: pmcDisplayName,
       reportingMonth: latestCompletedMonth,
@@ -4997,6 +5008,12 @@ export default api({
         "expansion_metrosight",
         "expansion_gap",
         "testimonials",
+        // New (Task 13) — right before the mandatory close, near the other entity-breakdown
+        // slides but after the growth-trend/benchmark/gap slides have made their case. Renders
+        // via the same pushSlide-driven "attempted but came back empty" mechanism as by_state/
+        // cohort_overview above — not pre-filtered out of this array — since
+        // renderPortfolioComparison itself returns empty html for <=1 entity.
+        "portfolio_comparison",
         "expansion_case_close",
       ];
 
@@ -5270,6 +5287,16 @@ export default api({
               slideId: slideNum,
               testimonials: testimonials.map((t) => ({ name: t.name, property: t.propertyName, quote: t.quote, role: "Resident" })),
               trend: { csatByMonth: [], responseByMonth: [] },
+            });
+            pushSlide(sid, r);
+            break;
+          }
+
+          case "portfolio_comparison": {
+            const r = renderPortfolioComparison({
+              slideId: slideNum,
+              entities: portfolioComparisonEntities,
+              combinedMonthlySeries: portfolioComparisonCombinedSeries,
             });
             pushSlide(sid, r);
             break;
@@ -5908,6 +5935,17 @@ export default api({
     const propTableSlideId = allocSlideId();
     const propertyTableHtml = renderFullPropertyTable(propertySnapshot, propTableSlideId);
 
+    // New (Task 13) - right after Since Inception, before Residents/Units. No Flask reference
+    // slide id (this is TS-only, net new) - uses the dynamic allocator like every other
+    // post-retention slide below. Only produces html for 2+ combined entities (see
+    // renderPortfolioComparison's own gate) - a single-PMC report's slidesOrdered/.filter(Boolean)
+    // drops it exactly like every other conditionally-empty slide in this array.
+    const portfolioComparisonResult = renderPortfolioComparison({
+      slideId: allocSlideId(),
+      entities: portfolioComparisonEntities,
+      combinedMonthlySeries: portfolioComparisonCombinedSeries,
+    });
+
     // Flask SLIDE_ORDER: [3, 54, 6, 21, 14, 49, 12, 39, 15, 26, 50, 44, 23, 58, 34, 45, 53, 57, 59]
     // Mapped to TS slides (skipping IDs we don't implement: 3, 49, 23, 45, 53, 59):
     //   Cover(1) → Exec(13) → Since Inception(56) → Residents/Units(54)
@@ -5919,6 +5957,7 @@ export default api({
       renderCover(kpis),                        // Flask slide 1  - Cover
       execResult.html,                          // Flask slide 13 - Executive Summary
       sinceInceptionResult.html,                // Flask slide 56 - Bills & Rent Since Inception
+      portfolioComparisonResult.html,           // New (Task 13) - Portfolio Comparison (2+ entities only)
       residentsUnitsResult.html,                // Flask slide 54 - Residents + Units + Rent
       adoptionTrendHtml,                        // Flask slide 6  - Adoption Trend
       projResult.html,                          // Flask slide 21 - Portfolio Projection
@@ -5961,7 +6000,7 @@ export default api({
 
     // Collect extra JS from slide renderers and apply same renumbering
     let extraJs = [
-      execResult.js, sinceInceptionResult.js, residentsUnitsResult.js,
+      execResult.js, sinceInceptionResult.js, portfolioComparisonResult.js, residentsUnitsResult.js,
       adoptionTrendResult.js, projResult.js, stateResult.js,
       peerBenchResult.js,
       flexForEveryoneResult.js,

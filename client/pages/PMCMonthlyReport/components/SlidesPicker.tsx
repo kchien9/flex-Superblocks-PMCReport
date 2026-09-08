@@ -38,6 +38,7 @@ export const QBR_SLIDES: SlideOption[] = [
   { id: "cohort_overview", label: "Cohort Overview", defaultOn: true, description: "How each group of properties has grown since going live." },
   { id: "full_property_table", label: "Full Property Table", defaultOn: true, description: "Every property, every number. Reference only." },
   { id: "since_inception", label: "Bills & Rent Since Inception", defaultOn: true, description: "The whole relationship, year by year." },
+  { id: "portfolio_comparison", label: "Portfolio Comparison", defaultOn: true, description: "Every subsidiary side by side - units, residents, adoption, rent. Only shows up when you're combining multiple PMCs into one report." },
 ];
 
 export const NEW_LOGO_SLIDES: SlideOption[] = [
@@ -67,6 +68,7 @@ export const EXPANSION_SLIDES: SlideOption[] = [
   { id: "expansion_metrosight", label: "MetroSight", defaultOn: true, description: "Same outside research as QBR." },
   { id: "expansion_gap", label: "Portfolio Gap", defaultOn: true, description: "What the rest of the portfolio is worth once it's live." },
   { id: "testimonials", label: "Testimonials", defaultOn: true, description: "Real quotes, kept anonymous." },
+  { id: "portfolio_comparison", label: "Portfolio Comparison", defaultOn: true, description: "Every subsidiary side by side - units, residents, adoption, rent. Only shows up when you're combining multiple PMCs into one report." },
   { id: "expansion_case_close", label: "Case for Expanding", defaultOn: true, description: "The closing ask: roll out the rest." },
 ];
 

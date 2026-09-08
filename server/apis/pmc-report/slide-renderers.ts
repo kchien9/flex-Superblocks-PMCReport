@@ -46,6 +46,30 @@ export function monthLabel(ym: string): string {
   return `${months[parseInt(m, 10) - 1]} ${y}`;
 }
 
+// Tiny inline-SVG line-plus-dot sparkline - was local-only to get-pmc-monthly-report.ts (built
+// for the Exec Summary tiles' trend sparklines), hoisted here and exported (Task 13) so the new
+// Portfolio Comparison table's per-row trend cell reuses this exact mechanism instead of a
+// second one - get-pmc-monthly-report.ts now imports this instead of defining its own copy.
+export function sparklineSvg(values: (number | null)[], color = "#6A3DB8", w = 64, h = 20): string {
+  const vals = values.filter((v): v is number => v !== null);
+  if (vals.length < 2) return "";
+  const mn = Math.min(...vals);
+  const mx = Math.max(...vals);
+  const rng = mx > mn ? mx - mn : 0.001;
+  const n = vals.length;
+  const pts = vals
+    .map((v, i) => `${(i * w / (n - 1)).toFixed(1)},${(h - 2 - ((v - mn) / rng) * (h - 4)).toFixed(1)}`)
+    .join(" ");
+  const lx = w;
+  const ly = (h - 2 - ((vals[vals.length - 1] - mn) / rng) * (h - 4)).toFixed(1);
+  return (
+    `<svg width="${w}" height="${h}" style="overflow:visible;display:block;">` +
+    `<polyline points="${pts}" fill="none" stroke="${color}" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>` +
+    `<circle cx="${lx}" cy="${ly}" r="2.5" fill="${color}"/>` +
+    `</svg>`
+  );
+}
+
 const _TREND_BASIS_LABEL: Record<string, string> = {
   yoy: "(YoY)",
   peak: "(vs peak)",
@@ -3502,6 +3526,155 @@ window['siYtd${slideId}'] = {
 `;
 
   return { html, js };
+}
+
+// ─── render_portfolio_comparison (new - Task 13) ───────────────────────────
+// Every combined entity, side by side, plus a Combined row - unlike every other Task 9-12
+// mechanism (a single-select switcher or a stacked bar, both meant to declutter an N-entity
+// view down to something readable), this slide's whole reason to exist IS the side-by-side
+// comparison, so it's a plain sortable table instead. Column order is a hard requirement -
+// Kevin's explicit fix, already corrected once during this project: Entity, Units on Flex,
+// Paying Residents, Adoption Rate, Rent Paid, Trend. Only renders (non-empty html) when
+// there's more than 1 combined entity - a single-PMC report has nothing to compare, so this
+// slide should not appear at all, same "byte-identical when <=1 entity" contract every other
+// entity-breakdown consumer in this plan already follows.
+export interface PortfolioComparisonEntity {
+  pmcName: string;
+  unitsOnFlex: number;
+  payingResidents: number;
+  adoptionRate: number;
+  rentPaid: number;
+  /** This entity's own adoption-rate-by-month series (fraction, 0-1) - the exact same per-
+   * entity data Adoption Trend's thin per-entity lines draw (Task 11's
+   * AdoptionTrendEntityMonthly), condensed into a tiny sparkline instead of a full chart line.
+   * Chronological order; sparse is fine (sparklineSvg only needs 2+ points to draw anything). */
+  monthlySeries: number[];
+}
+
+export interface PortfolioComparisonInput {
+  slideId: number;
+  entities: PortfolioComparisonEntity[];
+  /** The Combined row's own trend sparkline - the SAME combined adoption-rate-by-month series
+   * Adoption Trend's bold combined line draws (monthlyTotals' own adoptionRate series), NOT
+   * derived by summing or averaging the entity rows' own monthlySeries above. A time series of
+   * percentages has the identical "can't average percentages" problem the Combined row's own
+   * numeric Adoption Rate column has to avoid, at every point along the series - so this rides
+   * in as its own field rather than being computed in here from the entities array. Optional
+   * only so a caller without it yet degrades to a blank Combined sparkline cell, never a wrong
+   * one. */
+  combinedMonthlySeries?: number[];
+}
+
+export function renderPortfolioComparison(input: PortfolioComparisonInput): SlideResult {
+  const { slideId, entities, combinedMonthlySeries } = input;
+  if (entities.length <= 1) return { html: "", js: "" };
+
+  // Combined row: sum units/residents/rent; Adoption Rate RECOMPUTED from the summed
+  // residents/units, never averaged across the entity rows' own percentages - averaging is
+  // wrong the moment entities have different unit counts (the classic weighted-average bug
+  // this slide exists partly to get right).
+  const combinedUnits = entities.reduce((s, e) => s + e.unitsOnFlex, 0);
+  const combinedResidents = entities.reduce((s, e) => s + e.payingResidents, 0);
+  const combinedRent = entities.reduce((s, e) => s + e.rentPaid, 0);
+  const combinedAdoptionRate = combinedUnits > 0 ? combinedResidents / combinedUnits : 0;
+
+  // One color per entity - reuses the module-level AVATAR_PALETTE (Task 10's "N entities, N
+  // colors" convention), not a second palette.
+  const entityColors = entities.map((_, i) => AVATAR_PALETTE[i % AVATAR_PALETTE.length]);
+  const narColor = (r: number) => (r >= 0.15 ? "#1a9e6a" : r >= 0.08 ? "#d97706" : "#dc5050");
+
+  const bodyRows = entities
+    .map((e, i) => {
+      const sparkHtml = sparklineSvg(e.monthlySeries, entityColors[i]);
+      return `
+        <tr>
+          <td data-sort="${_e(e.pmcName)}" style="padding:8px 10px;font-size:12px;font-weight:600;color:${NAVY};white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:180px;">${_e(e.pmcName)}</td>
+          <td data-sort="${e.unitsOnFlex}" style="padding:8px 10px;font-size:12px;text-align:right;">${e.unitsOnFlex.toLocaleString()}</td>
+          <td data-sort="${e.payingResidents}" style="padding:8px 10px;font-size:12px;text-align:right;">${e.payingResidents.toLocaleString()}</td>
+          <td data-sort="${e.adoptionRate}" style="padding:8px 10px;font-size:12px;text-align:right;font-weight:700;color:${narColor(e.adoptionRate)};">${fmtPct(e.adoptionRate)}</td>
+          <td data-sort="${e.rentPaid}" style="padding:8px 10px;font-size:12px;text-align:right;color:${PURPLE};">${fmtCurrency(e.rentPaid)}</td>
+          <td style="padding:6px 10px;text-align:center;">${sparkHtml}</td>
+        </tr>`;
+    })
+    .join("");
+
+  // Combined row lives in its own <tfoot>, deliberately OUTSIDE the sortable <tbody> - a
+  // "Total" row that reorders itself along with the rest of the table on every column-header
+  // click would be confusing (which end it lands on flips with asc/desc). Pinning it in a
+  // <tfoot> below the sortable body keeps it always-last regardless of sort state, standard
+  // HTML semantics for a totals row, with zero extra JS.
+  const combinedSparkHtml = combinedMonthlySeries ? sparklineSvg(combinedMonthlySeries, "#fff") : "";
+  const combinedRow = `
+        <tr>
+          <td style="padding:9px 10px;font-size:12px;font-weight:800;color:#fff;">Combined</td>
+          <td style="padding:9px 10px;font-size:12px;text-align:right;font-weight:800;color:#fff;">${combinedUnits.toLocaleString()}</td>
+          <td style="padding:9px 10px;font-size:12px;text-align:right;font-weight:800;color:#fff;">${combinedResidents.toLocaleString()}</td>
+          <td style="padding:9px 10px;font-size:12px;text-align:right;font-weight:800;color:#fff;">${fmtPct(combinedAdoptionRate)}</td>
+          <td style="padding:9px 10px;font-size:12px;text-align:right;font-weight:800;color:#fff;">${fmtCurrency(combinedRent)}</td>
+          <td style="padding:6px 10px;text-align:center;">${combinedSparkHtml}</td>
+        </tr>`;
+
+  const cols = ["Entity", "Units on Flex", "Paying Residents", "Adoption Rate", "Rent Paid", "Trend"];
+  const colWidths = ["24%", "16%", "18%", "14%", "16%", "12%"];
+  const thHtml = cols
+    .map((c, i) => {
+      // Trend has no single scalar to sort by (it's a sparkline, not a number) - left
+      // unclickable, matching the Full Property Table appendix's convention of only wiring
+      // onclick to columns that have a real data-sort value on every row.
+      const sortable = c !== "Trend";
+      const onclick = sortable ? ` onclick="flexSortTable(${slideId},${i})"` : "";
+      const arrow = sortable ? `<span id="arrow${slideId}-${i}" style="display:inline-block;width:12px;"></span>` : "";
+      return (
+        `<th${onclick} id="th${slideId}-${i}" style="padding:8px 10px;text-align:${i === 0 ? "left" : "center"};` +
+        `font-size:10px;color:${GRAY};text-transform:uppercase;letter-spacing:0.06em;` +
+        `${sortable ? "cursor:pointer;" : ""}user-select:none;width:${colWidths[i]};">${c}${arrow}</th>`
+      );
+    })
+    .join("");
+
+  const html = `
+  <div class="slide" id="slide-${slideId}" style="background:#fff;">
+    <div class="slide-header">
+      <div class="slide-label">Portfolio</div>
+      <div class="slide-title">Portfolio Comparison</div>
+      <div style="font-size:11px;color:#a09cb0;margin-top:4px;">Every subsidiary side by side - click a column header to sort</div>
+    </div>
+    <div style="overflow-y:auto;flex:1;min-height:0;">
+      <table style="width:100%;border-collapse:collapse;table-layout:fixed;">
+        <thead><tr id="thead${slideId}" style="border-bottom:2px solid #eceaf2;position:sticky;top:0;background:#fff;z-index:1;">${thHtml}</tr></thead>
+        <tbody id="tbody${slideId}">${bodyRows}</tbody>
+        <tfoot style="background:${PURPLE};">${combinedRow}</tfoot>
+      </table>
+    </div>
+  </div>
+  <script>if(!window.flexSortTable){window.flexSortTable=function(sid,col){
+    var tbody=document.getElementById('tbody'+sid); if(!tbody) return;
+    var rows=Array.prototype.slice.call(tbody.querySelectorAll('tr'));
+    var thead=document.getElementById('thead'+sid);
+    var prevCol=thead.getAttribute('data-sort-col'), prevDir=thead.getAttribute('data-sort-dir');
+    var asc = !(String(col)===prevCol && prevDir==='asc');
+    rows.sort(function(a,b){
+      var av=a.children[col].getAttribute('data-sort'), bv=b.children[col].getAttribute('data-sort');
+      var an=parseFloat(av), bn=parseFloat(bv);
+      var cmp = (!isNaN(an) && !isNaN(bn)) ? (an-bn) : String(av).localeCompare(String(bv));
+      return asc ? cmp : -cmp;
+    });
+    rows.forEach(function(r){ tbody.appendChild(r); });
+    thead.setAttribute('data-sort-col', col);
+    thead.setAttribute('data-sort-dir', asc?'asc':'desc');
+    // Loop bound reads the real thead's own column count rather than a hardcoded literal -
+    // this shared window.flexSortTable is a page-wide singleton (guarded by the surrounding
+    // if(!window.flexSortTable) check above), and this deck can now have two different tables
+    // using it with different column counts (this one, and the pre-existing Full Property
+    // Table appendix) - a literal baked in by whichever table's script happens to define it
+    // first would silently stop updating the other table's arrow past its own column count.
+    for(var i=0;i<thead.children.length;i++){
+      var el=document.getElementById('arrow'+sid+'-'+i);
+      if(el) el.textContent = (i===col) ? (asc?'\\u25B2':'\\u25BC') : '';
+    }
+  };}</script>`;
+
+  return { html, js: "" };
 }
 
 // ─── render_qbr_close (Slide 47 - always last) ─────────────────────────────
