@@ -3368,6 +3368,29 @@ export default api({
       })
       .sort((a, b) => a.month.localeCompare(b.month));
 
+    // Per-entity monthly adoption rate for the Adoption Trend chart's per-entity lines
+    // (Task 11). Grouped from inNetwork - the exact same row set monthlyTotals above is built
+    // from - via groupRowsByPmc (Task 9's helper), one dimension finer. Deliberately sparse:
+    // each entity's own residents/units are summed only from ITS OWN rows per month, so a
+    // second entity that joined later naturally produces a shorter series here rather than a
+    // fabricated 0% for months before it existed - renderAdoptionTrend aligns this against the
+    // combined chart's own month axis and treats a missing month as a real gap. A single-PMC
+    // report yields a 1-entry array, which the renderer's own "needs 2+" check keeps off the
+    // chart, same discipline as Task 9's entityBreakdown and Task 10's entityYearlyData.
+    const entityMonthlyData = Array.from(groupRowsByPmc(inNetwork).entries()).map(([name, rows]) => {
+      const emMap = new Map<string, { billsPaid: number; units: number }>();
+      for (const row of rows) {
+        const existing = emMap.get(row.BP_MONTH) || { billsPaid: 0, units: 0 };
+        existing.billsPaid += row.BILLS_PAID;
+        existing.units += row.PROPERTY_UNIT_COUNT;
+        emMap.set(row.BP_MONTH, existing);
+      }
+      const entityMonthly = Array.from(emMap.entries())
+        .map(([month, { billsPaid, units }]) => ({ month, adoptionRate: units > 0 ? billsPaid / units : 0 }))
+        .sort((a, b) => a.month.localeCompare(b.month));
+      return { pmcName: name, monthly: entityMonthly };
+    });
+
     // ── True first-time-payer counts (excluding win-backs) ──────────────────
     // Flask: pull_customer_monthly_signups() — customers whose first-ever payment
     // falls in that month. Overrides the simpler NEW_SIGNUPS_COUNT which includes
@@ -5103,6 +5126,7 @@ export default api({
                 rolling_peer_median: Object.keys(rollingPeerMedianMap).length > 0 ? rollingPeerMedianMap : {},
                 locked_peers_criteria: lockedPeersCriteria,
               } : null,
+              entityMonthlyData,
             });
             pushSlide(sid, r);
             break;
@@ -5482,7 +5506,7 @@ export default api({
       // cohort, so their descriptions must agree instead of one being a generic hardcoded string.
       locked_peers_criteria: lockedPeersCriteria,
     };
-    const adoptionTrendResult = renderAdoptionTrend({ slideId: 5, monthly: monthlyTotals, kpis: adoptionTrendKpis });
+    const adoptionTrendResult = renderAdoptionTrend({ slideId: 5, monthly: monthlyTotals, kpis: adoptionTrendKpis, entityMonthlyData });
     const adoptionTrendHtml = adoptionTrendResult.html;
 
     const narPerc = segmentPercentiles.find((s) => s.metric === "NAR");

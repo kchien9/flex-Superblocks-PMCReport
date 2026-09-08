@@ -1872,13 +1872,49 @@ export interface MonthlySplitEntry {
   monthly?: AdoptionTrendMonthly[];
 }
 
+// One entry per combined entity's own monthly adoption rate (Task 11: per-entity lines on the
+// Adoption Trend chart). Built by the call site via groupRowsByPmc(inNetwork) - the exact same
+// row set the combined `monthly` series above is built from - grouped one dimension finer.
+// Deliberately sparse: an entity's `monthly` array only has entries for months IT actually has
+// rows in, so a second entity that joined later naturally produces a shorter series instead of
+// a misleading 0% before it existed - this function aligns each entity's data against `monthly`'s
+// own month axis below and leaves a real gap (null), not a fabricated zero, for months an entity
+// has no entry for. Unrelated to the pre-existing `monthlySplit` above (that field is a 2-color,
+// never-wired-up legacy input with no active caller) - this is the net-new mechanism, following
+// the same AVATAR_PALETTE-per-entity convention Task 10 established for Since Inception.
+export interface AdoptionTrendEntityMonthly {
+  pmcName: string;
+  monthly: AdoptionTrendMonthly[];
+}
+
 export function renderAdoptionTrend(input: {
   slideId: number;
   monthly: AdoptionTrendMonthly[];
   kpis?: AdoptionTrendKpis | null;
   monthlySplit?: MonthlySplitEntry[] | null;
+  entityMonthlyData?: AdoptionTrendEntityMonthly[];
 }): SlideResult {
   const { slideId, monthly, kpis, monthlySplit } = input;
+
+  // ─── Per-entity lines (Task 11) ─────────────────────────────────────────
+  // Only drawn when there's more than 1 combined entity - a single-PMC report (or a combined
+  // report whose entityMonthlyData wasn't passed) gets entities = [] and showEntityLines =
+  // false, which keeps every branch below byte-identical to before this existed.
+  const entityMonthlyEntries = input.entityMonthlyData ?? [];
+  const showEntityLines = entityMonthlyEntries.length > 1;
+  // Aligned against `monthly`'s own month keys (not assumed to already be in the same order/
+  // length as the caller's array) so a gap in one entity's sparse series can't silently shift
+  // every later point out of position. Missing months come back null - see the interface
+  // comment above for why that's a real gap, not a 0% dip.
+  const entityLineVals: (number | null)[][] = showEntityLines
+    ? entityMonthlyEntries.map((e) => {
+        const byMonth = new Map(e.monthly.map((m) => [m.month, m.adoptionRate]));
+        return monthly.map((r) => {
+          const v = byMonth.get(r.month);
+          return v != null && !isNaN(v) ? Math.round(v * 1000) / 10 : null;
+        });
+      })
+    : [];
 
   const months = monthly.map((r) => monthLabel(r.month));
   const allVals = monthly.map((r) => Math.round(r.adoptionRate * 1000) / 10);
@@ -2028,6 +2064,9 @@ export function renderAdoptionTrend(input: {
     ...allVals.filter((v) => v != null),
     ...(showEstablished ? estValsList.filter((v): v is number => v != null) : []),
     ...(showBenchmark ? benchmarkVals.filter((v): v is number => v != null) : []),
+    // Entity lines can legitimately sit above or below the combined line (a strong subsidiary
+    // vs a weak one) - included here so the axis never clips one off (Task 11).
+    ...(showEntityLines ? entityLineVals.flat().filter((v): v is number => v != null) : []),
   ];
   // Flask's REAL formula (generator/slides.py:1331-1332 — verified directly against live
   // source, not this repo's CLAUDE.md, which documents "+1" and is stale on this specific
@@ -2101,6 +2140,39 @@ export function renderAdoptionTrend(input: {
     });
   }
 
+  // ─── Per-entity lines (Task 11) ──────────────────────────────────────────
+  // Thin, muted lines - reuses the module-level AVATAR_PALETTE/hexToRgba Task 10 hoisted for
+  // Since Inception's stacked bar, rather than inventing a third color scheme. No datalabels
+  // (an N-entity chart is already busy with the combined line's own labels + peer median +
+  // established) and no toggle - this task only asked for the lines to be visible, same
+  // discipline as every other "no more than what's asked for" gate in this file.
+  let entityLinesJs = "";
+  let entityLegendItems = "";
+  if (showEntityLines) {
+    entityMonthlyEntries.forEach((e, i) => {
+      const col = AVATAR_PALETTE[i % AVATAR_PALETTE.length];
+      const lineCol = hexToRgba(col, 0.55);
+      const label = _e(e.pmcName);
+      entityLinesJs += `
+    datasets.push({
+      label: ${JSON.stringify(e.pmcName)},
+      data: ${JSON.stringify(entityLineVals[i])},
+      borderColor: '${lineCol}',
+      backgroundColor: 'transparent',
+      fill: false,
+      tension: 0.35,
+      pointRadius: 0,
+      borderWidth: 1.25,
+      datalabels: { display: false }
+    });`;
+      entityLegendItems +=
+        `<span style="display:flex;align-items:center;gap:6px;">` +
+        `<span style="display:inline-block;width:18px;height:2px;background:${lineCol};border-radius:2px;"></span>` +
+        `<span style="font-size:11px;color:#a09cb0;">${label}</span>` +
+        `</span>`;
+    });
+  }
+
   // ─── Legend overlay ─────────────────────────────────────────────────────
   let bmLegend = "";
   if (showBenchmark) {
@@ -2152,6 +2224,7 @@ export function renderAdoptionTrend(input: {
     `<span style="font-size:13px;color:#524e5b;">${primaryLabel}</span>` +
     `</span>` +
     splitLegendItems +
+    entityLegendItems +
     estLegend +
     estToggle +
     bmLegend +
@@ -2232,7 +2305,7 @@ window['initSlide${slideId}'] = (function() {
         }
       }
     ];
-    ${splitSeriesJs}
+    ${splitSeriesJs}${entityLinesJs}
     if (${showEstablished} && estData.length > 0 && estData.some(v => v != null)) {
       datasets.push({
         label: 'Established Properties',
