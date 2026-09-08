@@ -20,6 +20,7 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 
 export interface ExpansionFormState {
   pmc_name: string;
+  additional_pmc_names: string[];
   total_portfolio_units: string;
   property_ids: string[];
   ownership_report_name: string;
@@ -45,6 +46,8 @@ interface ExpansionTabProps {
 
 export function ExpansionTab({ pmcNames, pmcLoading, generating, onGenerate }: ExpansionTabProps) {
   const [selectedPMC, setSelectedPMC] = useState("");
+  // Repeatable "combine with N other PMCs" rows — same pattern as QBRTab.
+  const [additionalPmcs, setAdditionalPmcs] = useState<string[]>([]);
   const [totalPortfolioUnits, setTotalPortfolioUnits] = useState("");
   const [showCrossPMC, setShowCrossPMC] = useState(false);
   const [propertyIds, setPropertyIds] = useState<string[]>([]);
@@ -67,6 +70,10 @@ export function ExpansionTab({ pmcNames, pmcLoading, generating, onGenerate }: E
     if (!selectedPMC) return;
     onGenerate({
       pmc_name: selectedPMC,
+      // Defensive de-dupe/strip even though the row-level picker (below) already excludes the
+      // primary PMC and already-used rows from selection — a stale/edited state could otherwise
+      // still send the same entity twice, or send it alongside itself as "primary".
+      additional_pmc_names: Array.from(new Set(additionalPmcs.filter((n) => n.trim() && n !== selectedPMC))),
       total_portfolio_units: totalPortfolioUnits,
       property_ids: propertyIds,
       ownership_report_name: ownershipReportName,
@@ -82,7 +89,7 @@ export function ExpansionTab({ pmcNames, pmcLoading, generating, onGenerate }: E
       testimonials,
       imported_slides: importedSlides,
     });
-  }, [selectedPMC, totalPortfolioUnits, propertyIds, ownershipReportName, reviewPeriod, comparisonMonths, delivery, growthSlides, sparklines, periodComparison, terminology, selectedSlides, selectedMetrics, testimonials, importedSlides, onGenerate]);
+  }, [selectedPMC, additionalPmcs, totalPortfolioUnits, propertyIds, ownershipReportName, reviewPeriod, comparisonMonths, delivery, growthSlides, sparklines, periodComparison, terminology, selectedSlides, selectedMetrics, testimonials, importedSlides, onGenerate]);
 
   const inputCls = "w-full px-3 py-2 text-sm border border-gray-200 rounded-[4px] focus:outline-none focus:ring-2 focus:ring-[#6A3DB8]/30 focus:border-[#6A3DB8]";
 
@@ -97,6 +104,45 @@ export function ExpansionTab({ pmcNames, pmcLoading, generating, onGenerate }: E
       <div>
         <PMCSearch label="Property Management Company" placeholder="Search existing Flex customers..." value={selectedPMC} onChange={setSelectedPMC} pmcNames={pmcNames} loading={pmcLoading} />
         <p className="text-[10px] text-red-500 mt-0.5 font-medium">* Required</p>
+      </div>
+
+      {/* Additional PMCs — repeatable combine-with rows. Each row's own PMCSearch list has
+          already-used names filtered out (the primary PMC above, plus every other row's current
+          pick) so the same PMC can't be selected twice — no PMCSearch prop changes needed, just a
+          consumer-side filter of the pmcNames it's handed. */}
+      <div className="space-y-2">
+        <span className="text-sm font-medium text-gray-700">Additional PMCs to combine</span>
+        {additionalPmcs.map((name, i) => {
+          const usedElsewhere = new Set<string>();
+          if (selectedPMC) usedElsewhere.add(selectedPMC);
+          additionalPmcs.forEach((n, j) => {
+            if (j !== i && n) usedElsewhere.add(n);
+          });
+          const availablePmcNames = pmcNames.filter((n) => !usedElsewhere.has(n));
+          return (
+            <div key={i} className="relative">
+              <PMCSearch
+                label={`PMC ${i + 2}`}
+                placeholder="Search for a PMC..."
+                value={name}
+                onChange={(v) => setAdditionalPmcs((prev) => prev.map((p, j) => (j === i ? v : p)))}
+                pmcNames={availablePmcNames}
+                loading={pmcLoading}
+                optional
+              />
+              <button
+                type="button"
+                onClick={() => setAdditionalPmcs((prev) => prev.filter((_, j) => j !== i))}
+                className="absolute top-0 right-0 text-[10px] text-gray-400 hover:text-gray-600"
+              >
+                remove
+              </button>
+            </div>
+          );
+        })}
+        <button type="button" onClick={() => setAdditionalPmcs((prev) => [...prev, ""])} className="text-xs text-[#6A3DB8] hover:underline">
+          + Add another PMC
+        </button>
       </div>
 
       {/* Total Portfolio Units */}

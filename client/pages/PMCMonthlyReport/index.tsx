@@ -61,7 +61,7 @@ export default function PMCMonthlyReportPage() {
     const lookback = state.review_period === "quarter" ? 3 : state.review_period === "ytd" ? new Date().getMonth() + 1 : 12;
     const args = {
       pmc_name: state.pmc_name || state.ownership_report_name || "Custom Portfolio",
-      second_pmc: state.second_pmc || "",
+      additional_pmc_names: state.additional_pmc_names,
       report_name: state.report_name || "",
       lookback_months: lookback,
       deck_mode: "qbr" as const,
@@ -141,7 +141,7 @@ export default function PMCMonthlyReportPage() {
     const lookback = state.review_period === "quarter" ? 3 : state.review_period === "ytd" ? new Date().getMonth() + 1 : 12;
     const args = {
       pmc_name: state.pmc_name,
-      second_pmc: "",
+      additional_pmc_names: state.additional_pmc_names,
       report_name: "",
       lookback_months: lookback,
       deck_mode: "expansion" as const,
