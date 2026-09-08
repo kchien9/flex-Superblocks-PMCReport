@@ -1859,7 +1859,13 @@ export default api({
 
   input: z.object({
     pmc_name: z.string(),
-    second_pmc: z.string().optional().default(""),
+    // Replaces the old single extra-PMC field (capped at exactly one extra entity) - a real
+    // array, no hardcoded limit. pmc_name stays the "primary" entity for display (cover title, etc.);
+    // this is everyone else being combined in. Plain .optional() + resolve the [] default at the
+    // call site below, NOT .optional().default([]) - that combo makes the field required in the
+    // generated call-site type, the same zod gotcha this file's other optional fields already
+    // avoid (see growth_slides for precedent).
+    additional_pmc_names: z.array(z.string()).optional(),
     report_name: z.string().optional().default(""),
     lookback_months: z.number().int().default(12),
     deck_mode: z.enum(["qbr", "new_logo", "expansion"]).default("qbr"),
@@ -1975,7 +1981,12 @@ export default api({
     }).optional(),
   }),
 
-  async run(ctx, { pmc_name, second_pmc, report_name, lookback_months, deck_mode, adoption_target, testimonials, total_portfolio_units, expansion_slides, presenting_mode, comparison_months, growth_slides, sparklines, period_comparison, terminology, hidden_kpi_tiles, show_adoption_portfolio_avg, show_adoption_peer_median, show_engagement_observed, show_engagement_portfolio_avg, show_engagement_peer_median, imported_slides, hide_d2c }) {
+  async run(ctx, { pmc_name, additional_pmc_names, report_name, lookback_months, deck_mode, adoption_target, testimonials, total_portfolio_units, expansion_slides, presenting_mode, comparison_months, growth_slides, sparklines, period_comparison, terminology, hidden_kpi_tiles, show_adoption_portfolio_avg, show_adoption_peer_median, show_engagement_observed, show_engagement_portfolio_avg, show_engagement_peer_median, imported_slides, hide_d2c }) {
+    // Single resolved list every downstream query/array-builder reads from - pmc_name first
+    // (the "primary" entity), then whatever else is being combined in. Replaces the old
+    // old `hasSecondPmc ? [pmc_name, secondPmcName] : [pmc_name]` ternary pattern repeated at 4 call sites below.
+    const allPmcNames = [pmc_name, ...(additional_pmc_names ?? [])];
+
     // Compute bp_safe_cutoff
     const today = new Date();
     const dayOfMonth = today.getDate();
@@ -2092,7 +2103,7 @@ export default api({
 
     // Peer-candidate profile for GEO-TIER matching - fired here, immediately, rather than at
     // its point of use (~line 3700, after two entire sequential query batches) because its
-    // inputs (pmc_name/second_pmc/cutoffStr) are already available and it depends on nothing
+    // inputs (pmc_name/allPmcNames/cutoffStr) are already available and it depends on nothing
     // else this function computes. Awaited later at its original call site - same "fire early,
     // await late" pattern as networkPoolPromise/rollingPromise/zendeskPromise below. Performance
     // fix (Kevin's catch: GetPMCMonthlyReport taking 60+s vs Flask's ~20s) - this alone removes
@@ -2133,7 +2144,7 @@ export default api({
     // subtracting itself back out. Kevin's call (2026-08-13): keep this side correct rather than
     // reproducing Flask's undercount; Flask should get the equivalent fix (exclude subject
     // before the candidate pool is built) instead.
-    const peerCandidateSubjectPmcs = second_pmc ? [pmc_name, second_pmc] : [pmc_name];
+    const peerCandidateSubjectPmcs = allPmcNames;
     const peerCandidateRowsPromise = ctx.integrations.snowflake_sso.query(
       `SELECT PMC_NAME, PROPERTY_STATE,
               SUM(PROPERTY_UNIT_COUNT) AS UNITS,
@@ -2154,7 +2165,8 @@ export default api({
       { label: "Peer-candidate geo profile for tier matching (PMC x state grain, unsampled)" }
     ).catch(() => [] as z.infer<typeof PeerCandidateProfileSchema>[]);
 
-    const rows = await ctx.integrations.snowflake_sso.query(
+    const pmcNamePlaceholders = allPmcNames.map(() => "?").join(", ");
+    const allRows = await ctx.integrations.snowflake_sso.query(
       `SELECT
           TO_VARCHAR(BP_MONTH, 'YYYY-MM-DD') AS BP_MONTH,
           PROPERTY_NAME,
@@ -2174,47 +2186,15 @@ export default api({
           HAS_MARKETING_INTEGRATION,
           IS_MARKETING_OPT_IN
        FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS
-       WHERE PMC_NAME = ?
+       WHERE PMC_NAME IN (${pmcNamePlaceholders})
          AND BP_MONTH >= DATEADD('month', -?, CURRENT_DATE())
          AND BP_MONTH < ?
        ORDER BY BP_MONTH, PROPERTY_NAME
        LIMIT 10000`,
       RawRowSchema,
-      [pmc_name, lookback_months, cutoffStr],
-      { label: "Fetch PMC monthly report data" }
+      [...allPmcNames, lookback_months, cutoffStr],
+      { label: "Fetch PMC monthly report data (all combined entities)" }
     );
-
-    // If a second PMC is provided, fetch its rows and merge (UNION ALL)
-    let allRows = rows;
-    if (second_pmc) {
-      const secondRows = await ctx.integrations.snowflake_sso.query(
-        `SELECT
-            TO_VARCHAR(BP_MONTH, 'YYYY-MM-DD') AS BP_MONTH,
-            PROPERTY_NAME,
-            PMC_NAME,
-            PROPERTY_UNIT_COUNT,
-            TO_VARCHAR(ROLLOUT_MONTH, 'YYYY-MM-DD') AS ROLLOUT_MONTH,
-            CHARGED_USERS_COUNT AS CHARGED_USERS,
-            COALESCE(NEW_SIGNUPS_COUNT, 0) AS NEW_SIGNUPS,
-            BILLS_PAID_COUNT AS BILLS_PAID,
-            COALESCE(RENT_PAID_AMOUNT, 0) AS RENT_PAID,
-            PROPERTY_PUBLIC_ID,
-            PROPERTY_STATE,
-            IS_IN_NETWORK,
-            COALESCE(NEW_BILL_CONNECTIONS_PROPERTY, 0) AS NEW_BILL_CONNECTIONS,
-            HUBSPOT_DEAL_TOTAL_COMPANY_UNITS
-         FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS
-         WHERE PMC_NAME = ?
-           AND BP_MONTH >= DATEADD('month', -?, CURRENT_DATE())
-           AND BP_MONTH < ?
-         ORDER BY BP_MONTH, PROPERTY_NAME
-         LIMIT 10000`,
-        RawRowSchema,
-        [second_pmc, lookback_months, cutoffStr],
-        { label: "Fetch second PMC data for merge" }
-      );
-      allRows = [...rows, ...secondRows];
-    }
 
     // Display-only PMC name (FKA suffix stripped) — pmc_name itself stays untouched everywhere
     // it's used as a query parameter; this is only for what actually shows up on a slide.
@@ -2357,8 +2337,18 @@ export default api({
     // true_repeat_rate below Flask's real number). `latestCompletedMonth` (computed further
     // down from monthlyTotals) is the same concept but isn't available yet at this point in
     // the pipeline — this mirrors its exact filter using the already-fetched `rows` instead.
+    //
+    // Post-unification note (Task 2, multi-PMC combining): the old two-query architecture kept
+    // a separate `rows` (subject `pmc_name` only, pre-merge) around specifically for this calc,
+    // distinct from the merged `allRows`. Resolved (Kevin's call): "latest completed month"
+    // considers the FULL combined set, not just the primary pmc_name - if any combined entity
+    // has real in-network activity in a month, that month counts, and the roll-up for that
+    // month sums whatever's actually there. Explicitly NOT gated on every entity having data
+    // (a lagging subsidiary doesn't hold the whole report back a month) - "just show everything
+    // that's available in any given month... make sure the roll up accounts for the roll up
+    // each time."
     const currentMonthStrForReporting = new Date(today.getFullYear(), today.getMonth(), 1).toISOString().slice(0, 10);
-    const inNetworkBpMonths = rows
+    const inNetworkBpMonths = allRows
       .filter((r) => r.IS_IN_NETWORK && r.CHARGED_USERS > 0
         && !(dayOfMonth <= 5 && r.BP_MONTH === currentMonthStrForReporting))
       .map((r) => r.BP_MONTH);
@@ -2440,8 +2430,9 @@ export default api({
                 GROUP BY PMC_NAME, PROPERTY_NAME
              ),
              subject_rows AS (
-                -- ALWAYS include the subject PMC's (and second_pmc's, if any) own properties,
-                -- unconditionally, regardless of the peer-sampling cap below. A single PMC never
+                -- ALWAYS include the subject PMC's (and any additional combined PMCs', via
+                -- allPmcNames) own properties, unconditionally, regardless of the peer-sampling
+                -- cap below. A single PMC never
                 -- has anywhere near enough properties to threaten the byte-size cap, but without
                 -- this, an unordered LIMIT over the full network can arbitrarily exclude the very
                 -- PMC this report is being generated for. (Historical note: this originally
@@ -2563,11 +2554,11 @@ export default api({
           let lastErr: unknown = null;
           for (let attempt = 1; attempt <= maxAttempts; attempt++) {
             try {
-              // second_pmc defaults to "" (never undefined, per the input schema) when not
-              // provided -- duplicating pmc_name in its place is a harmless no-op for both the
-              // IN and NOT IN clauses (a repeated value changes nothing), and keeps exactly 2
-              // placeholders in each clause regardless of whether a second PMC was passed.
-              const subjectPmcsForPool = [pmc_name, second_pmc || pmc_name];
+              // allPmcNames is used directly here - sized to however many entities are actually
+              // being combined (1 to N), not padded/capped to exactly 2. Both the IN and NOT IN
+              // clauses below get the same list, so this scales correctly regardless of how many
+              // additional_pmc_names were passed.
+              const subjectPmcsForPool = allPmcNames;
               const netRows = await ctx.integrations.snowflake_sso.query(
                 NETWORK_POOL_SQL,
                 NetworkPoolSchema,
@@ -3268,7 +3259,7 @@ export default api({
       // PMC in the same situation. Live-verified: Bridge PM's real percentile is 36%, not 1%,
       // and the corrected subject launch_month (2024-07-29) matches its own "since July 2024"
       // headline exactly.
-      const subjectPmcNames = second_pmc ? [pmc_name, second_pmc] : [pmc_name];
+      const subjectPmcNames = allPmcNames;
       const subjectPlaceholders = subjectPmcNames.map(() => "?").join(", ");
       const TenurePercentileSchema = z.object({
         PERCENTILE_FROM_TOP: z.number().nullable(),
@@ -3678,12 +3669,12 @@ export default api({
       // shrinking the pool relative to Flask's real population.
       .filter((p) => p.monthsLive >= 7 && (p.billsPaid < 3 || (p.avgRent >= 700 && p.avgRent <= 2500)));
 
-    // Shared exclusion set for every peer-pool read below — on a combined 2-PMC report, both
-    // named PMCs' own properties must be excluded, or the second PMC's properties silently
-    // count as the first PMC's "peers" (and vice versa). Flask's resolver uses this same
+    // Shared exclusion set for every peer-pool read below — on a combined multi-PMC report,
+    // every named entity's own properties must be excluded, or one entity's properties
+    // silently count as another combined entity's "peers." Flask's resolver uses this same
     // exclusion set for every tier, including its network-wide fallback tier — there's no
     // separately-scoped fallback query on the Flask side to fall out of sync with.
-    const excludedPmcNames = second_pmc ? [pmc_name, second_pmc] : [pmc_name];
+    const excludedPmcNames = allPmcNames;
 
     // Apply per-property peer matching
     // Gate mirrors buildEstablishedPool's (slide-renderers.ts) — 7+mo live, and either
