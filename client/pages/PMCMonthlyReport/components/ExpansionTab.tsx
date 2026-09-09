@@ -6,6 +6,7 @@ import { OwnershipGroupProperties } from "./OwnershipGroupProperties.js";
 import { SlidesPicker, EXPANSION_SLIDES, BENCHMARK_METRICS, defaultSlideSet } from "./SlidesPicker.js";
 import { TestimonialsEditor, type Testimonial } from "./TestimonialsEditor.js";
 import { ImportSlidesPicker, type ImportedSlide } from "./ImportSlidesPicker.js";
+import type { PmcPreset } from "../../../../server/apis/pmc-report/pmc-presets.js";
 
 /** Always-visible section — Slides and Testimonials are used on most builds and shouldn't be
  * buried behind a click. */
@@ -38,12 +39,13 @@ export interface ExpansionFormState {
 
 interface ExpansionTabProps {
   pmcNames: string[];
+  pmcPresets?: PmcPreset[];
   pmcLoading: boolean;
   generating: boolean;
   onGenerate: (state: ExpansionFormState) => void;
 }
 
-export function ExpansionTab({ pmcNames, pmcLoading, generating, onGenerate }: ExpansionTabProps) {
+export function ExpansionTab({ pmcNames, pmcPresets, pmcLoading, generating, onGenerate }: ExpansionTabProps) {
   const [selectedPMC, setSelectedPMC] = useState("");
   // Repeatable "combine with N other PMCs" rows — same pattern as QBRTab.
   const [additionalPmcs, setAdditionalPmcs] = useState<string[]>([]);
@@ -87,6 +89,22 @@ export function ExpansionTab({ pmcNames, pmcLoading, generating, onGenerate }: E
       imported_slides: importedSlides,
     });
   }, [selectedPMC, additionalPmcs, totalPortfolioUnits, propertyIds, ownershipReportName, reviewPeriod, comparisonMonths, delivery, sparklines, periodComparison, terminology, selectedSlides, selectedMetrics, testimonials, importedSlides, onGenerate]);
+
+  // Preset "Load {family}" button — only surfaces when the primary PMC exactly matches a known
+  // combo family (e.g. Asset Living's subsidiaries). No match → matchingPreset is undefined and
+  // nothing renders; every other PMC's flow is unchanged.
+  const matchingPreset = (pmcPresets ?? []).find((p) => p.primaryPmcName === selectedPMC);
+
+  const handleLoadPreset = useCallback((preset: PmcPreset) => {
+    // Same Set-based dedup approach as the payload-build-time Array.from(new Set(...)) below —
+    // purely additive: only appends rows for names not already present as an additional PMC and
+    // not equal to the primary PMC. Never touches or removes anything already typed in.
+    setAdditionalPmcs((prev) => {
+      const existing = new Set(prev);
+      const toAdd = preset.subsidiaryPmcNames.filter((n) => !existing.has(n) && n !== selectedPMC);
+      return [...prev, ...toAdd];
+    });
+  }, [selectedPMC]);
 
   const inputCls = "w-full px-3 py-2 text-sm border border-gray-200 rounded-[4px] focus:outline-none focus:ring-2 focus:ring-[#6A3DB8]/30 focus:border-[#6A3DB8]";
 
@@ -140,6 +158,15 @@ export function ExpansionTab({ pmcNames, pmcLoading, generating, onGenerate }: E
         <button type="button" onClick={() => setAdditionalPmcs((prev) => [...prev, ""])} className="text-xs text-[#6A3DB8] hover:underline">
           + Add another PMC
         </button>
+        {matchingPreset && (
+          <button
+            type="button"
+            onClick={() => handleLoadPreset(matchingPreset)}
+            className="ml-3 text-xs text-[#6A3DB8] hover:underline font-medium"
+          >
+            Load {matchingPreset.label}
+          </button>
+        )}
       </div>
 
       {/* Total Portfolio Units */}

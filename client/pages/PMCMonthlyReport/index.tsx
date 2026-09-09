@@ -53,6 +53,7 @@ export default function PMCMonthlyReportPage() {
   const effectiveProspectData = prospectData ?? cachedProspectData;
 
   const pmcNames = pmcData?.pmcNames ?? [];
+  const pmcPresets = pmcData?.presets ?? [];
 
   // ─── Handlers ───────────────────────────────────────────────────────────────
   const handleQBRGenerate = useCallback(async (state: QBRFormState) => {
@@ -263,13 +264,13 @@ export default function PMCMonthlyReportPage() {
         {/* Tab content */}
         <div className="p-5 max-w-6xl">
           {activeTab === "qbr" && (
-            <QBRTab pmcNames={pmcNames} pmcLoading={pmcLoading} generating={generating} onGenerate={handleQBRGenerate} />
+            <QBRTab pmcNames={pmcNames} pmcPresets={pmcPresets} pmcLoading={pmcLoading} generating={generating} onGenerate={handleQBRGenerate} />
           )}
           {activeTab === "new_logo" && (
             <NewLogoTab generating={generating} onGenerate={handleNewLogoGenerate} />
           )}
           {activeTab === "expansion" && (
-            <ExpansionTab pmcNames={pmcNames} pmcLoading={pmcLoading} generating={generating} onGenerate={handleExpansionGenerate} />
+            <ExpansionTab pmcNames={pmcNames} pmcPresets={pmcPresets} pmcLoading={pmcLoading} generating={generating} onGenerate={handleExpansionGenerate} />
           )}
         </div>
       </div>

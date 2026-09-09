@@ -1,9 +1,17 @@
 import { api, z, snowflake } from "@superblocksteam/sdk-api";
+import { PMC_PRESETS } from "./pmc-presets.js";
 
 const SNOWFLAKE_SSO = "d38ee94a-4e93-46f5-ab44-c65a99b3aea5";
 
 const PMCNameRowSchema = z.object({
   PMC_NAME: z.string(),
+});
+
+const PmcPresetSchema = z.object({
+  key: z.string(),
+  label: z.string(),
+  primaryPmcName: z.string(),
+  subsidiaryPmcNames: z.array(z.string()),
 });
 
 function bpSafeCutoff(): string {
@@ -30,6 +38,11 @@ export default api({
 
   output: z.object({
     pmcNames: z.array(z.string()),
+    // Known multi-PMC "family" presets (e.g. Asset Living's subsidiaries) — surfaced here so
+    // the client can offer a one-click "Load {family}" button without a second round trip.
+    // Static config, not Snowflake-derived, but this endpoint is already fetched once per form
+    // load, so it's the lowest-friction place to hand it to the client.
+    presets: z.array(PmcPresetSchema).optional(),
   }),
 
   async run(ctx) {
@@ -60,6 +73,6 @@ export default api({
       { label: "Fetch distinct PMC names (12mo recency), excluding Deep SMB" }
     );
 
-    return { pmcNames: rows.map((r) => r.PMC_NAME) };
+    return { pmcNames: rows.map((r) => r.PMC_NAME), presets: PMC_PRESETS };
   },
 });
