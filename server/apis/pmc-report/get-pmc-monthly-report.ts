@@ -1375,9 +1375,16 @@ function renderStateBreakdown(input: StateBreakdownInput): { html: string; js: s
 
 
 function renderFullPropertyTable(
-  snapshot: { propertyName: string; units: number; billsPaid: number; newSignups: number; prevSignups?: number; adoptionRate: number; rentPaid?: number; cumRent?: number; rolloutMonth?: string | null }[],
+  snapshot: { propertyName: string; pmcName?: string; units: number; billsPaid: number; newSignups: number; prevSignups?: number; adoptionRate: number; rentPaid?: number; cumRent?: number; rolloutMonth?: string | null }[],
   slideId: number
 ): string {
+  // "PMC" column right after Property, ONLY when the report combines 2+ PMCs (Kevin's ask on the
+  // 8-entity Asset Living deck: with every subsidiary's properties in one list, the property
+  // name alone doesn't say whose it is). Gated on >= 2 DISTINCT pmcName values in the snapshot -
+  // not on the field merely being present - so a single-PMC report's table is byte-identical
+  // to before this existed. Wraps rather than truncates, same as the Entity cell in Portfolio
+  // Comparison.
+  const showPmc = new Set(snapshot.map((r) => r.pmcName).filter((n): n is string => !!n)).size >= 2;
   let rows = "";
   for (const row of snapshot) {
     const narColor = row.adoptionRate >= 0.20 ? "#1a9e6a" : row.adoptionRate >= 0.10 ? "#d97706" : "#dc5050";
@@ -1397,9 +1404,12 @@ function renderFullPropertyTable(
     const rmRaw = row.rolloutMonth ?? "";
     const rmSort = rmRaw ? rmRaw.replace(/-/g, "").slice(0, 6) : "0";
     const rmDisplay = rmRaw ? new Date(rmRaw + "T00:00:00Z").toLocaleDateString("en-US", { year: "numeric", month: "short", timeZone: "UTC" }) : "-";
+    const pmcCell = showPmc
+      ? `\n          <td data-sort="${_e(row.pmcName ?? "")}" style="padding:6px 8px;font-size:11px;color:#524e5b;white-space:normal;overflow-wrap:anywhere;line-height:1.3;">${_e(row.pmcName ?? "")}</td>`
+      : "";
     rows += `
         <tr>
-          <td data-sort="${_e(row.propertyName)}" style="padding:6px 8px;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:160px;">${_e(row.propertyName)}</td>
+          <td data-sort="${_e(row.propertyName)}" style="padding:6px 8px;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:160px;">${_e(row.propertyName)}</td>${pmcCell}
           <td data-sort="${rmSort}" style="padding:6px 8px;font-size:12px;text-align:right;color:#a09cb0;">${rmDisplay}</td>
           <td data-sort="${row.units}" style="padding:6px 8px;font-size:12px;text-align:right;">${row.units.toLocaleString("en-US")}</td>
           <td data-sort="${row.billsPaid}" style="padding:6px 8px;font-size:12px;text-align:right;">${Math.round(row.billsPaid).toLocaleString("en-US")}</td>
@@ -1410,8 +1420,14 @@ function renderFullPropertyTable(
         </tr>`;
   }
 
-  const cols = ["Property", "Rollout Month", "Units", "Current Paying Residents", "New Signups (vs Last Mo.)", "Adoption", "This Month Rent", "Total Rent Paid"];
-  const colWidths = ["18%", "11%", "8%", "13%", "14%", "10%", "13%", "13%"];
+  // With the PMC column in, Property + PMC share what Property alone had (18% -> 16% + 12%) and
+  // the numeric columns give up a point or two each, so the row still sums to 100%.
+  const cols = showPmc
+    ? ["Property", "PMC", "Rollout Month", "Units", "Current Paying Residents", "New Signups (vs Last Mo.)", "Adoption", "This Month Rent", "Total Rent Paid"]
+    : ["Property", "Rollout Month", "Units", "Current Paying Residents", "New Signups (vs Last Mo.)", "Adoption", "This Month Rent", "Total Rent Paid"];
+  const colWidths = showPmc
+    ? ["16%", "12%", "10%", "7%", "12%", "13%", "8%", "11%", "11%"]
+    : ["18%", "11%", "8%", "13%", "14%", "10%", "13%", "13%"];
   const thHtml = cols
     .map((c, i) =>
       `<th onclick="flexSortTable(${slideId},${i})" id="th${slideId}-${i}" ` +
@@ -3579,6 +3595,9 @@ export default api({
         const propKey = `${r.PMC_NAME}||${r.PROPERTY_NAME}`;
         return {
           propertyName: r.PROPERTY_NAME,
+          // Additive (Kevin's ask: "in all props table bring in pmc name") - only
+          // renderFullPropertyTable reads it, and only when the report combines 2+ PMCs.
+          pmcName: r.PMC_NAME,
           units: r.PROPERTY_UNIT_COUNT,
           billsPaid: r.BILLS_PAID,
           newSignups: r.NEW_SIGNUPS ?? 0,
