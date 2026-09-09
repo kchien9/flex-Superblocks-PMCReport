@@ -58,6 +58,7 @@ export const NEW_LOGO_SLIDES: SlideOption[] = [
 export const EXPANSION_SLIDES: SlideOption[] = [
   { id: "cover", label: "Cover", defaultOn: true, description: "Title slide with total units and units already live." },
   { id: "exec_bottom_line", label: "Executive Bottom Line", defaultOn: true, description: "The big numbers, framed to build the case for expanding." },
+  { id: "since_inception", label: "Bills & Rent Since Inception", defaultOn: true, description: "The whole relationship, year by year." },
   { id: "residents_units", label: "Residents, Units & Rent", defaultOn: true, description: "Residents, units, and rent collected over time." },
   { id: "adoption_trend", label: "Adoption Trend", defaultOn: true, description: "Same chart as QBR — only shows the peer comparison when they're winning it." },
   { id: "cohort_overview", label: "Cohort Overview", defaultOn: true, description: "How each group of properties has grown since going live." },

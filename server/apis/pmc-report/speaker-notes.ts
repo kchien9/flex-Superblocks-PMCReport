@@ -678,6 +678,11 @@ const NOTES_TAB_STYLE = `
 export const EXPANSION_SLIDE_TITLES: Record<string, string> = {
   cover: "Cover",
   exec_bottom_line: "Executive Summary & The Case for Expanding",
+  // Added alongside since_inception's own Expansion wiring (scope addition after Task 15) -
+  // while in the area, also filling in portfolio_comparison's title, missing since Task 13
+  // (flagged there, never actually risky/non-trivial - just a label string).
+  since_inception: "Bills & Rent Since Inception",
+  portfolio_comparison: "Portfolio Comparison",
   by_state: "Adoption by State",
   residents_units: "Residents, Units & Rent",
   adoption_trend: "Adoption Rate Trend",
@@ -702,6 +707,9 @@ export function getNotesForExpansionSlide(
     switch (key) {
       case "cover": return notesCoverExpansion(k);
       case "exec_bottom_line": return notesExpansionBottomLine(k, benchmark);
+      // Reuses QBR's own notesSinceInception(k) verbatim (same function, no forked content) -
+      // its content is generic to the slide/relationship, not QBR-specific.
+      case "since_inception": return notesSinceInception(k);
       case "by_state": return notesStateBreakdown();
       case "residents_units": return notesResidentsUnitsRent(monthly);
       case "adoption_trend": return notesAdoptionTrend(k, monthly);

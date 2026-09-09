@@ -2411,9 +2411,16 @@ export default api({
       : new Date(cutoff.getFullYear(), cutoff.getMonth() - 1, 1).toISOString().slice(0, 10);
 
     // For expansion/new_logo modes, skip expensive queries that are only used by QBR:
-    // - yearlyRentBillsRows: Since Inception slide (QBR only)
+    // - yearlyRentBillsRows: Since Inception slide (now QBR + Expansion, see needsSinceInception
+    //   below - was QBR-only until Kevin's scope addition wiring this slide into Expansion too)
     // - trendRawRows: Property trend badges (QBR appendix only)
     const needsQBRQueries = deck_mode === "qbr";
+    // Since Inception (Task 10's stacked-bar-by-entity slide) now also renders on Expansion
+    // decks (Kevin's scope addition after Task 15) - both queries this gates just below are
+    // already scoped to allPmcNames (not a network-wide scan) and cheap, same "safe to widen"
+    // reasoning as needsRegionDetail a few lines down, so broadening the gate is preferred over
+    // computing a separate Expansion-only version of the same query.
+    const needsSinceInception = needsQBRQueries || deck_mode === "expansion";
 
     // Dedicated property-level peer pool (Flask's pull_network_property_pool,
     // generator/data.py:4900-5066) — see the full comment on PROPERTY_POOL_SQL below.
@@ -2731,7 +2738,7 @@ export default api({
         [...allPmcNames, cutoffStr],
         { label: "Fetch DQ shielded data from DQ_PROPERTY" }
       ),
-      needsQBRQueries
+      needsSinceInception
         ? ctx.integrations.snowflake_sso.query(
             `SELECT
                 YEAR(BP_MONTH) AS YEAR,
@@ -2759,7 +2766,7 @@ export default api({
             { label: "Fetch since-inception yearly totals (unbounded)" }
           )
         : Promise.resolve([] as z.infer<typeof YearlyRentBillsSchema>[]),
-      needsQBRQueries && allPmcNames.length > 1
+      needsSinceInception && allPmcNames.length > 1
         ? ctx.integrations.snowflake_sso.query(
             `SELECT
                 PMC_NAME,
@@ -4735,6 +4742,39 @@ export default api({
     // be wrong).
     const portfolioComparisonCombinedSeries = monthlyTotals.map((m) => m.adoptionRate);
 
+    // Yearly rent/bills history for the Since Inception slide (Task 10 combined totals, now
+    // also feeding Expansion per Kevin's scope addition after Task 15). Hoisted up here - same
+    // "build once, both branches read it" convention as entityBreakdown/portfolioComparison*
+    // just above - rather than living only inside the QBR-only block further down, since
+    // Expansion's own switch case below needs these same two arrays. yearlyRentBillsRows/
+    // entityYearlyRentRows are now gated on needsSinceInception (QBR + Expansion), not
+    // needsQBRQueries alone - see that flag's declaration near the top of this function.
+    const yearlyData: YearlyData[] = yearlyRentBillsRows.map(r => ({
+      year: r.YEAR,
+      totalRent: r.TOTAL_RENT ?? 0,
+      billsPaid: r.BILLS_PAID ?? 0,
+      monthsActive: r.MONTHS_ACTIVE ?? 0,
+      ytdRent: r.YTD_RENT ?? 0,
+      ytdBills: r.YTD_BILLS ?? 0,
+      ytdMonthsActive: r.YTD_MONTHS_ACTIVE ?? 0,
+    }));
+
+    // Per-entity yearly rent breakdown for the Since Inception stacked bar (Task 10). Grouped
+    // from entityYearlyRentRows via the same groupRowsByPmc helper Task 9 introduced -
+    // entityYearlyRentRows is already [] for a single-PMC report (query gated on
+    // allPmcNames.length > 1 above), so this yields [] here too, and renderSinceInception's own
+    // "needs 2+" check keeps the bar unstacked. Same array feeds both QBR's fixed-slide-3 call
+    // and Expansion's "since_inception" switch case below.
+    const entityYearlyData = Array.from(groupRowsByPmc(entityYearlyRentRows).entries()).map(([name, rows]) => {
+      const totalRentByYear: Record<number, number> = {};
+      const ytdRentByYear: Record<number, number> = {};
+      for (const r of rows) {
+        totalRentByYear[r.YEAR] = r.TOTAL_RENT ?? 0;
+        ytdRentByYear[r.YEAR] = r.YTD_RENT ?? 0;
+      }
+      return { pmcName: name, totalRentByYear, ytdRentByYear };
+    });
+
     const execResult = renderExecSummary({
       pmcName: pmcDisplayName,
       reportingMonth: latestCompletedMonth,
@@ -4975,6 +5015,14 @@ export default api({
       const EXPANSION_SLIDE_ORDER = [
         "cover",
         "exec_bottom_line",
+        // New (scope addition after Task 15) — same renderSinceInception this same plan's
+        // Task 10 built for QBR, wired in here for the first time. Placed right after the KPI
+        // slide and before the other growth-trend slides, same relative position as QBR's own
+        // fixed order (Cover, Exec Summary, THEN Since Inception, THEN Residents/Units/Rent).
+        // Renders via the ordinary pushSlide "attempted but came back empty" path like
+        // portfolio_comparison/by_state above — not pre-filtered out of this array — since
+        // renderSinceInception itself returns empty html when yearlyData is empty.
+        "since_inception",
         "residents_units",     // growth trend — residents paying across unit base
         "adoption_trend",      // growth trend — adoption by month
         "cohort_overview",     // growth trend — performance by rollout-month cohort
@@ -5105,6 +5153,26 @@ export default api({
           case "exec_bottom_line":
             pushSlide(sid, execResult);
             break;
+
+          case "since_inception": {
+            // Same renderSinceInception call QBR makes below (fixed slideId 3 there) - here
+            // slideId is the dynamic slideNum this deck's switch already uses for every other
+            // case. yearlyData/entityYearlyData are hoisted above (shared with QBR), fed by the
+            // needsSinceInception-gated queries, which now fire for Expansion too. Renders the
+            // same non-stacked single-bar treatment QBR gets for a single-PMC report when
+            // entityYearlyData has <=1 entry - no separate Expansion-only fallback needed.
+            const r = renderSinceInception({
+              slideId: slideNum,
+              pmcName: pmcDisplayName,
+              reportingMonth: latestCompletedMonth,
+              yearlyData,
+              monthlyTotals,
+              partnerSince,
+              entityYearlyData,
+            });
+            pushSlide(sid, r);
+            break;
+          }
 
           case "by_state": {
             // Pre-check: skip if ≤2 distinct states (Flask: property_state.nunique() > 2)
@@ -5470,32 +5538,6 @@ export default api({
     // 9. Rethinking Rent (MetroSight)
     // 10. QBR Close (always last real slide)
     // 11. Full Property Table (appendix after QBR Close)
-
-    // Build yearlyData from the unbounded yearly query
-    const yearlyData: YearlyData[] = yearlyRentBillsRows.map(r => ({
-      year: r.YEAR,
-      totalRent: r.TOTAL_RENT ?? 0,
-      billsPaid: r.BILLS_PAID ?? 0,
-      monthsActive: r.MONTHS_ACTIVE ?? 0,
-      ytdRent: r.YTD_RENT ?? 0,
-      ytdBills: r.YTD_BILLS ?? 0,
-      ytdMonthsActive: r.YTD_MONTHS_ACTIVE ?? 0,
-    }));
-
-    // Per-entity yearly rent breakdown for the Since Inception stacked bar (Task 10). Grouped
-    // from entityYearlyRentRows via the same groupRowsByPmc helper Task 9 introduced -
-    // entityYearlyRentRows is already [] for a single-PMC report (query gated on
-    // allPmcNames.length > 1 above), so this yields [] here too, and renderSinceInception's own
-    // "needs 2+" check keeps the bar unstacked.
-    const entityYearlyData = Array.from(groupRowsByPmc(entityYearlyRentRows).entries()).map(([name, rows]) => {
-      const totalRentByYear: Record<number, number> = {};
-      const ytdRentByYear: Record<number, number> = {};
-      for (const r of rows) {
-        totalRentByYear[r.YEAR] = r.TOTAL_RENT ?? 0;
-        ytdRentByYear[r.YEAR] = r.YTD_RENT ?? 0;
-      }
-      return { pmcName: name, totalRentByYear, ytdRentByYear };
-    });
 
     const sinceInceptionResult = renderSinceInception({
       slideId: 3,
