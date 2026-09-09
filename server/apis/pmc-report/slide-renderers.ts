@@ -1920,10 +1920,17 @@ export function renderAdoptionTrend(input: {
 }): SlideResult {
   const { slideId, monthly, kpis, monthlySplit } = input;
 
-  // ─── Per-entity lines (Task 11) ─────────────────────────────────────────
-  // Only drawn when there's more than 1 combined entity - a single-PMC report (or a combined
+  // ─── Per-entity lines (Task 11, reworked into a single-select switcher) ───
+  // Only built when there's more than 1 combined entity - a single-PMC report (or a combined
   // report whose entityMonthlyData wasn't passed) gets entities = [] and showEntityLines =
   // false, which keeps every branch below byte-identical to before this existed.
+  // Task 11 originally drew all N entity lines at once next to the bold combined line + peer
+  // median. Kevin's verdict on the 8-entity Asset Living deck: "very busy" - so this is now the
+  // same single-select switcher the Exec Summary (flexSwitchEntity) and Residents/Units/Rent
+  // (flexSwitchResUnitsView) use: Combined view = exactly the single-PMC chart (combined line +
+  // peer median + established); an entity view = that entity's own line with labels, the
+  // combined line kept only as a thin muted reference, and peer median / established HIDDEN
+  // ("only show peer median against the combined pmc number"). See entitySwitcherJs below.
   const entityMonthlyEntries = input.entityMonthlyData ?? [];
   const showEntityLines = entityMonthlyEntries.length > 1;
   // Aligned against `monthly`'s own month keys (not assumed to already be in the same order/
@@ -2088,9 +2095,10 @@ export function renderAdoptionTrend(input: {
     ...allVals.filter((v) => v != null),
     ...(showEstablished ? estValsList.filter((v): v is number => v != null) : []),
     ...(showBenchmark ? benchmarkVals.filter((v): v is number => v != null) : []),
-    // Entity lines can legitimately sit above or below the combined line (a strong subsidiary
-    // vs a weak one) - included here so the axis never clips one off (Task 11).
-    ...(showEntityLines ? entityLineVals.flat().filter((v): v is number => v != null) : []),
+    // Entity values are deliberately NOT in here any more: the Combined view (the initial
+    // render) must scale exactly like a single-PMC deck. Each entity view gets its own bounds
+    // (entity line + muted combined reference) via the same formula, in entityViewBounds below,
+    // applied by the switcher on click.
   ];
   // Flask's REAL formula (generator/slides.py:1331-1332 — verified directly against live
   // source, not this repo's CLAUDE.md, which documents "+1" and is stale on this specific
@@ -2100,6 +2108,22 @@ export function renderAdoptionTrend(input: {
   // nowhere near it), without landing on Flask's actual number.
   const yMin = allPts.length > 0 ? Math.max(0, Math.floor(Math.min(...allPts)) - 1) : 0;
   const yMax = allPts.length > 0 ? Math.floor(Math.max(...allPts)) + 2 : 15;
+  // Per-view y bounds for the entity switcher (same Flask formula as yMin/yMax above): an entity
+  // view shows that entity's line + the combined line as reference, nothing else, so its axis is
+  // fit to exactly those two series - a subsidiary at 2% shouldn't be squashed flat against a
+  // 15% axis picked for a stronger sibling. Index 0 = Combined view = the yMin/yMax just above.
+  const entityViewBounds = showEntityLines
+    ? [
+        { yMin, yMax },
+        ...entityLineVals.map((vals) => {
+          const pts = [...allVals, ...vals.filter((v): v is number => v != null)];
+          return {
+            yMin: pts.length > 0 ? Math.max(0, Math.floor(Math.min(...pts)) - 1) : 0,
+            yMax: pts.length > 0 ? Math.floor(Math.max(...pts)) + 2 : 15,
+          };
+        }),
+      ]
+    : [];
 
   // ─── Expansion note ─────────────────────────────────────────────────────
   let expansionNote = "";
@@ -2164,37 +2188,111 @@ export function renderAdoptionTrend(input: {
     });
   }
 
-  // ─── Per-entity lines (Task 11) ──────────────────────────────────────────
-  // Thin, muted lines - reuses the module-level AVATAR_PALETTE/hexToRgba Task 10 hoisted for
-  // Since Inception's stacked bar, rather than inventing a third color scheme. No datalabels
-  // (an N-entity chart is already busy with the combined line's own labels + peer median +
-  // established) and no toggle - this task only asked for the lines to be visible, same
-  // discipline as every other "no more than what's asked for" gate in this file.
+  // ─── Per-entity datasets + switcher (Task 11, reworked) ──────────────────
+  // One Chart.js dataset per entity, every one `hidden: true` at render (Combined view is the
+  // default) and tagged `atEntity: i` so the switcher can find them by tag rather than by
+  // position (the datasets array's layout depends on which optional series exist). Colors reuse
+  // the module-level AVATAR_PALETTE Task 10 hoisted for Since Inception - same entity, same
+  // color across every combined slide. Each carries its own datalabels (entity color), which
+  // only ever draw when that dataset is the one visible - so labels appear on exactly one line
+  // in any view (the active entity's here, the combined line's in Combined view).
+  //
+  // Legend chips per entity start display:none and the switcher reveals the active one; the
+  // combined chip, peer-median chip/toggle and established chip/toggle get ids (only in this
+  // mode - a single-PMC deck's markup stays byte-identical) so the switcher can relabel/hide
+  // them. Peer median and established are COMBINED-portfolio series, so they're hidden in every
+  // entity view and restored to whatever the user's own toggle state was on return to Combined.
   let entityLinesJs = "";
   let entityLegendItems = "";
+  let entitySwitcherHtml = "";
+  let entitySwitcherJs = "";
   if (showEntityLines) {
     entityMonthlyEntries.forEach((e, i) => {
       const col = AVATAR_PALETTE[i % AVATAR_PALETTE.length];
-      const lineCol = hexToRgba(col, 0.55);
       const label = _e(e.pmcName);
       entityLinesJs += `
     datasets.push({
       label: ${JSON.stringify(e.pmcName)},
+      atEntity: ${i},
+      hidden: true,
       data: ${JSON.stringify(entityLineVals[i])},
-      borderColor: '${lineCol}',
+      borderColor: '${col}',
       backgroundColor: 'transparent',
       fill: false,
       tension: 0.35,
-      pointRadius: 0,
-      borderWidth: 1.25,
-      datalabels: { display: false }
+      pointRadius: 4,
+      pointBackgroundColor: '${col}',
+      pointBorderColor: '#fff',
+      pointBorderWidth: 1.5,
+      borderWidth: 2,
+      datalabels: {
+        color: '${col}',
+        font: { size: 13, weight: '700', family: 'ABCDiatype' },
+        anchor: 'end', align: 'top', offset: 4,
+        formatter: v => v != null ? v + '%' : ''
+      }
     });`;
       entityLegendItems +=
-        `<span style="display:flex;align-items:center;gap:6px;">` +
-        `<span style="display:inline-block;width:18px;height:2px;background:${lineCol};border-radius:2px;"></span>` +
-        `<span style="font-size:11px;color:#a09cb0;">${label}</span>` +
+        `<span id="atEntLegend${slideId}-${i}" style="display:none;align-items:center;gap:6px;">` +
+        `<span style="display:inline-block;width:22px;height:3px;background:${col};border-radius:2px;"></span>` +
+        `<span style="font-size:13px;color:#524e5b;">${label}</span>` +
         `</span>`;
     });
+
+    // Same UI shape as flexSwitchEntity / flexSwitchResUnitsView: .spark-ctrl row of
+    // .spark-ctrl-btn buttons, first one .is-active, index-based onclick (sidesteps escaping
+    // arbitrary PMC names into a JS string literal), all per-view state embedded as JSON keyed
+    // by slideId, one shared guard-once swap function. Leading "\n    " baked into the string so
+    // the single-PMC template whitespace is untouched when this stays "".
+    const viewLabels = ["Combined", ...entityMonthlyEntries.map((e) => e.pmcName)];
+    const btns = viewLabels.map((lbl, i) =>
+      `<button class="spark-ctrl-btn${i === 0 ? " is-active" : ""}" onclick="flexSwitchAdoptionView(${slideId},${i},this)">${_e(lbl)}</button>`
+    ).join("");
+    entitySwitcherHtml = `\n    <div class="spark-ctrl presenter-control" style="flex-wrap:wrap;margin:-4px 0 8px;">${btns}</div>`;
+    const payload = {
+      views: entityViewBounds,
+      bmLabel: showBenchmark ? benchmarkLabel : null,
+      state: { view: 0, bmVisible: null, estVisible: null },
+    };
+    const jsonPayload = JSON.stringify(payload).replace(/</g, "\\u003c");
+    entitySwitcherJs = `
+window.atEntityData=window.atEntityData||{};window.atEntityData[${slideId}]=${jsonPayload};
+if(!window.flexSwitchAdoptionView){window.flexSwitchAdoptionView=function(slideId,idx,btn){
+  var d=window.atEntityData[slideId];if(!d)return;
+  var chart=Chart.getChart('chart'+slideId);if(!chart)return;
+  var st=d.state;if(idx===st.view)return;
+  var toCombined=idx===0;
+  var ds=chart.data.datasets;
+  var find=function(label){for(var j=0;j<ds.length;j++){if(ds[j].label===label)return j;}return -1;};
+  var bmIdx=d.bmLabel?find(d.bmLabel):-1, estIdx=find('Established Properties');
+  var show=function(id,disp){var el=document.getElementById(id);if(el)el.style.display=disp;};
+  // Leaving Combined: remember the user's own peer-median / established toggle state so it
+  // comes back exactly as they left it; entity views always hide both (combined-only series).
+  if(st.view===0&&!toCombined){
+    if(bmIdx>=0)st.bmVisible=chart.isDatasetVisible(bmIdx);
+    if(estIdx>=0)st.estVisible=chart.isDatasetVisible(estIdx);
+  }
+  var bmOn=toCombined&&bmIdx>=0&&st.bmVisible!==false;
+  var estOn=toCombined&&estIdx>=0&&st.estVisible!==false;
+  if(bmIdx>=0)chart.setDatasetVisibility(bmIdx,bmOn);
+  if(estIdx>=0)chart.setDatasetVisibility(estIdx,estOn);
+  show('bmLegend'+slideId,bmOn?'flex':'none');show('bmToggle'+slideId,toCombined?'':'none');
+  show('estLegend'+slideId,estOn?'flex':'none');show('estToggle'+slideId,toCombined?'':'none');
+  show('estFootnote'+slideId,estOn?'block':'none');
+  // Entity datasets: exactly the active one visible. Combined line: bold + labelled in Combined
+  // view, thin muted unlabelled reference in an entity view.
+  for(var j=0;j<ds.length;j++){if(ds[j].atEntity!=null){chart.setDatasetVisibility(j,ds[j].atEntity===idx-1);show('atEntLegend'+slideId+'-'+ds[j].atEntity,ds[j].atEntity===idx-1?'flex':'none');}}
+  var c=ds[0];
+  c.borderColor=toCombined?'#8D70EE':'rgba(141,112,238,0.35)';
+  c.backgroundColor=toCombined?'rgba(141,112,238,0.08)':'transparent';
+  c.fill=toCombined;c.pointRadius=toCombined?5:0;c.borderWidth=toCombined?2:1.25;
+  c.datalabels.display=toCombined;
+  var pl=document.getElementById('atPrimaryLegend'+slideId);if(pl){pl.textContent=toCombined?pl.getAttribute('data-label'):pl.getAttribute('data-label')+' (reference)';pl.style.opacity=toCombined?'1':'0.55';}
+  var v=d.views[idx];if(v){chart.options.scales.y.suggestedMin=v.yMin;chart.options.scales.y.suggestedMax=v.yMax;}
+  chart.update();
+  st.view=idx;
+  var row=btn.parentElement;if(row){Array.prototype.forEach.call(row.children,function(b){b.classList.toggle('is-active',b===btn);});}
+};}`;
   }
 
   // ─── Legend overlay ─────────────────────────────────────────────────────
@@ -2220,7 +2318,7 @@ export function renderAdoptionTrend(input: {
       `<span style="font-size:13px;color:#524e5b;">Established Properties <span style="color:#a09cb0;">(excl. first 3 months)</span></span>` +
       `</span>`;
     estToggle =
-      `<button onclick="toggleEstablished${slideId}(this)" ` +
+      `<button${showEntityLines ? ` id="estToggle${slideId}"` : ""} onclick="toggleEstablished${slideId}(this)" ` +
       `style="pointer-events:auto;padding:3px 9px;border-radius:5px;border:1px solid #e5e7eb;` +
       `background:#fff;color:#524e5b;font-size:10px;font-weight:600;cursor:pointer;` +
       `font-family:'ABCDiatype',sans-serif;letter-spacing:0.04em;">Hide established line</button>`;
@@ -2229,7 +2327,7 @@ export function renderAdoptionTrend(input: {
   let bmToggle = "";
   if (showBenchmark) {
     bmToggle =
-      `<button class="presenter-control" onclick="toggleBenchmark${slideId}(this)" ` +
+      `<button${showEntityLines ? ` id="bmToggle${slideId}"` : ""} class="presenter-control" onclick="toggleBenchmark${slideId}(this)" ` +
       `style="pointer-events:auto;padding:3px 9px;border-radius:5px;border:1px solid #e5e7eb;` +
       `background:#fff;color:#524e5b;font-size:10px;font-weight:600;cursor:pointer;` +
       `font-family:'ABCDiatype',sans-serif;letter-spacing:0.04em;">Hide peer median</button>`;
@@ -2245,7 +2343,7 @@ export function renderAdoptionTrend(input: {
     `display:flex;justify-content:center;gap:24px;align-items:center;pointer-events:none;flex-wrap:wrap;">` +
     `<span style="display:flex;align-items:center;gap:7px;">` +
     `<span style="display:inline-block;width:26px;height:12px;background:rgba(141,112,238,0.15);border:2px solid #8D70EE;border-radius:2px;"></span>` +
-    `<span style="font-size:13px;color:#524e5b;">${primaryLabel}</span>` +
+    `<span${showEntityLines ? ` id="atPrimaryLegend${slideId}" data-label="${primaryLabel}"` : ""} style="font-size:13px;color:#524e5b;">${primaryLabel}</span>` +
     `</span>` +
     splitLegendItems +
     entityLegendItems +
@@ -2271,8 +2369,8 @@ export function renderAdoptionTrend(input: {
       <div class="slide-label">Adoption Rate</div>
       <div class="slide-title">Adoption Rate by Month</div>
       ${peerOutlierNote}
-    </div>
-    <div class="chart-wrap" style="position:relative;height:460px;padding:12px;">${legendOverlay}<canvas id="chart${slideId}"></canvas></div>
+    </div>${entitySwitcherHtml}
+    <div class="chart-wrap" style="position:relative;height:${showEntityLines ? 400 : 460}px;padding:12px;">${legendOverlay}<canvas id="chart${slideId}"></canvas></div>
     ${expansionNote}
     ${estFootnote}
   </div>`;
@@ -2425,7 +2523,7 @@ window['toggleBenchmark${slideId}'] = function(btn) {
   if (legend) legend.style.display = nowVisible ? 'flex' : 'none';
   const note = document.getElementById('peerOutlierNote${slideId}');
   if (note) note.style.display = nowVisible ? 'block' : 'none';
-};`;
+};${entitySwitcherJs}`;
 
   return { html, js };
 }
