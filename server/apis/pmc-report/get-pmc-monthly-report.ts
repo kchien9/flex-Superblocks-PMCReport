@@ -383,11 +383,16 @@ interface ExecSummaryInput {
   // Built by the call site via groupRowsByPmc(latestRows), grouped + aggregated once per entity
   // instead of once overall. A switcher is rendered only when this has more than 1 entry - a
   // single-PMC report passes either [] or a 1-entry array and gets no switcher at all, with
-  // output identical to before this field existed. Deliberately does NOT carry prior-period
-  // figures (no prevResidents/prevRent/prevNar per entity) - switching entities swaps the tile
-  // values themselves; the period-comparison pills/sparklines have no per-entity comparison data
-  // and keep showing the Combined view's delta regardless of which entity is selected.
-  entityBreakdown?: { pmcName: string; currentResidents: number; currentRent: number; currentNar: number; propertyCount: number; totalUnits: number }[];
+  // output identical to before this field existed. The prev* fields are each entity's OWN
+  // figures at the same comparison month the combined prevResidents/prevRent/prevNar/
+  // prevPropertyCount above come from (null when the entity has no rows that month), so
+  // switching entities swaps the period-comparison pills along with the tile values (Kevin's
+  // catch: "the delta tiles only show change for the all-in PMC and don't update on the
+  // subsidiaries"). Sparklines stay combined - they have no per-entity series here.
+  entityBreakdown?: {
+    pmcName: string; currentResidents: number; currentRent: number; currentNar: number; propertyCount: number; totalUnits: number;
+    prevResidents: number | null; prevRent: number | null; prevNar: number | null; prevPropertyCount: number | null;
+  }[];
 }
 
 function renderExecSummary(d: ExecSummaryInput): { html: string; js: string } {
@@ -499,14 +504,17 @@ function renderExecSummary(d: ExecSummaryInput): { html: string; js: string } {
   const moRentSparkSvg = moRentSparkRaw ? `<div id="sp_mo_${slideId}">${moRentSparkRaw}</div>` : "";
 
   // ── Hero rent pill (white-on-dark) ────────────────────────────────────────
-  let heroPill = "";
-  if (d.prevRent !== null && d.prevRent > 0) {
-    const delta = d.currentRent - d.prevRent;
-    const pctDelta = (delta / d.prevRent) * 100;
+  // A function (not a one-off) so the entity switcher below can build each entity's own hero
+  // pill with the exact same rule the Combined one uses.
+  function heroRentPill(curRent: number, prevRent: number | null): string {
+    if (prevRent === null || prevRent <= 0) return "";
+    const delta = curRent - prevRent;
+    const pctDelta = (delta / prevRent) * 100;
     const sign = delta >= 0 ? "+" : "\u2212";
     const col = delta >= 0 ? "#6dffca" : "#ffaaaa";
-    heroPill = `<div class="exec-delta" style="display:inline-block;background:rgba(255,255,255,0.12);color:${col};font-size:10px;font-weight:700;border-radius:6px;padding:3px 9px;margin-top:8px;">${sign}${Math.abs(pctDelta).toFixed(1)}% ${_vs}</div>`;
+    return `<div class="exec-delta" style="display:inline-block;background:rgba(255,255,255,0.12);color:${col};font-size:10px;font-weight:700;border-radius:6px;padding:3px 9px;margin-top:8px;">${sign}${Math.abs(pctDelta).toFixed(1)}% ${_vs}</div>`;
   }
+  const heroPill = heroRentPill(d.currentRent, d.prevRent);
 
   // ── Avg rent per household ────────────────────────────────────────────────
   const avgPayment = d.currentResidents > 0 ? Math.round(d.currentRent / d.currentResidents) : 0;
@@ -596,6 +604,31 @@ function renderExecSummary(d: ExecSummaryInput): { html: string; js: string } {
   const showEntitySwitcher = entities.length > 1;
   let entitySwitcherHtml = "";
   let entitySwitcherJs = "";
+
+  // Period-comparison pills for the un-switched (Combined) tiles. Built here, ahead of the
+  // switcher payload, because the Combined payload entry reuses these exact strings.
+  const pillProps = pill(d.propertyCount, d.prevPropertyCount, "abs");
+  const pillResidents = pill(d.currentResidents, d.prevResidents, "abs");
+  const pillNar = pill(nar, d.prevNar, "pp");
+  // Per-entity pills, computed with the same pill()/heroRentPill() rules and the same "_vs"
+  // label as the Combined ones - only the inputs differ (each entity's own current + prior-
+  // period figures). An entity with no prior-period rows gets prev* = null and therefore the
+  // same empty pill the Combined view shows when its own prior is missing.
+  const entityPills = entities.map((e) => ({
+    props: pill(e.propertyCount, e.prevPropertyCount, "abs"),
+    res: pill(e.currentResidents, e.prevResidents, "abs"),
+    nar: pill(e.currentNar, e.prevNar, "pp"),
+    rent: heroRentPill(e.currentRent, e.prevRent),
+  }));
+  // Wraps a pill in a swappable container when the switcher is live. display:contents keeps
+  // the pill div itself as the flex item / inline-block it already is (the wrapper generates
+  // no box), so the switcher's presence changes nothing about layout - and the wrapper is
+  // always emitted (even around an empty Combined pill) so an entity that DOES have a delta
+  // has somewhere to land.
+  const wrapPill = (key: string, html: string) => showEntitySwitcher
+    ? `<span id="ep_${key}_${slideId}" style="display:contents">${html}</span>`
+    : html;
+
   if (showEntitySwitcher) {
     // Explicit "en-US" (here and on the tile values below) - a bare toLocaleString() follows the
     // runtime's default ICU locale, which in a container with no LANG set is the POSIX variant
@@ -611,9 +644,12 @@ function renderExecSummary(d: ExecSummaryInput): { html: string; js: string } {
     // same numbers the un-switched tiles render below) - not re-derived from entities, so
     // "Combined" always matches today's existing behavior regardless of how entityBreakdown was
     // built upstream.
+    // Each entry also carries its fully rendered pills (same builders, see entityPills above) -
+    // Combined's are the very strings the static tiles below render, so restoring Combined puts
+    // back exactly what was there.
     const payload = [
-      { label: "Combined", ...fmtEntity(d.currentResidents, d.currentRent, nar, d.propertyCount) },
-      ...entities.map((e) => ({ label: e.pmcName, ...fmtEntity(e.currentResidents, e.currentRent, e.currentNar, e.propertyCount) })),
+      { label: "Combined", ...fmtEntity(d.currentResidents, d.currentRent, nar, d.propertyCount), pills: { props: pillProps, res: pillResidents, nar: pillNar, rent: heroPill } },
+      ...entities.map((e, i) => ({ label: e.pmcName, ...fmtEntity(e.currentResidents, e.currentRent, e.currentNar, e.propertyCount), pills: entityPills[i] })),
     ];
     // Index-based onclick (not the entity name) - sidesteps having to escape arbitrary PMC names
     // (apostrophes, quotes, etc.) into a JS string literal inside an HTML attribute.
@@ -629,17 +665,21 @@ function renderExecSummary(d: ExecSummaryInput): { html: string; js: string } {
       + `if(!window.flexSwitchEntity){window.flexSwitchEntity=function(slideId,idx,btn){`
       + `var d=(window.execEntityData[slideId]||[])[idx];if(!d)return;`
       + `function setTxt(id,txt){var el=document.getElementById(id);if(el&&txt!==undefined)el.textContent=txt;}`
+      + `function setHtml(id,h){var el=document.getElementById(id);if(el&&h!==undefined)el.innerHTML=h;}`
       + `setTxt('ev_props_'+slideId,d.properties);setTxt('ev_res_'+slideId,d.residents);`
       + `setTxt('ev_nar_'+slideId,d.nar);setTxt('ev_rent_'+slideId,d.rent);setTxt('ev_avg_'+slideId,d.avg);`
+      + `var p=d.pills||{};setHtml('ep_props_'+slideId,p.props);setHtml('ep_res_'+slideId,p.res);`
+      + `setHtml('ep_nar_'+slideId,p.nar);setHtml('ep_rent_'+slideId,p.rent);`
       + `var row=btn.parentElement;if(row){Array.prototype.forEach.call(row.children,function(b){b.classList.toggle('is-active',b===btn);});}`
       + `};}`;
   }
 
   // ── Delta toggle check ────────────────────────────────────────────────────
-  const pillProps = pill(d.propertyCount, d.prevPropertyCount, "abs");
-  const pillResidents = pill(d.currentResidents, d.prevResidents, "abs");
-  const pillNar = pill(nar, d.prevNar, "pp");
-  const anyDelta = !!(pillProps || pillResidents || pillNar || heroPill);
+  // With the switcher live, an entity's pill can exist even when Combined's doesn't, so the
+  // Hide/Show-change toggle has to account for every entry's pills - otherwise a subsidiary's
+  // delta would have no way to be hidden. Without the switcher this is exactly the old check.
+  const anyEntityDelta = showEntitySwitcher && entityPills.some((p) => !!(p.props || p.res || p.nar || p.rent));
+  const anyDelta = !!(pillProps || pillResidents || pillNar || heroPill) || anyEntityDelta;
 
   // Starts hidden when the form-level toggle forces it (Kevin's ask) - the button and its
   // onclick logic are otherwise unchanged, so the live in-deck override still works exactly the
@@ -690,7 +730,7 @@ function renderExecSummary(d: ExecSummaryInput): { html: string; js: string } {
           <div style="display:flex;align-items:flex-end;justify-content:space-between;gap:8px;">
             <div>
               <div style="font-size:28px;font-weight:700;color:#fff;letter-spacing:-0.02em;"${showEntitySwitcher ? ` id="ev_rent_${slideId}"` : ""}>${fmtCurrency(d.currentRent)}</div>
-              ${heroPill}
+              ${wrapPill("rent", heroPill)}
               ${avgPayment > 0 ? `<div style="font-size:11px;color:rgba(255,255,255,0.40);margin-top:5px;"${showEntitySwitcher ? ` id="ev_avg_${slideId}"` : ""}>avg $${avgPayment.toLocaleString("en-US")}/resident</div>` : ""}
             </div>
             ${moRentSparkSvg ? `<div style="flex-shrink:0;">${moRentSparkSvg}</div>` : ""}
@@ -699,10 +739,10 @@ function renderExecSummary(d: ExecSummaryInput): { html: string; js: string } {
       </div>
       <!-- 6 Metric Tiles (3-wide grid, rows auto-size to however many remain after hiding) -->
       <div style="display:grid;grid-template-columns:repeat(${tileCols},1fr);grid-auto-rows:1fr;gap:12px;">
-        ${hiddenTileSet.has("active_properties") ? "" : tile("Active properties", d.propertyCount.toLocaleString("en-US"), "", pillProps, "", svgBldg, showEntitySwitcher ? `ev_props_${slideId}` : "")}
-        ${hiddenTileSet.has("residents_paying") ? "" : tile("Residents paying", d.currentResidents.toLocaleString("en-US"), "", pillResidents, residentsSparkHtml, svgPerson, showEntitySwitcher ? `ev_res_${slideId}` : "")}
+        ${hiddenTileSet.has("active_properties") ? "" : tile("Active properties", d.propertyCount.toLocaleString("en-US"), "", wrapPill("props", pillProps), "", svgBldg, showEntitySwitcher ? `ev_props_${slideId}` : "")}
+        ${hiddenTileSet.has("residents_paying") ? "" : tile("Residents paying", d.currentResidents.toLocaleString("en-US"), "", wrapPill("res", pillResidents), residentsSparkHtml, svgPerson, showEntitySwitcher ? `ev_res_${slideId}` : "")}
         ${hiddenTileSet.has("new_residents") ? "" : tile("New residents paying this month", d.currentNewSignups.toLocaleString("en-US"), signupsSub, "", signupsSparkHtml, svgNewP)}
-        ${hiddenTileSet.has("adoption_rate") ? "" : tile("Adoption rate", fmtPct(nar), "", pillNar, narSparkHtml, svgPct, showEntitySwitcher ? `ev_nar_${slideId}` : "")}
+        ${hiddenTileSet.has("adoption_rate") ? "" : tile("Adoption rate", fmtPct(nar), "", wrapPill("nar", pillNar), narSparkHtml, svgPct, showEntitySwitcher ? `ev_nar_${slideId}` : "")}
         ${hiddenTileSet.has("true_repeat_rate") ? "" : tile("True repeat rate", retentionVal, retentionSub, "", "", svgRepeat)}
         ${hiddenTileSet.has("delinquency_shielded") ? "" : tile("Delinquency shielded", dqVal, dqSub, dqPill, "", svgShield)}
       </div>
@@ -4788,10 +4828,24 @@ export default api({
     // per-entity numbers reproduces the combined figures exactly, not just approximately. A
     // single-PMC report yields a 1-entry array here, which renderExecSummary treats as "no
     // switcher" (needs 2+).
+    //
+    // Prior-period figures per entity come from the same comparison month (prevMonthStr, i.e.
+    // monthlyTotals[latestIdx - cmpIdx].month) the combined prevResidents/prevRent/prevNar/
+    // prevPropertyCount are read at, aggregated from the same inNetwork rows monthlyTotals is
+    // built from - so, like the current-month numbers, these sum exactly to the combined
+    // prior figures. An entity with no rows that month gets nulls (its pills render empty, the
+    // same state the Combined view is in when prevMonth is null).
+    const prevRowsByPmc = prevMonthStr
+      ? groupRowsByPmc(inNetwork.filter((r) => r.BP_MONTH === prevMonthStr))
+      : new Map<string, typeof inNetwork>();
     const entityBreakdown = Array.from(groupRowsByPmc(latestRows).entries()).map(([name, rows]) => {
       const residents = rows.reduce((s, r) => s + r.BILLS_PAID, 0);
       const rent = rows.reduce((s, r) => s + r.RENT_PAID, 0);
       const units = rows.reduce((s, r) => s + r.PROPERTY_UNIT_COUNT, 0);
+      const prevRows = prevRowsByPmc.get(name);
+      const prevResidents = prevRows ? prevRows.reduce((s, r) => s + r.BILLS_PAID, 0) : null;
+      const prevUnits = prevRows ? prevRows.reduce((s, r) => s + r.PROPERTY_UNIT_COUNT, 0) : null;
+      const prevProps = prevRows ? new Set(prevRows.map((r) => r.PROPERTY_NAME)).size : 0;
       return {
         pmcName: name,
         currentResidents: residents,
@@ -4799,6 +4853,13 @@ export default api({
         currentNar: units > 0 ? residents / units : 0,
         propertyCount: new Set(rows.map((r) => r.PROPERTY_NAME)).size,
         totalUnits: units,
+        prevResidents,
+        prevRent: prevRows ? prevRows.reduce((s, r) => s + r.RENT_PAID, 0) : null,
+        // Same rule as monthlyTotals' adoptionRate (units > 0 ? bills / units : 0).
+        prevNar: prevResidents !== null && prevUnits !== null ? (prevUnits > 0 ? prevResidents / prevUnits : 0) : null,
+        // Same "> 0 ? n : null" normalization the combined prevPropertyCount gets at the
+        // renderExecSummary call below.
+        prevPropertyCount: prevProps > 0 ? prevProps : null,
       };
     });
 
