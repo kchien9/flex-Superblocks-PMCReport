@@ -5346,6 +5346,9 @@ export default api({
               slideId: slideNum,
               entities: portfolioComparisonEntities,
               combinedMonthlySeries: portfolioComparisonCombinedSeries,
+              // Same month entityBreakdown's latestRows are filtered to (and the Exec Summary
+              // tiles report) - names the window the numeric columns are a snapshot of.
+              asOfMonth: latestCompletedMonth,
             });
             pushSlide(sid, r);
             break;
@@ -5967,6 +5970,9 @@ export default api({
       slideId: allocSlideId(),
       entities: portfolioComparisonEntities,
       combinedMonthlySeries: portfolioComparisonCombinedSeries,
+      // Same month entityBreakdown's latestRows are filtered to (and the Exec Summary tiles
+      // report) - names the window the numeric columns are a snapshot of.
+      asOfMonth: latestCompletedMonth,
     });
 
     // Flask SLIDE_ORDER: [3, 54, 6, 21, 14, 49, 12, 39, 15, 26, 50, 44, 23, 58, 34, 45, 53, 57, 59]

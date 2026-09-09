@@ -3583,11 +3583,21 @@ export interface PortfolioComparisonInput {
    * only so a caller without it yet degrades to a blank Combined sparkline cell, never a wrong
    * one. */
   combinedMonthlySeries?: number[];
+  /** The month (YYYY-MM-DD, the same latestCompletedMonth the Exec Summary tiles use) that
+   * every numeric column is a snapshot of - Units on Flex, Paying Residents, Adoption Rate and
+   * Rent Paid all come from entityBreakdown's latestRows, i.e. ONE completed month, not YTD/
+   * T12/lifetime. Kevin's catch on the Asset Living deck: "is this total rent paid? over last 12
+   * months? or ytd? or lifetime?" - a bare "Rent Paid" header can't answer that, so the slide
+   * states the month in the Rent Paid header (the $ column is the one whose window is genuinely
+   * ambiguous) and in an "as of" note under the title (covering the other three). Optional only
+   * so a caller without it degrades to the old unlabelled headers, never a wrong label. */
+  asOfMonth?: string | null;
 }
 
 export function renderPortfolioComparison(input: PortfolioComparisonInput): SlideResult {
-  const { slideId, entities, combinedMonthlySeries } = input;
+  const { slideId, entities, combinedMonthlySeries, asOfMonth } = input;
   if (entities.length <= 1) return { html: "", js: "" };
+  const asOfLabel = asOfMonth ? monthLabel(asOfMonth) : "";
 
   // Combined row: sum units/residents/rent; Adoption Rate RECOMPUTED from the summed
   // residents/units, never averaged across the entity rows' own percentages - averaging is
@@ -3634,7 +3644,7 @@ export function renderPortfolioComparison(input: PortfolioComparisonInput): Slid
           <td style="padding:6px 10px;text-align:center;">${combinedSparkHtml}</td>
         </tr>`;
 
-  const cols = ["Entity", "Units on Flex", "Paying Residents", "Adoption Rate", "Rent Paid", "Trend"];
+  const cols = ["Entity", "Units on Flex", "Paying Residents", "Adoption Rate", asOfLabel ? `Rent Paid (${asOfLabel})` : "Rent Paid", "Trend"];
   const colWidths = ["24%", "16%", "18%", "14%", "16%", "12%"];
   const thHtml = cols
     .map((c, i) => {
@@ -3657,7 +3667,7 @@ export function renderPortfolioComparison(input: PortfolioComparisonInput): Slid
     <div class="slide-header">
       <div class="slide-label">Portfolio</div>
       <div class="slide-title">Portfolio Comparison</div>
-      <div style="font-size:11px;color:#a09cb0;margin-top:4px;">Every subsidiary side by side - click a column header to sort</div>
+      <div style="font-size:11px;color:#a09cb0;margin-top:4px;">Every subsidiary side by side${asOfLabel ? ` - all figures as of ${_e(asOfLabel)} (latest completed month)` : ""} - click a column header to sort</div>
     </div>
     <div style="overflow-y:auto;flex:1;min-height:0;">
       <table style="width:100%;border-collapse:collapse;table-layout:fixed;">
