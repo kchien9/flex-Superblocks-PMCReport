@@ -32,6 +32,7 @@ import {
   propertyAgeBucket,
   resolvePropertyPeerNar,
   resolvePropertyPeerEngagement,
+  largestPmcsPeerTier,
 } from "./peer-matching.js";
 
 const SNOWFLAKE_SSO = "d38ee94a-4e93-46f5-ab44-c65a99b3aea5";
@@ -4079,6 +4080,22 @@ export default api({
             break;
           }
         }
+
+        // Step A3: "largest PMCs on Flex" rung (Kevin's call, 2026-09-09) - tried only after
+        // every size-matched tier above came up empty, and only when they failed because the
+        // subject outsizes the network (see largestPmcsPeerTier). Sets the same lockedPeers /
+        // lockedPeersCriteria every downstream peer path reads (rolling calendar-time median,
+        // tenure-cohort stageBenchmarksMap, Peer Benchmarks snapshot), so the Adoption Trend
+        // legend and the Peer Benchmarks slide both say "largest PMCs on Flex". If even this
+        // can't seat its min peers, lockedPeers stays empty and the existing network-wide
+        // fallback below is unchanged.
+        if (lockedPeers.length === 0) {
+          const largest = largestPmcsPeerTier(candidates, subjectUnits, { minPeers: 5 });
+          if (largest) {
+            lockedPeers = largest.peers.map((c) => c.name);
+            lockedPeersCriteria = largest.label;
+          }
+        }
       }
     }
 
@@ -4617,7 +4634,11 @@ export default api({
                 PMC_NAME,
                 SUM(CHARGED_USERS_COUNT) / NULLIF(SUM(PROPERTY_UNIT_COUNT)::FLOAT, 0) AS nar
               FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS
-              WHERE PMC_NAME != ?
+              -- Every combined entity is excluded, not just the primary (was "PMC_NAME != ?"
+              -- bound to pmc_name alone - on a combined report the other entities' own NAR
+              -- leaked into their "network-wide" peer median). Same exclusion set as
+              -- peerCandidateSubjectPmcs / excludedPmcNames.
+              WHERE PMC_NAME NOT IN (${allPmcNames.map(() => "?").join(", ")})
                 AND IS_INTEGRATED_TOTAL = TRUE
                 -- cutoffStr is exclusive (see peer_latest above) — BETWEEN's inclusive upper
                 -- bound let this same query pick up the pre-created, not-yet-real stub month.
@@ -4645,7 +4666,7 @@ export default api({
            HAVING COUNT(*) >= 10
            ORDER BY BP_MONTH`,
           RollingPeerSchema,
-          [pmc_name, cutoffStr, cutoffStr, lookback_months, cutoffStr, cutoffStr],
+          [...allPmcNames, cutoffStr, cutoffStr, lookback_months, cutoffStr, cutoffStr],
           { label: "Network-wide rolling median NAR (fallback, P25/P50/P75)" }
         );
         for (const row of networkWideRolling) {
