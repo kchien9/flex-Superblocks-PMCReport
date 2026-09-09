@@ -404,10 +404,20 @@ interface ExecSummaryInput {
   // prevPropertyCount above come from (null when the entity has no rows that month), so
   // switching entities swaps the period-comparison pills along with the tile values (Kevin's
   // catch: "the delta tiles only show change for the all-in PMC and don't update on the
-  // subsidiaries"). Sparklines stay combined - they have no per-entity series here.
+  // subsidiaries"). currentNewSignups + monthly (Kevin's follow-up on the hero sub-line: "this
+  // number doesnt change based on the pmc selected either") let the switcher swap EVERY node the
+  // Combined view derives from kpis/monthlyTotals - the hero window rent, the new-residents tile
+  // + its "N last 3 months" sub-label, and all five sparklines - not just the four tile values.
+  // `monthly` is this entity's own series over the same window monthlyTotals covers (sparse:
+  // only months the entity has rows in, chronological), built from the same inNetwork rows, so
+  // the per-entity figures sum exactly to the combined ones. What still can't switch: True
+  // repeat rate (PARTNER_REPORTING_CORE_METRICS / cohort query, combined only) and Delinquency
+  // shielded (a single combined SUM) - neither has a per-entity source in this report.
   entityBreakdown?: {
     pmcName: string; currentResidents: number; currentRent: number; currentNar: number; propertyCount: number; totalUnits: number;
     prevResidents: number | null; prevRent: number | null; prevNar: number | null; prevPropertyCount: number | null;
+    currentNewSignups: number;
+    monthly: { month: string; billsPaid: number; units: number; rentPaid: number; newSignups: number; adoptionRate: number }[];
   }[];
 }
 
@@ -453,7 +463,6 @@ function renderExecSummary(d: ExecSummaryInput): { html: string; js: string } {
   }
 
   // ── Sparkline builder ─────────────────────────────────────────────────────
-  const tail12 = d.monthlyTotals.slice(-12);
   function sparkSvg(values: number[], width = 72, height = 22): string {
     const valid = values.filter((v) => v > 0);
     if (valid.length < 3) return "";
@@ -469,21 +478,6 @@ function renderExecSummary(d: ExecSummaryInput): { html: string; js: string } {
     }).join(" L ");
     return `<svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" fill="none" style="display:block;margin-top:8px;opacity:0.7;"><path d="M ${pts}" stroke="${color}" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
   }
-
-  const showSparks = d.showSparklines !== false;
-  const narSparkVals = tail12.map((m) => m.adoptionRate);
-  const residentsSparkVals = tail12.map((m) => m.billsPaid);
-  const signupsSparkVals = tail12.map((m) => m.newSignups);
-  const narSparkRaw = showSparks ? sparkSvg(narSparkVals) : "";
-  const residentsSparkRaw = showSparks ? sparkSvg(residentsSparkVals) : "";
-  const signupsSparkRaw = showSparks ? sparkSvg(signupsSparkVals) : "";
-  // Wrap in identifiable divs so toggle buttons can show/hide them
-  const narSparkHtml = narSparkRaw ? `<div id="sp_nar_${slideId}">${narSparkRaw}</div>` : "";
-  const residentsSparkHtml = residentsSparkRaw ? `<div id="sp_res_${slideId}">${residentsSparkRaw}</div>` : "";
-  const signupsSparkHtml = signupsSparkRaw ? `<div id="ss_${slideId}">${signupsSparkRaw}</div>` : "";
-
-  // ── Monthly rent for hero sparkline ────────────────────────────────────────
-  const monthlyRentVals = tail12.map((m) => m.rentPaid);
 
   // Hero sparkline: Flask's real version (render_expansion_bottom_line, generator/slides.py:
   // ~7750-7767, ~7967-7993) is a CUMULATIVE running sum of monthly rent — deliberately always
@@ -513,10 +507,35 @@ function renderExecSummary(d: ExecSummaryInput): { html: string; js: string } {
       + `<path d="${lineD}" stroke="rgba(255,255,255,0.55)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>`
       + `</svg>`;
   }
-  const heroSparkSvgHtml = heroSparkSvg(monthlyRentVals);
 
-  // ── Monthly rent sparkline (small white line in hero bottom) ──────────────
-  const moRentSparkRaw = showSparks ? sparkSvg(monthlyRentVals, 100, 36).replace(/#1a9e6a|#dc5050|#9ca3af/g, "rgba(255,255,255,0.6)") : "";
+  const showSparks = d.showSparklines !== false;
+  // Every sparkline on the slide (the four small trend lines + the hero's cumulative area) comes
+  // out of this one function - applied to monthlyTotals for the Combined view, and to each
+  // entity's own monthly series for the switcher payload below - so an entity's sparks are built
+  // by the exact code path the Combined ones are, over the same trailing-12 window.
+  function sparksFor(monthly: ExecSummaryInput["monthlyTotals"]) {
+    const t12 = monthly.slice(-12);
+    const rentVals = t12.map((m) => m.rentPaid);
+    return {
+      nar: showSparks ? sparkSvg(t12.map((m) => m.adoptionRate)) : "",
+      res: showSparks ? sparkSvg(t12.map((m) => m.billsPaid)) : "",
+      sig: showSparks ? sparkSvg(t12.map((m) => m.newSignups)) : "",
+      hero: heroSparkSvg(rentVals),
+      // Monthly rent sparkline (small white line in hero bottom) - same builder, recolored.
+      mo: showSparks ? sparkSvg(rentVals, 100, 36).replace(/#1a9e6a|#dc5050|#9ca3af/g, "rgba(255,255,255,0.6)") : "",
+    };
+  }
+  const combinedSparks = sparksFor(d.monthlyTotals);
+  const narSparkRaw = combinedSparks.nar;
+  const residentsSparkRaw = combinedSparks.res;
+  const signupsSparkRaw = combinedSparks.sig;
+  // Wrap in identifiable divs so toggle buttons can show/hide them (and, with the entity
+  // switcher live, so flexSwitchEntity can swap the svg inside each wrapper).
+  const narSparkHtml = narSparkRaw ? `<div id="sp_nar_${slideId}">${narSparkRaw}</div>` : "";
+  const residentsSparkHtml = residentsSparkRaw ? `<div id="sp_res_${slideId}">${residentsSparkRaw}</div>` : "";
+  const signupsSparkHtml = signupsSparkRaw ? `<div id="ss_${slideId}">${signupsSparkRaw}</div>` : "";
+  const heroSparkSvgHtml = combinedSparks.hero;
+  const moRentSparkRaw = combinedSparks.mo;
   const moRentSparkSvg = moRentSparkRaw ? `<div id="sp_mo_${slideId}">${moRentSparkRaw}</div>` : "";
 
   // ── Hero rent pill (white-on-dark) ────────────────────────────────────────
@@ -569,9 +588,13 @@ function renderExecSummary(d: ExecSummaryInput): { html: string; js: string } {
   }
 
   // ── New signups QTD sub-label ─────────────────────────────────────────────
-  const last3 = d.monthlyTotals.slice(-3);
-  const qtdSignups = last3.reduce((s, m) => s + m.newSignups, 0);
-  const signupsSub = qtdSignups > 0 ? `${qtdSignups.toLocaleString("en-US")} last 3 months` : "first-time Flex payments this month";
+  // A function so the entity switcher below can build each entity's own sub-label with the
+  // exact rule the Combined one uses (same reason heroRentPill / sparksFor are functions).
+  function signupsSubFor(monthly: ExecSummaryInput["monthlyTotals"]): string {
+    const qtd = monthly.slice(-3).reduce((s, m) => s + m.newSignups, 0);
+    return qtd > 0 ? `${qtd.toLocaleString("en-US")} last 3 months` : "first-time Flex payments this month";
+  }
+  const signupsSub = signupsSubFor(d.monthlyTotals);
 
   // ── SVG icons for tiles ────────────────────────────────────────────────────
   const svgBldg = '<svg width="13" height="13" viewBox="0 0 14 14" fill="none"><rect x="2" y="4" width="7" height="8.5" rx="0.8" stroke="#6A3DB8" stroke-width="1.3"/><path d="M9 7h2.5v5.5H9" stroke="#6A3DB8" stroke-width="1.3" stroke-linejoin="round"/><path d="M4.5 7v0M6.5 7v0M4.5 9.5v0M6.5 9.5v0" stroke="#6A3DB8" stroke-width="1.5" stroke-linecap="round"/></svg>';
@@ -588,7 +611,7 @@ function renderExecSummary(d: ExecSummaryInput): { html: string; js: string } {
   }
 
   // ── Small tile helper ─────────────────────────────────────────────────────
-  function tile(label: string, value: string, sublabel: string, pillHtml: string, sparkHtml = "", icon = "", valueId = ""): string {
+  function tile(label: string, value: string, sublabel: string, pillHtml: string, sparkHtml = "", icon = "", valueId = "", sublabelId = ""): string {
     const labelRow = icon
       ? `<div style="display:flex;align-items:center;gap:6px;margin-bottom:10px;">${iconCircle(icon)}<div style="font-size:13px;color:#2d2550;font-weight:700;">${label}</div></div>`
       : `<div style="font-size:13px;color:#2d2550;font-weight:700;margin-bottom:10px;">${label}</div>`;
@@ -596,7 +619,7 @@ function renderExecSummary(d: ExecSummaryInput): { html: string; js: string } {
       ${labelRow}
       <div style="flex:1;display:flex;flex-direction:column;justify-content:center;">
         <div style="font-size:34px;font-weight:700;color:#1a1040;letter-spacing:-0.03em;line-height:1;"${valueId ? ` id="${valueId}"` : ""}>${value}</div>
-        ${pillHtml}${sparkHtml}${sublabel ? `<div style="font-size:11px;color:#6b7280;font-weight:500;margin-top:6px;">${sublabel}</div>` : ""}
+        ${pillHtml}${sparkHtml}${sublabel ? `<div style="font-size:11px;color:#6b7280;font-weight:500;margin-top:6px;"${sublabelId ? ` id="${sublabelId}"` : ""}>${sublabel}</div>` : ""}
       </div>
     </div>`;
   }
@@ -666,10 +689,32 @@ function renderExecSummary(d: ExecSummaryInput): { html: string; js: string } {
     // Labels are display-shortened (displayEntityNames - "FPI (An Asset Living Company)" ->
     // "FPI", full names if that would collide); the payload entries are addressed by index, so
     // this is display-only and every number still comes from the full-name entity.
+    //
+    // Beyond the four tile values + pills, each entry carries every other node the slide derives
+    // from kpis/monthlyTotals (Kevin, on the hero sub-line: "this number doesnt change based on
+    // the pmc selected either" - the bar is that a Combined vs Entity screenshot differs in
+    // every pixel that encodes entity data): the hero window rent (`lifetime`), the new-
+    // residents tile value + "N last 3 months" sub-label, and all five sparklines - each built
+    // by the SAME function the static Combined markup uses (fmtCurrency / signupsSubFor /
+    // sparksFor), so Combined's strings here are byte-equal to what's rendered and an entity's
+    // are what the slide WOULD render if the deck were that entity alone. An entity's window
+    // rent is the sum of its own monthly rent - the same reduce the call site does over
+    // monthlyTotals for d.lifetimeRent.
+    const viewFor = (monthly: ExecSummaryInput["monthlyTotals"], newSignups: number, windowRent: number) => ({
+      lifetime: fmtCurrency(windowRent),
+      newSignups: newSignups.toLocaleString("en-US"),
+      signupsSub: signupsSubFor(monthly),
+      sparks: sparksFor(monthly),
+    });
     const entityLabels = displayEntityNames(entities.map((e) => e.pmcName));
     const payload = [
-      { label: "Combined", ...fmtEntity(d.currentResidents, d.currentRent, nar, d.propertyCount), pills: { props: pillProps, res: pillResidents, nar: pillNar, rent: heroPill } },
-      ...entities.map((e, i) => ({ label: entityLabels[i], ...fmtEntity(e.currentResidents, e.currentRent, e.currentNar, e.propertyCount), pills: entityPills[i] })),
+      { label: "Combined", ...fmtEntity(d.currentResidents, d.currentRent, nar, d.propertyCount), ...viewFor(d.monthlyTotals, d.currentNewSignups, d.lifetimeRent), pills: { props: pillProps, res: pillResidents, nar: pillNar, rent: heroPill } },
+      ...entities.map((e, i) => ({
+        label: entityLabels[i],
+        ...fmtEntity(e.currentResidents, e.currentRent, e.currentNar, e.propertyCount),
+        ...viewFor(e.monthly, e.currentNewSignups, e.monthly.reduce((s, m) => s + m.rentPaid, 0)),
+        pills: entityPills[i],
+      })),
     ];
     // Index-based onclick (not the entity name) - sidesteps having to escape arbitrary PMC names
     // (apostrophes, quotes, etc.) into a JS string literal inside an HTML attribute. "Combined"
@@ -694,8 +739,16 @@ function renderExecSummary(d: ExecSummaryInput): { html: string; js: string } {
       + `function setHtml(id,h){var el=document.getElementById(id);if(el&&h!==undefined)el.innerHTML=h;}`
       + `setTxt('ev_props_'+slideId,d.properties);setTxt('ev_res_'+slideId,d.residents);`
       + `setTxt('ev_nar_'+slideId,d.nar);setTxt('ev_rent_'+slideId,d.rent);setTxt('ev_avg_'+slideId,d.avg);`
+      + `setTxt('ev_lifetime_'+slideId,d.lifetime);setTxt('ev_newsig_'+slideId,d.newSignups);setTxt('ev_sigsub_'+slideId,d.signupsSub);`
       + `var p=d.pills||{};setHtml('ep_props_'+slideId,p.props);setHtml('ep_res_'+slideId,p.res);`
       + `setHtml('ep_nar_'+slideId,p.nar);setHtml('ep_rent_'+slideId,p.rent);`
+      // Sparklines swap INSIDE their existing wrappers (sp_nar_/sp_res_/ss_/sp_mo_ are the same
+      // divs flexToggleSpark shows/hides, so a hidden sparkline stays hidden across a switch);
+      // the hero area gets its own wrapper id below. A wrapper only exists when the Combined
+      // view has that sparkline, and an entity can only have one when Combined does (Combined's
+      // months are a superset of every entity's), so a missing wrapper is never a lost entity spark.
+      + `var s=d.sparks||{};setHtml('ev_hspark_'+slideId,s.hero);setHtml('sp_nar_'+slideId,s.nar);`
+      + `setHtml('sp_res_'+slideId,s.res);setHtml('ss_'+slideId,s.sig);setHtml('sp_mo_'+slideId,s.mo);`
       + `var row=btn.parentElement;if(row){Array.prototype.forEach.call(row.children,function(b){b.classList.toggle('is-active',b===btn);});}`
       + `};}`;
   }
@@ -749,9 +802,9 @@ function renderExecSummary(d: ExecSummaryInput): { html: string; js: string } {
         ${iconCircle(svgCoinsW, true)}
         <span style="font-size:13px;color:rgba(255,255,255,0.75);font-weight:700;">Rent guaranteed</span>
       </div>
-        <div style="font-size:46px;font-weight:700;color:#fff;letter-spacing:-0.03em;line-height:1;">${fmtCurrency(d.lifetimeRent)}</div>
+        <div style="font-size:46px;font-weight:700;color:#fff;letter-spacing:-0.03em;line-height:1;"${showEntitySwitcher ? ` id="ev_lifetime_${slideId}"` : ""}>${fmtCurrency(d.lifetimeRent)}</div>
         <div style="font-size:12px;color:rgba(255,255,255,0.55);font-weight:500;margin-top:5px;">${rwl.toLowerCase()}</div>
-        <div style="flex:1;min-height:40px;display:flex;align-items:flex-end;margin:12px 0 4px;">${heroSparkSvgHtml}</div>
+        <div style="flex:1;min-height:40px;display:flex;align-items:flex-end;margin:12px 0 4px;"${showEntitySwitcher ? ` id="ev_hspark_${slideId}"` : ""}>${heroSparkSvgHtml}</div>
         <div style="border-top:1px solid rgba(255,255,255,0.10);padding-top:14px;">
           <div style="font-size:13px;color:rgba(255,255,255,0.75);font-weight:700;margin-bottom:5px;">Rent guaranteed this month</div>
           <div style="display:flex;align-items:flex-end;justify-content:space-between;gap:8px;">
@@ -768,7 +821,7 @@ function renderExecSummary(d: ExecSummaryInput): { html: string; js: string } {
       <div style="display:grid;grid-template-columns:repeat(${tileCols},1fr);grid-auto-rows:1fr;gap:12px;">
         ${hiddenTileSet.has("active_properties") ? "" : tile("Active properties", d.propertyCount.toLocaleString("en-US"), "", wrapPill("props", pillProps), "", svgBldg, showEntitySwitcher ? `ev_props_${slideId}` : "")}
         ${hiddenTileSet.has("residents_paying") ? "" : tile("Residents paying", d.currentResidents.toLocaleString("en-US"), "", wrapPill("res", pillResidents), residentsSparkHtml, svgPerson, showEntitySwitcher ? `ev_res_${slideId}` : "")}
-        ${hiddenTileSet.has("new_residents") ? "" : tile("New residents paying this month", d.currentNewSignups.toLocaleString("en-US"), signupsSub, "", signupsSparkHtml, svgNewP)}
+        ${hiddenTileSet.has("new_residents") ? "" : tile("New residents paying this month", d.currentNewSignups.toLocaleString("en-US"), signupsSub, "", signupsSparkHtml, svgNewP, showEntitySwitcher ? `ev_newsig_${slideId}` : "", showEntitySwitcher ? `ev_sigsub_${slideId}` : "")}
         ${hiddenTileSet.has("adoption_rate") ? "" : tile("Adoption rate", fmtPct(nar), "", wrapPill("nar", pillNar), narSparkHtml, svgPct, showEntitySwitcher ? `ev_nar_${slideId}` : "")}
         ${hiddenTileSet.has("true_repeat_rate") ? "" : tile("True repeat rate", retentionVal, retentionSub, "", "", svgRepeat)}
         ${hiddenTileSet.has("delinquency_shielded") ? "" : tile("Delinquency shielded", dqVal, dqSub, dqPill, "", svgShield)}
@@ -4873,6 +4926,12 @@ export default api({
     const prevRowsByPmc = prevMonthStr
       ? groupRowsByPmc(inNetwork.filter((r) => r.BP_MONTH === prevMonthStr))
       : new Map<string, typeof inNetwork>();
+    // Each entity's own full monthly series over the report window (the same inNetwork rows
+    // monthlyTotals is summed from, one dimension finer - same grouping entityMonthlyData /
+    // residentsUnitsEntityMonthlyData use above, with newSignups added). Feeds the switcher's
+    // per-entity hero window rent, "N last 3 months" sub-label and sparklines; sparse (only
+    // months the entity has rows in), chronological like monthlyTotals.
+    const inNetworkByPmc = groupRowsByPmc(inNetwork);
     const entityBreakdown = Array.from(groupRowsByPmc(latestRows).entries()).map(([name, rows]) => {
       const residents = rows.reduce((s, r) => s + r.BILLS_PAID, 0);
       const rent = rows.reduce((s, r) => s + r.RENT_PAID, 0);
@@ -4881,6 +4940,19 @@ export default api({
       const prevResidents = prevRows ? prevRows.reduce((s, r) => s + r.BILLS_PAID, 0) : null;
       const prevUnits = prevRows ? prevRows.reduce((s, r) => s + r.PROPERTY_UNIT_COUNT, 0) : null;
       const prevProps = prevRows ? new Set(prevRows.map((r) => r.PROPERTY_NAME)).size : 0;
+      const ebMap = new Map<string, { billsPaid: number; units: number; rentPaid: number; newSignups: number }>();
+      for (const row of inNetworkByPmc.get(name) ?? []) {
+        const existing = ebMap.get(row.BP_MONTH) || { billsPaid: 0, units: 0, rentPaid: 0, newSignups: 0 };
+        existing.billsPaid += row.BILLS_PAID;
+        existing.units += row.PROPERTY_UNIT_COUNT;
+        existing.rentPaid += row.RENT_PAID;
+        existing.newSignups += row.NEW_SIGNUPS ?? 0;
+        ebMap.set(row.BP_MONTH, existing);
+      }
+      const monthly = Array.from(ebMap.entries())
+        // Same adoptionRate rule as monthlyTotals (units > 0 ? bills / units : 0).
+        .map(([month, m]) => ({ month, ...m, adoptionRate: m.units > 0 ? m.billsPaid / m.units : 0 }))
+        .sort((a, b) => a.month.localeCompare(b.month));
       return {
         pmcName: name,
         currentResidents: residents,
@@ -4895,6 +4967,9 @@ export default api({
         // Same "> 0 ? n : null" normalization the combined prevPropertyCount gets at the
         // renderExecSummary call below.
         prevPropertyCount: prevProps > 0 ? prevProps : null,
+        // Same NEW_SIGNUPS ?? 0 sum monthlyTotals' newSignups uses, over this entity's latest rows.
+        currentNewSignups: rows.reduce((s, r) => s + (r.NEW_SIGNUPS ?? 0), 0),
+        monthly,
       };
     });
 
