@@ -3225,9 +3225,18 @@ export function renderSinceInception(input: SinceInceptionInput): SlideResult {
   // Stacked mode replaces the single "Rent paid / year" swatch with one swatch per entity
   // (color-coded via AVATAR_PALETTE) so the stacked segments are identifiable - without this,
   // N colors on the bar with no key would just look like an unexplained rendering change.
+  // The per-entity key lives in its OWN wrapping row BELOW the canvas, not in the header row
+  // beside the eyebrow (Kevin's catch on the 8-entity Asset Living deck: eight full-length
+  // subsidiary names wrapped inside the header's right-aligned flex cell and spilled over the
+  // top of the plot). The header row keeps only the two fixed-width items (Bills paid, Projected)
+  // plus the Full/YTD toggle; the entity swatches get a full-width flex-wrap block of their own
+  // that the column-flex container sizes around, so it can never overlap the canvas.
   const rentLegendHtml = isStacked
-    ? entities.map((e, i) => `<span><span style="display:inline-block;width:10px;height:10px;background:${hexToRgba(entityColors[i], 0.6)};border-radius:2px;margin-right:4px;vertical-align:middle;"></span>${_e(e.pmcName)}</span>`).join("")
+    ? ""
     : `<span><span style="display:inline-block;width:10px;height:10px;background:rgba(106,61,184,0.6);border-radius:2px;margin-right:4px;vertical-align:middle;"></span>Rent paid / year</span>`;
+  const stackedLegendHtml = isStacked
+    ? `\n      <div style="display:flex;flex-wrap:wrap;gap:4px 14px;font-size:10px;color:#524e5b;margin-top:8px;flex-shrink:0;">${entities.map((e, i) => `<span style="white-space:nowrap;"><span style="display:inline-block;width:10px;height:10px;background:${hexToRgba(entityColors[i], 0.6)};border-radius:2px;margin-right:4px;vertical-align:middle;"></span>${_e(e.pmcName)}</span>`).join("")}</div>`
+    : "";
 
   const html = `
   <div class="slide" id="slide-${slideId}" style="background:#fff;">
@@ -3240,7 +3249,7 @@ export function renderSinceInception(input: SinceInceptionInput): SlideResult {
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;flex-shrink:0;">
         <div style="font-size:9px;font-weight:600;color:#524e5b;text-transform:uppercase;letter-spacing:0.1em;"><span id="si-eyebrow-full-${slideId}">RENT PAID &amp; BILLS PAID BY YEAR</span><span id="si-eyebrow-ytd-${slideId}" style="display:none;">RENT PAID &amp; BILLS PAID, YTD THROUGH ${_e(monthLbl).toUpperCase()}</span> - ${_e(pmcName)}</div>
         <div style="display:flex;align-items:center;flex-shrink:0;margin-left:16px;">
-          <div style="display:flex;gap:14px;font-size:10px;color:#524e5b;${isStacked ? "flex-wrap:wrap;" : ""}">
+          <div style="display:flex;gap:14px;font-size:10px;color:#524e5b;">
             ${rentLegendHtml}
             <span><span style="display:inline-block;width:8px;height:8px;background:#1a9e6a;border-radius:50%;margin-right:4px;vertical-align:middle;"></span>Bills paid / year</span>
             ${projLegend}
@@ -3250,7 +3259,7 @@ export function renderSinceInception(input: SinceInceptionInput): SlideResult {
       </div>
       <div style="flex:1;min-height:0;position:relative;overflow:hidden;">
         <canvas id="sichart${slideId}"></canvas>
-      </div>
+      </div>${stackedLegendHtml}
     </div>
     <div id="si-footnote-${slideId}" style="font-size:10px;color:#a09cb0;margin-top:6px;flex-shrink:0;font-style:italic;${hasProjection ? '' : 'display:none;'}">Projected figures extrapolate from year-to-date performance (trailing 3-month run-rate); actual results will vary.</div>
   </div>`;
@@ -3262,7 +3271,8 @@ export function renderSinceInception(input: SinceInceptionInput): SlideResult {
   // only the LAST entity's dataset carries a datalabel, formatted off the pre-existing combined
   // rentSolidJs array so the printed total above each bar is the real stack height, not just
   // that one entity's segment (no separate "total" dataset needed - Chart.js already sums the
-  // stack visually).
+  // stack visually). Every other entity's dataset has datalabels explicitly OFF - the per-entity
+  // breakdown is hover-only (see tooltipCallbacksJs below), never printed on the segments.
   const datasetsJs = isStacked
     ? entities.map((e, i) => {
         const isLast = i === entities.length - 1;
@@ -3287,13 +3297,23 @@ export function renderSinceInception(input: SinceInceptionInput): SlideResult {
           datalabels: { anchor: 'end', align: 'end', offset: 10, formatter: v => v == null ? '' : fmtRent(v), color: '#2C194D', font: { size: 12, weight: '700' } }
         }`;
 
-  // Tooltip: stacked mode shows one row per hovered entity segment ("PMC name: $rent") and
-  // drops the "% vs prior year" afterLabel (that clause reads dataset[0]'s own data as if it
-  // were the combined total, which in stacked mode it isn't - a per-entity trend % isn't
-  // something this task asked for, so it's dropped rather than shown wrong). Non-stacked branch
-  // is the exact original callbacks object, untouched.
+  // Tooltip: stacked mode is the ONLY place the per-entity breakdown is readable (Kevin's ask -
+  // no per-segment datalabels, they collided into an unreadable smear at 8 entities; the bar
+  // carries exactly one printed label, the stack total, see datasetsJs above). So the hover has
+  // to do the whole job: `interaction: { mode: 'index', intersect: false }` (stackedInteractionJs
+  // below) lists EVERY entity's segment for the hovered year in one tooltip instead of only the
+  // segment under the cursor, largest first, with the stack total in the footer. Entities at $0
+  // that year (not yet on Flex) are filtered out rather than listed as "$0" noise. It also drops
+  // the "% vs prior year" afterLabel (that clause reads dataset[0]'s own data as if it were the
+  // combined total, which in stacked mode it isn't). Non-stacked branch is the exact original
+  // filter + callbacks object, untouched.
+  const tooltipFilterJs = isStacked
+    ? `item => item.parsed.y != null && item.parsed.y !== 0`
+    : `item => item.parsed.y != null`;
+  const stackedInteractionJs = isStacked ? `\n        interaction: { mode: 'index', intersect: false },` : "";
   const tooltipCallbacksJs = isStacked
-    ? `label: ctx => ctx.dataset.label + ': ' + fmtRent(ctx.parsed.y)`
+    ? `label: ctx => ctx.dataset.label + ': ' + fmtRent(ctx.parsed.y),
+              footer: items => items.length > 1 ? 'Total: ' + fmtRent(items.reduce((s, it) => s + (it.parsed.y || 0), 0)) : ''`
     : `label: ctx => ctx.dataset.label + ': ' + fmtRent(ctx.parsed.y),
               afterLabel: ctx => {
                 const i = ctx.dataIndex;
@@ -3491,12 +3511,12 @@ window['initSlide${slideId}'] = (function() {
         datasets: [${datasetsJs}]
       },
       options: {
-        responsive: true, maintainAspectRatio: false,
+        responsive: true, maintainAspectRatio: false,${stackedInteractionJs}
         layout: { padding: { top: 34, right: 8, bottom: 4 } },
         plugins: {
           legend: { display: false },
           tooltip: {
-            filter: item => item.parsed.y != null,
+            filter: ${tooltipFilterJs},${isStacked ? `\n            itemSort: (a, b) => b.parsed.y - a.parsed.y,` : ""}
             callbacks: {
               ${tooltipCallbacksJs}
             }
