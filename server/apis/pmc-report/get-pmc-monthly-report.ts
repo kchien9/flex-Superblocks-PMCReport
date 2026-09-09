@@ -17,8 +17,10 @@ import {
   renderImportedSlide,
   renderPortfolioComparison,
   sparklineSvg,
+  previousCalendarQuarter,
+  buildQuarterAddsSeries,
 } from "./slide-renderers.js";
-import type { BenchmarkMetric, ResidentTrend, Testimonial, TrendFlag, YearlyData, NewRolloutCandidate, DisabledPropertyRow, PortfolioComparisonEntity } from "./slide-renderers.js";
+import type { BenchmarkMetric, ResidentTrend, Testimonial, TrendFlag, YearlyData, NewRolloutCandidate, DisabledPropertyRow, PortfolioComparisonEntity, QuarterAddsSeries } from "./slide-renderers.js";
 import { buildSpeakerNotesHtml, buildExpansionSpeakerNotesHtml, EXPANSION_SLIDE_TITLES } from "./speaker-notes.js";
 import type { SpeakerNotesKpis, SpeakerNotesBenchmark, SpeakerNotesMonthlyRow } from "./speaker-notes.js";
 import {
@@ -3475,6 +3477,24 @@ export default api({
       ? completedMonths[completedMonths.length - 1].month
       : monthlyTotals[monthlyTotals.length - 1]?.month || "";
 
+    // ── Quarter-adds cohort for the "Q<N> <YYYY> adds" toggle on Adoption Trend + Residents/
+    // Units & Rent (Kevin's ask 2026-09-09; spec: flex-pmc-reports docs/superpowers/specs/
+    // 2026-09-09-quarter-adds-toggle-design.md). Window = last completed CALENDAR quarter as of
+    // latestCompletedMonth; cohort = inNetwork properties with ROLLOUT_MONTH inside it, their own
+    // rows from rollout onward. Same per-month sums the two charts already aggregate (residents =
+    // BILLS_PAID, PROPERTY_UNIT_COUNT, RENT_PAID; adoption = residents/units recomputed in the
+    // renderer), over the same inNetwork rows, one combined series + one per entity via
+    // groupRowsByPmc (entities with no adds simply don't appear). No new queries. Computed once
+    // here, before the QBR/Expansion split, and passed to both renderers at both decks' call
+    // sites. Null cohort -> no toggle -> both renderers' output byte-identical to before.
+    const quarter = latestCompletedMonth ? previousCalendarQuarter(latestCompletedMonth) : null;
+    const quarterCombined = quarter ? buildQuarterAddsSeries(inNetwork, quarter) : null;
+    const quarterEntities = quarter && quarterCombined
+      ? Array.from(groupRowsByPmc(inNetwork).entries())
+        .map(([name, rows]) => ({ pmcName: name, series: buildQuarterAddsSeries(rows, quarter) }))
+        .filter((e): e is { pmcName: string; series: QuarterAddsSeries } => e.series != null)
+      : [];
+
     // Resident-level rents for the "Flex For Everyone" rent-bucket slide's Last Month/All Time
     // toggle (Kevin's ask - Expansion's own "high_rent" case never got this; QBR's has had it
     // all along, as its own separate query further down used to fire unconditionally). Hoisted
@@ -5280,7 +5300,7 @@ export default api({
           }
 
           case "residents_units": {
-            const r = renderResidentsUnitsCombo({ slideId: slideNum, monthlyTotals, entityMonthlyData: residentsUnitsEntityMonthlyData });
+            const r = renderResidentsUnitsCombo({ slideId: slideNum, monthlyTotals, entityMonthlyData: residentsUnitsEntityMonthlyData, quarter, quarterCombined, quarterEntities });
             pushSlide(sid, r);
             break;
           }
@@ -5303,6 +5323,7 @@ export default api({
                 locked_peers_criteria: lockedPeersCriteria,
               } : null,
               entityMonthlyData,
+              quarter, quarterCombined, quarterEntities,
             });
             pushSlide(sid, r);
             break;
@@ -5646,6 +5667,7 @@ export default api({
       slideId: 4,
       monthlyTotals,
       entityMonthlyData: residentsUnitsEntityMonthlyData,
+      quarter, quarterCombined, quarterEntities,
     });
 
     // Adoption Trend = slide 5
@@ -5673,7 +5695,7 @@ export default api({
       // cohort, so their descriptions must agree instead of one being a generic hardcoded string.
       locked_peers_criteria: lockedPeersCriteria,
     };
-    const adoptionTrendResult = renderAdoptionTrend({ slideId: 5, monthly: monthlyTotals, kpis: adoptionTrendKpis, entityMonthlyData });
+    const adoptionTrendResult = renderAdoptionTrend({ slideId: 5, monthly: monthlyTotals, kpis: adoptionTrendKpis, entityMonthlyData, quarter, quarterCombined, quarterEntities });
     const adoptionTrendHtml = adoptionTrendResult.html;
 
     const narPerc = segmentPercentiles.find((s) => s.metric === "NAR");
