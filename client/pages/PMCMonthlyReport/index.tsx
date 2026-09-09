@@ -7,16 +7,18 @@ import { QBRTab, type QBRFormState } from "./components/QBRTab.js";
 import { NewLogoTab, type NewLogoFormState } from "./components/NewLogoTab.js";
 import { ExpansionTab, type ExpansionFormState } from "./components/ExpansionTab.js";
 import { PlatinumTab, type PlatinumFormState } from "./components/PlatinumTab.js";
+import { CheckinTab, type CheckinFormState } from "./components/CheckinTab.js";
 import { ResultsPanel } from "./components/ResultsPanel.js";
 import { wrapSlidesHtml } from "./utils/wrap-slides-html.js";
 
-type TabId = "qbr" | "new_logo" | "expansion" | "platinum";
+type TabId = "qbr" | "new_logo" | "expansion" | "platinum" | "checkin";
 
 const TABS: { id: TabId; label: string }[] = [
   { id: "qbr", label: "QBR" },
   { id: "new_logo", label: "New Logo" },
   { id: "expansion", label: "Expansion" },
   { id: "platinum", label: "Platinum" },
+  { id: "checkin", label: "Check-in" },
 ];
 
 export default function PMCMonthlyReportPage() {
@@ -195,6 +197,35 @@ export default function PMCMonthlyReportPage() {
     }
   }, [generateReport, track, setDelivery, setCurrentSubjectName]);
 
+  // Check-in ("Adoption since our check-in") - mirrors Flask's generateCheckinBtn POST: one PMC,
+  // report_type checkin, the check-in date (ISO, snapped server-side to its BP month), default
+  // lookback (widened server-side to cover check-in - 2 months), terminology. Delivery forced to
+  // "presenting" so the Speaker Notes download shows - Flask always returns the script.
+  const handleCheckinGenerate = useCallback(async (state: CheckinFormState) => {
+    setDelivery("presenting");
+    setCurrentSubjectName(state.pmc_name);
+    const args = {
+      pmc_name: state.pmc_name,
+      report_name: "",
+      lookback_months: 12,
+      deck_mode: "checkin" as const,
+      checkin_date: state.checkin_date,
+      adoption_target: 15,
+      testimonials: [],
+      total_portfolio_units: 0,
+      presenting_mode: true,
+      comparison_months: 1,
+      terminology: state.terminology as "resident" | "household",
+    };
+    lastArgsRef.current = args;
+    try {
+      await generateReport(args);
+      track("report_generated", { deck_mode: "checkin", pmc_name: args.pmc_name });
+    } catch {
+      // Error is in useApi state
+    }
+  }, [generateReport, track, setDelivery, setCurrentSubjectName]);
+
   const handleRetry = useCallback(async () => {
     if (activeTab === "new_logo" && lastProspectArgsRef.current) {
       try {
@@ -211,7 +242,7 @@ export default function PMCMonthlyReportPage() {
     }
   }, [activeTab, generateReport, generateProspectDeck]);
 
-  const deckLabel = activeTab === "qbr" ? "report" : activeTab === "new_logo" ? "prospect deck" : activeTab === "platinum" ? "platinum deck" : "expansion deck";
+  const deckLabel = activeTab === "qbr" ? "report" : activeTab === "new_logo" ? "prospect deck" : activeTab === "platinum" ? "platinum deck" : activeTab === "checkin" ? "check-in deck" : "expansion deck";
 
   // Log geocode + upload-parsing diagnostics to browser console for debugging
   useEffect(() => {
@@ -264,12 +295,13 @@ export default function PMCMonthlyReportPage() {
   // Pick the right data/error/generating state based on active tab
   const isGenerating = activeTab === "new_logo" ? prospectGenerating : generating;
   const currentReportData = activeTab === "new_logo" ? normalizedProspectData : effectiveReportData;
-  // Platinum's self-gates (Flask's 400/422 "No Platinum deck for {PMC}: ..." responses) ride
-  // back as an `error` field on an otherwise-empty report payload (same shape GetProspectDeck
-  // already uses), so they land in the same error box every other tab shows.
+  // Platinum's and Check-in's self-gates (Flask's 400/422 "No Platinum deck for {PMC}: ..." /
+  // "Check-in must be at least one BP month before ..." responses) ride back as an `error` field
+  // on an otherwise-empty report payload (same shape GetProspectDeck already uses), so they land
+  // in the same error box every other tab shows.
   const currentError = activeTab === "new_logo"
     ? (effectiveProspectData?.error || prospectError)
-    : activeTab === "platinum"
+    : activeTab === "platinum" || activeTab === "checkin"
       ? (effectiveReportData?.error || reportError)
       : reportError;
 
@@ -311,6 +343,9 @@ export default function PMCMonthlyReportPage() {
           )}
           {activeTab === "platinum" && (
             <PlatinumTab generating={generating} onGenerate={handlePlatinumGenerate} />
+          )}
+          {activeTab === "checkin" && (
+            <CheckinTab pmcNames={pmcNames} pmcLoading={pmcLoading} generating={generating} onGenerate={handleCheckinGenerate} />
           )}
         </div>
       </div>

@@ -24,9 +24,11 @@ import {
   renderPlatinumCover,
   renderPlatinumClose,
   platinumHeadline,
+  // "Jun 2026" (Flask _month_label) - this file's own monthLabel prints the long month name.
+  monthLabel as shortMonthLabel,
 } from "./slide-renderers.js";
 import type { BenchmarkMetric, ResidentTrend, Testimonial, TrendFlag, YearlyData, NewRolloutCandidate, DisabledPropertyRow, PortfolioComparisonEntity, QuarterAddsSeries } from "./slide-renderers.js";
-import { buildSpeakerNotesHtml, buildExpansionSpeakerNotesHtml, EXPANSION_SLIDE_TITLES, buildPlatinumSpeakerNotesHtml } from "./speaker-notes.js";
+import { buildSpeakerNotesHtml, buildExpansionSpeakerNotesHtml, EXPANSION_SLIDE_TITLES, buildPlatinumSpeakerNotesHtml, buildCheckinSpeakerNotesHtml } from "./speaker-notes.js";
 import type { SpeakerNotesKpis, SpeakerNotesBenchmark, SpeakerNotesMonthlyRow } from "./speaker-notes.js";
 import {
   renderExpansionMetrosight,
@@ -45,6 +47,7 @@ import {
 } from "./peer-matching.js";
 import { peerCriteriaLabel, splitTierRows, platinumCounterfactual, PLATINUM_MIN_PROPERTIES } from "./platinum.js";
 import type { PeerRateByMonth } from "./platinum.js";
+import { parseCheckinMonth, checkinLookback, checkinProjectionEnd, checkinSummary, renderCheckinCover, renderAdoptionCheckin } from "./checkin.js";
 
 const SNOWFLAKE_SSO = "d38ee94a-4e93-46f5-ab44-c65a99b3aea5";
 
@@ -2073,7 +2076,13 @@ export default api({
     lookback_months: z.number().int().default(12),
     // "platinum" = "The Case for Marketing" (Flask report_type "platinum", 0de2310) - one PMC per
     // deck, fixed 4-slide order, its own early-return branch below.
-    deck_mode: z.enum(["qbr", "new_logo", "expansion", "platinum"]).default("qbr"),
+    // "checkin" = the one-slide Adoption Check-in (Flask report_type "checkin", 013c659) - one PMC,
+    // cover + wedge slide, requires checkin_date below.
+    deck_mode: z.enum(["qbr", "new_logo", "expansion", "platinum", "checkin"]).default("qbr"),
+    // Check-in deck only: the working session / prior review being measured from, ISO YYYY-MM-DD,
+    // snapped server-side to its BP month. Plain optional - same call-site-required gotcha as the
+    // other optional fields in this schema.
+    checkin_date: z.string().optional(),
     adoption_target: z.number().default(15), // percent, e.g. 15 = 15%
     testimonials: z.array(z.object({
       name: z.string(),
@@ -2187,7 +2196,7 @@ export default api({
     }).optional(),
   }),
 
-  async run(ctx, { pmc_name, additional_pmc_names, report_name, lookback_months, deck_mode, adoption_target, testimonials, total_portfolio_units, expansion_slides, presenting_mode, comparison_months, sparklines, period_comparison, terminology, hidden_kpi_tiles, show_adoption_portfolio_avg, show_adoption_peer_median, show_engagement_observed, show_engagement_portfolio_avg, show_engagement_peer_median, imported_slides, hide_d2c }) {
+  async run(ctx, { pmc_name, additional_pmc_names, report_name, lookback_months, deck_mode, adoption_target, testimonials, total_portfolio_units, expansion_slides, presenting_mode, comparison_months, sparklines, period_comparison, terminology, hidden_kpi_tiles, show_adoption_portfolio_avg, show_adoption_peer_median, show_engagement_observed, show_engagement_portfolio_avg, show_engagement_peer_median, imported_slides, hide_d2c, checkin_date }) {
     // Single resolved list every downstream query/array-builder reads from - pmc_name first
     // (the "primary" entity), then whatever else is being combined in. Replaces the old
     // old `hasSecondPmc ? [pmc_name, secondPmcName] : [pmc_name]` ternary pattern repeated at 4 call sites below.
@@ -2204,6 +2213,27 @@ export default api({
       if ((additional_pmc_names ?? []).some((n) => n.trim())) {
         return { html: "", empty: false, error: "The Platinum deck is one PMC per deck - remove the additional PMCs / property list and try again." };
       }
+    }
+
+    // Adoption Check-in - same one-PMC contract; the check-in date is required and snapped to its
+    // BP month here so the lookback can be widened before the rows query (spec: history must cover
+    // check-in - 2 months; min 6 / max 24). Flask's exact wording, before any query fires.
+    let checkinMonth: string | null = null;
+    if (deck_mode === "checkin") {
+      if (!pmc_name.trim()) {
+        return { html: "", empty: false, error: "The Check-in deck needs a PMC name." };
+      }
+      if ((additional_pmc_names ?? []).some((n) => n.trim())) {
+        return { html: "", empty: false, error: "The Check-in deck is one PMC per deck - remove the additional PMCs / property list and try again." };
+      }
+      const parsed = parseCheckinMonth(checkin_date);
+      if (parsed.error || !parsed.month) {
+        return { html: "", empty: false, error: parsed.error ?? "checkin_date must be an ISO date (YYYY-MM-DD)." };
+      }
+      checkinMonth = parsed.month;
+      // Widened in place so every downstream window (rows query, rolling peer median, DQ, ...)
+      // reads the same one value, exactly as Flask reassigns `lookback`.
+      lookback_months = checkinLookback(checkinMonth, lookback_months);
     }
 
     // Compute bp_safe_cutoff
@@ -5170,6 +5200,104 @@ export default api({
             : `${(pctHigh * 100).toFixed(0)}% used Flex 75%+ of available months.`;
         }
       }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // CHECK-IN DECK MODE - "Adoption since our check-in" (early return)
+    // Clark mirror of Flask app.py _generate_checkin (013c659; spec: flex-pmc-reports
+    // docs/superpowers/specs/2026-09-09-adoption-checkin-design.md). Cover + one wedge slide from
+    // this one PMC's monthly series - none of the QBR pipeline below applies. Peer p50/p75 are the
+    // canonical values resolved above (canonicalPeerNarP50 / P75 - rolling -> tenure bucket ->
+    // snapshot, the same value every other deck's benchmark prints), so the peer tile and the
+    // projection cap agree with the rest of the tool. Gates -> Flask's exact messages as `error`:
+    // check-in month not before the reporting month; check-in month absent from the series.
+    // ─────────────────────────────────────────────────────────────────────────
+    if (deck_mode === "checkin" && checkinMonth) {
+      // Flask's transform_monthly_totals is already trimmed to completed BP months (its last row IS
+      // the reporting month); Clark's monthlyTotals can carry a not-yet-completed trailing month,
+      // so trim to the reporting month here for the same contract.
+      const ckMonthly = monthlyTotals.filter((m) => m.month <= latestCompletedMonth);
+      const ckIdx = checkinMonth.slice(0, 7);
+      const rptIdxKey = latestCompletedMonth.slice(0, 7);
+      if (ckIdx >= rptIdxKey) {
+        return { html: "", empty: false, error: `Check-in must be at least one BP month before the reporting month (${shortMonthLabel(latestCompletedMonth)} BP).` };
+      }
+      if (!ckMonthly.some((m) => m.month.slice(0, 7) === ckIdx)) {
+        return { html: "", empty: false, error: `No Flex data for ${pmcDisplayName} in the ${shortMonthLabel(checkinMonth)} BP month - pick a check-in date inside their history.` };
+      }
+
+      const ckBenchmark = { p50Nar: canonicalPeerNarP50, p75Nar: canonicalPeerNarP75, criteria: lockedPeers.length > 0 ? lockedPeersCriteria : "" };
+      const projectionEnd = checkinProjectionEnd(latestCompletedMonth);
+      const summary = checkinSummary(ckMonthly, checkinMonth, projectionEnd, canonicalPeerNarP75);
+      const ckKpis = {
+        pmcName: pmcDisplayName,
+        reportingMonth: latestCompletedMonth,
+        propertyCount: uniqueProperties.size,
+        totalUnits: totalUnitsAll,
+      };
+
+      // Fixed 2-slide order (Flask CHECKIN_SLIDE_ORDER = [64, 63]); same pushSlide mechanism as the
+      // other fixed decks. Both renderers always produce html, so ids are 1..2 in order.
+      const CHECKIN_SLIDE_ORDER = ["cover", "adoption_checkin"];
+      const ckSlideHtmls: string[] = [];
+      const ckSlideJsList: string[] = [];
+      const ckRenderedKeys: string[] = [];
+      const pushCkSlide = (sid: string, result: { html: string; js: string }) => {
+        if (!result.html) return;
+        ckSlideHtmls.push(result.html);
+        ckRenderedKeys.push(sid);
+        if (result.js) ckSlideJsList.push(result.js);
+      };
+      let ckSlideNum = 0;
+      for (const sid of CHECKIN_SLIDE_ORDER) {
+        ckSlideNum++;
+        switch (sid) {
+          case "cover":
+            pushCkSlide(sid, renderCheckinCover(ckSlideNum, ckKpis, summary.headline, checkinMonth));
+            break;
+          case "adoption_checkin":
+            pushCkSlide(sid, renderAdoptionCheckin(ckSlideNum, ckMonthly, checkinMonth, ckBenchmark, projectionEnd));
+            break;
+        }
+      }
+
+      const reportMonth = monthOnly(latestCompletedMonth);
+      const reportYear = yearOnly(latestCompletedMonth);
+      // Flask base_name: "{PMC}_Checkin_{MonYYYY}" (spaces / slashes -> "_", 30-char cap).
+      const monYyyy = new Date(latestCompletedMonth + "T00:00:00Z").toLocaleDateString("en-US", { month: "short", year: "numeric", timeZone: "UTC" }).replace(" ", "");
+      const safePmc = pmcDisplayName.replace(/ /g, "_").replace(/\//g, "_").slice(0, 30);
+      const html = applyTerminology(buildDeckHtml({
+        slides: ckSlideHtmls.join("\n"),
+        pmc_name: pmcDisplayName,
+        report_month: reportMonth,
+        report_year: reportYear,
+        slide_count: ckSlideHtmls.length,
+        pdf_filename: `${safePmc}_Checkin_${monYyyy}.pdf`,
+        extra_js: ckSlideJsList.filter(Boolean).join("\n"),
+      }), terminology);
+
+      // Speaker notes always (3-line script per slide).
+      let ckNotesHtml: string | undefined;
+      try {
+        const ckNotesSnapshot = propertySnapshot.map((p) => ({
+          propertyName: p.propertyName, units: p.units, billsPaid: p.billsPaid,
+          newSignups: p.newSignups, adoptionRate: p.adoptionRate, rentPaid: p.rentPaid,
+          cumRent: p.cumRent,
+        }));
+        ckNotesHtml = applyTerminology(
+          buildCheckinSpeakerNotesHtml(ckRenderedKeys, {
+            pmcName: pmcDisplayName,
+            reportingMonth: latestCompletedMonth,
+            monthsSinceLaunch: _msl,
+            summary,
+          }, ckNotesSnapshot),
+          terminology,
+        );
+      } catch (e) {
+        console.warn(`[PMC Report] checkin speaker notes generation failed for ${pmc_name}: ${e instanceof Error ? e.message : String(e)}`);
+      }
+
+      return { html, empty: false, notes_html: ckNotesHtml };
     }
 
     // ─────────────────────────────────────────────────────────────────────────

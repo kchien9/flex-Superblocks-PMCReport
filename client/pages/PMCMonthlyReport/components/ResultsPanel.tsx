@@ -51,7 +51,7 @@ function downloadWorkbook(data: WorkbookData | undefined, filename: string) {
 // was for), making anything downloaded more than once impossible to tell apart (Kevin's ask).
 // Every download now gets stamped with the PMC/prospect name, the report type, and the month
 // it was generated.
-const REPORT_TYPE_LABELS: Record<string, string> = { qbr: "QBR", new_logo: "New_Logo", expansion: "Expansion", platinum: "Platinum" };
+const REPORT_TYPE_LABELS: Record<string, string> = { qbr: "QBR", new_logo: "New_Logo", expansion: "Expansion", platinum: "Platinum", checkin: "Checkin" };
 
 function sanitizeForFilename(s: string): string {
   return s.trim().replace(/[^a-zA-Z0-9]+/g, "_").replace(/^_+|_+$/g, "") || "Report";

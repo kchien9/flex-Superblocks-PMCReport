@@ -906,6 +906,98 @@ export function buildPlatinumSpeakerNotesHtml(
   monthly: SpeakerNotesMonthlyRow[],
   propertySnapshot?: PropertyReferenceRow[],
 ): string {
+  return buildScriptNotesHtml(slideKeysInOrder, PLATINUM_SLIDE_TITLES, (key) => getNotesForPlatinumSlide(key, k, monthly), k, propertySnapshot);
+}
+
+// ── Adoption Check-in - 3-line script per slide ──────────────────────────────
+// Clark mirror of Flask generator/speaker_notes.py _notes_checkin_cover / _notes_checkin (013c659;
+// spec: docs/superpowers/specs/2026-09-09-adoption-checkin-design.md). kpis carry the
+// checkin.ts checkinSummary output.
+
+export const CHECKIN_SLIDE_TITLES: Record<string, string> = {
+  cover: "Adoption Check-in",
+  adoption_checkin: "Adoption Since Our Check-in",
+};
+
+/** The subset of checkin.ts's CheckinSummary the scripts read (structural, so speaker-notes.ts
+ * doesn't import checkin.ts). */
+export interface CheckinNotesSummary {
+  headline: string;
+  checkinMonth: string;
+  deltaPp: number;
+  rising: boolean;
+  monthsElapsed: number;
+  projection: { month: string; capped: boolean; label: string } | null;
+}
+
+export interface CheckinNotesKpis {
+  pmcName: string;
+  reportingMonth: string | null;
+  monthsSinceLaunch: number;
+  summary: CheckinNotesSummary;
+}
+
+function notesCheckinCover(k: CheckinNotesKpis): string[] {
+  const ck = monthStr(k.summary.checkinMonth);
+  return [
+    `Open with the one sentence, verbatim: ${k.summary.headline}`,
+    `Frame it: this is a progress check against the ${ck} BP month we last sat down - same adoption definition as the review deck (residents paying ÷ units in network), same peer yardstick.`,
+    "One slide, then the conversation: what changed since the check-in, and what we do between now and the next one.",
+  ];
+}
+
+function notesCheckin(k: CheckinNotesKpis): string[] {
+  const s = k.summary;
+  const proj = s.projection;
+  if (s.rising) {
+    const pace = proj
+      ? `The dashed line holds that pace to ${monthStr(proj.month)}: ${proj.label}.`
+        + (proj.capped ? " It's capped at what the top quarter of comparable PMCs achieve - say so." : "")
+        + " Always 'at this pace', never 'forecast'."
+      : "No projection on this slide - the horizon month is inside the reporting month.";
+    return [
+      `The shaded wedge is adoption gained since the check-in: base = ${s.monthsElapsed} months elapsed, height = ${ppStr(s.deltaPp / 100)}. Point at it, then read the two labelled points.`,
+      pace,
+      "Close on the tiles: residents paying then vs now, and the peer median - above it, keep the levers that moved it; below it, that gap is the agenda for the next check-in.",
+    ];
+  }
+  return [
+    `Say the headline plainly - adoption is ${s.deltaPp < 0 ? "down " + ppStr(s.deltaPp / 100) : "flat"} since the check-in. No wedge, no projection; the slide does not spin.`,
+    "Walk the tiles: residents paying then vs now, then the emphasized peer tile - the median is the gap to close, and it is what comparable PMCs are doing right now.",
+    "Turn it into a plan: which properties moved, which marketing lever (D2C emails, co-marketing, Hub invite) is off, and what the next check-in date is.",
+  ];
+}
+
+export function getNotesForCheckinSlide(key: string, k: CheckinNotesKpis): string[] {
+  try {
+    switch (key) {
+      case "cover": return notesCheckinCover(k);
+      case "adoption_checkin": return notesCheckin(k);
+      default: return [];
+    }
+  } catch {
+    return [];
+  }
+}
+
+export function buildCheckinSpeakerNotesHtml(
+  slideKeysInOrder: string[],
+  k: CheckinNotesKpis,
+  propertySnapshot?: PropertyReferenceRow[],
+): string {
+  return buildScriptNotesHtml(slideKeysInOrder, CHECKIN_SLIDE_TITLES, (key) => getNotesForCheckinSlide(key, k), k, propertySnapshot);
+}
+
+/** The buildSpeakerNotesHtml page shell ("Flex · Speaker Notes" / "{month} Business Review"), for
+ * the fixed-order decks whose scripts are string-keyed (Platinum, Check-in). Flask's branches for
+ * both call the ordinary build_speaker_notes_html, so the shell is that one. */
+function buildScriptNotesHtml(
+  slideKeysInOrder: string[],
+  titles: Record<string, string>,
+  notesFor: (key: string) => string[],
+  k: { pmcName: string; reportingMonth: string | null; monthsSinceLaunch: number },
+  propertySnapshot?: PropertyReferenceRow[],
+): string {
   const pmc = _e(k.pmcName);
   const reportMonth = monthStr(k.reportingMonth);
   const stage = stageOf(k.monthsSinceLaunch);
@@ -915,8 +1007,8 @@ export function buildPlatinumSpeakerNotesHtml(
   const sections: string[] = [];
   let slideCounter = 0;
   for (const key of slideKeysInOrder) {
-    const title = PLATINUM_SLIDE_TITLES[key] ?? key.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
-    const notes = getNotesForPlatinumSlide(key, k, monthly);
+    const title = titles[key] ?? key.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+    const notes = notesFor(key);
     if (notes.length === 0) continue;
     slideCounter++;
     const bullets = notes.map((n) => `<li style="margin-bottom:10px;line-height:1.55;">${_e(n)}</li>`).join("");
