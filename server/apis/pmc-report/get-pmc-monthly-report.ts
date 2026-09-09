@@ -16,6 +16,8 @@ import {
   computePropertyTrendFlags,
   renderImportedSlide,
   renderPortfolioComparison,
+  displayEntityNames,
+  entitySwitchButton,
   sparklineSvg,
   previousCalendarQuarter,
   buildQuarterAddsSeries,
@@ -661,14 +663,24 @@ function renderExecSummary(d: ExecSummaryInput): { html: string; js: string } {
     // Each entry also carries its fully rendered pills (same builders, see entityPills above) -
     // Combined's are the very strings the static tiles below render, so restoring Combined puts
     // back exactly what was there.
+    // Labels are display-shortened (displayEntityNames - "FPI (An Asset Living Company)" ->
+    // "FPI", full names if that would collide); the payload entries are addressed by index, so
+    // this is display-only and every number still comes from the full-name entity.
+    const entityLabels = displayEntityNames(entities.map((e) => e.pmcName));
     const payload = [
       { label: "Combined", ...fmtEntity(d.currentResidents, d.currentRent, nar, d.propertyCount), pills: { props: pillProps, res: pillResidents, nar: pillNar, rent: heroPill } },
-      ...entities.map((e, i) => ({ label: e.pmcName, ...fmtEntity(e.currentResidents, e.currentRent, e.currentNar, e.propertyCount), pills: entityPills[i] })),
+      ...entities.map((e, i) => ({ label: entityLabels[i], ...fmtEntity(e.currentResidents, e.currentRent, e.currentNar, e.propertyCount), pills: entityPills[i] })),
     ];
     // Index-based onclick (not the entity name) - sidesteps having to escape arbitrary PMC names
-    // (apostrophes, quotes, etc.) into a JS string literal inside an HTML attribute.
+    // (apostrophes, quotes, etc.) into a JS string literal inside an HTML attribute. "Combined"
+    // (payload index 0) stays a plain un-accented pill; entity pills (payload index i = entity
+    // i-1) go through the shared entitySwitchButton (short name + entityColor(i-1) left accent,
+    // the same index that colors this entity on the chart slides) - the Adoption Trend style,
+    // standardized across all three switchers.
     const btns = payload.map((p, i) =>
-      `<button class="spark-ctrl-btn${i === 0 ? " is-active" : ""}" onclick="flexSwitchEntity(${slideId},${i},this)">${_e(p.label)}</button>`
+      i === 0
+        ? `<button class="spark-ctrl-btn is-active" onclick="flexSwitchEntity(${slideId},0,this)">${_e(p.label)}</button>`
+        : entitySwitchButton(i - 1, _e(p.label), `flexSwitchEntity(${slideId},${i},this)`)
     ).join("");
     entitySwitcherHtml = `<div class="spark-ctrl presenter-control" style="flex-wrap:wrap;max-width:460px;">${btns}</div>`;
     // Embed everything as JSON in a script variable, toggle via a shared function defined once -
@@ -1441,8 +1453,13 @@ function renderFullPropertyTable(
   // name alone doesn't say whose it is). Gated on >= 2 DISTINCT pmcName values in the snapshot -
   // not on the field merely being present - so a single-PMC report's table is byte-identical
   // to before this existed. Wraps rather than truncates, same as the Entity cell in Portfolio
-  // Comparison.
-  const showPmc = new Set(snapshot.map((r) => r.pmcName).filter((n): n is string => !!n)).size >= 2;
+  // Comparison. Names are display-shortened via displayEntityNames (same call as every other
+  // entity label in a combined deck; collision-safe, so sorting on the short name groups
+  // exactly as the full name would) - mirrors Flask's _pmc_disp.
+  const uniqPmc = [...new Set(snapshot.map((r) => r.pmcName).filter((n): n is string => !!n))];
+  const showPmc = uniqPmc.length >= 2;
+  const pmcShort = displayEntityNames(uniqPmc);
+  const pmcDisp = new Map(uniqPmc.map((n, i) => [n, pmcShort[i]]));
   let rows = "";
   for (const row of snapshot) {
     const narColor = row.adoptionRate >= 0.20 ? "#1a9e6a" : row.adoptionRate >= 0.10 ? "#d97706" : "#dc5050";
@@ -1462,8 +1479,9 @@ function renderFullPropertyTable(
     const rmRaw = row.rolloutMonth ?? "";
     const rmSort = rmRaw ? rmRaw.replace(/-/g, "").slice(0, 6) : "0";
     const rmDisplay = rmRaw ? new Date(rmRaw + "T00:00:00Z").toLocaleDateString("en-US", { year: "numeric", month: "short", timeZone: "UTC" }) : "-";
+    const pmcName = _e(pmcDisp.get(row.pmcName ?? "") ?? row.pmcName ?? "");
     const pmcCell = showPmc
-      ? `\n          <td data-sort="${_e(row.pmcName ?? "")}" style="padding:6px 8px;font-size:11px;color:#524e5b;white-space:normal;overflow-wrap:anywhere;line-height:1.3;">${_e(row.pmcName ?? "")}</td>`
+      ? `\n          <td data-sort="${pmcName}" style="padding:6px 8px;font-size:11px;color:#524e5b;white-space:normal;overflow-wrap:anywhere;line-height:1.3;">${pmcName}</td>`
       : "";
     rows += `
         <tr>

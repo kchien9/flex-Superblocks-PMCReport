@@ -40,6 +40,40 @@ function entityColor(i: number): string {
   return ENTITY_PALETTE[i % ENTITY_PALETTE.length];
 }
 
+/**
+ * DISPLAY-ONLY shortening of combined-report entity names (switcher buttons, legend chips,
+ * tooltip rows, table name cells) - never applied to data or to anything that keys a lookup
+ * (payload arrays, data-sort, atEntity indices all stay on the full pmcName). Strips ONE
+ * trailing parenthetical, e.g. "FPI (An Asset Living Company)" -> "FPI"; "Asset Living -
+ * Student" is untouched. Falls back to the untouched names for ALL entities if stripping would
+ * make any two read the same (e.g. "Acme" + "Acme (Student)"), so a shortened label can never
+ * be ambiguous about which entity it refers to. Same regex + fallback as Flask's
+ * `_display_entity_names` (generator/slides.py) - Kevin: "remove the (an asset living company)
+ * etc. lets standardize across all 3 places".
+ */
+export function displayEntityNames(names: string[]): string[] {
+  const short = names.map((n) => n.replace(/\s*\([^()]*\)\s*$/, "").trim() || n);
+  if (new Set(short).size < new Set(names).size) return names;
+  return short;
+}
+
+/**
+ * ONE per-entity selector button, shared by every entity switcher (Exec Summary, Residents/
+ * Units & Rent, Adoption Trend) so the three can't drift apart in look (Kevin: "match the
+ * formats of the pmc selectors ... standardize across all 3 places"). Standard = the Adoption
+ * Trend style: a .spark-ctrl-btn pill with a 3px left border in the entity's ENTITY_PALETTE
+ * color for `idx` - the SAME index that colors this entity's line/segment/sparkline on the
+ * chart slides, so button and chart agree (the inline border-left survives .is-active's
+ * border-color, so the accent stays visible on the selected pill). `labelHtml` is the
+ * already-escaped, display-shortened name (see displayEntityNames); `extraAttrs` is spliced
+ * verbatim after class= (leading space included), e.g. Adoption's ` id="atEntBtnN-i"`.
+ * Non-entity buttons ("Combined", "Show all", quarter adds) deliberately do NOT go through
+ * here - they stay un-accented. Mirrors Flask's `_entity_switch_button`.
+ */
+export function entitySwitchButton(idx: number, labelHtml: string, onclick: string, extraAttrs = ""): string {
+  return `<button type="button" class="spark-ctrl-btn"${extraAttrs} style="border-left:3px solid ${entityColor(idx)};" onclick="${onclick}">${labelHtml}</button>`;
+}
+
 function hexToRgba(hex: string, alpha: number): string {
   const h = hex.replace("#", "");
   const r = parseInt(h.slice(0, 2), 16);
@@ -2465,12 +2499,18 @@ window.flexToggleAdoptionQuarter=function(slideId,btn){
   let entityToggleHtml = "";
   let entityToggleJs = "";
   if (showEntityLines) {
-    entityMonthlyEntries.forEach((e, i) => {
+    // Display-shortened names (displayEntityNames) for the dataset label (= the tooltip row),
+    // the legend chip and the toggle button. Data arrays and the atEntity index tag are
+    // untouched, and nothing in the toggle/quarter JS keys on an entity dataset's label (it
+    // finds them by atEntity; only the fixed 'Established Properties' / peer labels are matched
+    // by name), so this is display-only.
+    const entityLabels = displayEntityNames(entityMonthlyEntries.map((e) => e.pmcName));
+    entityMonthlyEntries.forEach((_, i) => {
       const col = entityColor(i);
-      const label = _e(e.pmcName);
+      const label = _e(entityLabels[i]);
       entityLinesJs += `
     datasets.push({
-      label: ${JSON.stringify(e.pmcName)},
+      label: ${JSON.stringify(entityLabels[i])},
       atEntity: ${i},
       hidden: true,
       data: ${JSON.stringify(entityLineVals[i])},
@@ -2506,9 +2546,11 @@ window.flexToggleAdoptionQuarter=function(slideId,btn){
     // but ADDITIVE, not single-select: every button starts un-.is-active and flips its own
     // entity independently; .is-active mirrors each line's on-state. "Show all" flips to "Hide
     // all" once every entity is on. Leading "\n    " baked into the string so the single-PMC
-    // template whitespace is untouched when this stays "".
-    const btns = entityMonthlyEntries.map((e, i) =>
-      `<button class="spark-ctrl-btn" id="atEntBtn${slideId}-${i}" onclick="flexToggleAdoptionEntity(${slideId},${i})">${_e(e.pmcName)}</button>`
+    // template whitespace is untouched when this stays "". Entity pills go through the shared
+    // entitySwitchButton (short name + entity-color left accent) - the standard the Exec
+    // Summary and Residents/Units switchers now follow too.
+    const btns = entityLabels.map((lbl, i) =>
+      entitySwitchButton(i, _e(lbl), `flexToggleAdoptionEntity(${slideId},${i})`, ` id="atEntBtn${slideId}-${i}"`)
     ).join("");
     const showAllBtn = `<button class="spark-ctrl-btn" id="atShowAll${slideId}" onclick="flexToggleAllAdoptionEntities(${slideId})" style="border-style:dashed;">Show all</button>`;
     entityToggleHtml = `\n    <div class="spark-ctrl presenter-control" style="flex-wrap:wrap;margin:-4px 0 8px;">${showAllBtn}${btns}${quarterBtnHtml}</div>`;
@@ -3309,20 +3351,28 @@ window.flexToggleRucQuarter=function(slideId,btn){
   let entitySwitcherJs = "";
   let comboChartExposeJs = "";
   if (showEntitySwitcher) {
+    // Labels are display-shortened (displayEntityNames); the per-entity series are looked up
+    // by position, never by label, so this is display-only.
+    const entityLabels = displayEntityNames(entities.map((e) => e.pmcName));
     const payload = [
       { label: "Combined", residents, units, rent },
-      ...entities.map((e) => {
+      ...entities.map((e, i) => {
         const byMonth = new Map(e.monthly.map((m) => [m.month, m]));
         const eResidents = monthlyTotals.map((m) => byMonth.get(m.month)?.billsPaid ?? 0);
         const eUnits = monthlyTotals.map((m) => byMonth.get(m.month)?.units ?? 0);
         const eRent = monthlyTotals.map((m) => Math.round((byMonth.get(m.month)?.rentPaid ?? 0) * 100) / 100);
-        return { label: e.pmcName, residents: eResidents, units: eUnits, rent: eRent };
+        return { label: entityLabels[i], residents: eResidents, units: eUnits, rent: eRent };
       }),
     ];
     // Index-based onclick (not the entity name) - same reason Task 9 used it: sidesteps
-    // escaping arbitrary PMC names (apostrophes, quotes) into a JS string literal.
+    // escaping arbitrary PMC names (apostrophes, quotes) into a JS string literal. "Combined"
+    // (payload index 0) stays a plain un-accented pill; entity pills (payload index i = entity
+    // i-1) go through the shared entitySwitchButton so they carry the same short name + entity
+    // color accent as the Exec Summary and Adoption Trend switchers.
     const btns = payload.map((p, i) =>
-      `<button class="spark-ctrl-btn${i === 0 ? " is-active" : ""}" onclick="flexSwitchResUnitsView(${slideId},${i},this)">${_e(p.label)}</button>`
+      i === 0
+        ? `<button class="spark-ctrl-btn is-active" onclick="flexSwitchResUnitsView(${slideId},0,this)">${_e(p.label)}</button>`
+        : entitySwitchButton(i - 1, _e(p.label), `flexSwitchResUnitsView(${slideId},${i},this)`)
     ).join("");
     // Leading newline+indent baked into the string itself (not the surrounding template) so
     // the single-PMC/<=1-entity case - where this stays "" - leaves the html template's own
@@ -3575,6 +3625,9 @@ export function renderSinceInception(input: SinceInceptionInput): SlideResult {
   const entities = input.entityYearlyData ?? [];
   const isStacked = entities.length > 1;
   const entityColors = entities.map((_, i) => entityColor(i));
+  // Display-shortened names for the legend swatches and the dataset labels (= tooltip rows);
+  // the per-entity rent arrays are positional, so nothing keys on the label.
+  const entityLabels = displayEntityNames(entities.map((e) => e.pmcName));
 
   const years = yearlyData.map(y => y.year);
   const rentRaw = yearlyData.map(y => y.totalRent);
@@ -3699,7 +3752,7 @@ export function renderSinceInception(input: SinceInceptionInput): SlideResult {
     ? ""
     : `<span><span style="display:inline-block;width:10px;height:10px;background:rgba(106,61,184,0.6);border-radius:2px;margin-right:4px;vertical-align:middle;"></span>Rent paid / year</span>`;
   const stackedLegendHtml = isStacked
-    ? `\n      <div style="display:flex;flex-wrap:wrap;gap:4px 14px;font-size:10px;color:#524e5b;margin-top:8px;flex-shrink:0;">${entities.map((e, i) => `<span style="white-space:nowrap;"><span style="display:inline-block;width:10px;height:10px;background:${hexToRgba(entityColors[i], 0.6)};border-radius:2px;margin-right:4px;vertical-align:middle;"></span>${_e(e.pmcName)}</span>`).join("")}</div>`
+    ? `\n      <div style="display:flex;flex-wrap:wrap;gap:4px 14px;font-size:10px;color:#524e5b;margin-top:8px;flex-shrink:0;">${entities.map((_, i) => `<span style="white-space:nowrap;"><span style="display:inline-block;width:10px;height:10px;background:${hexToRgba(entityColors[i], 0.6)};border-radius:2px;margin-right:4px;vertical-align:middle;"></span>${_e(entityLabels[i])}</span>`).join("")}</div>`
     : "";
 
   const html = `
@@ -3742,13 +3795,13 @@ export function renderSinceInception(input: SinceInceptionInput): SlideResult {
   // datalabels explicitly OFF - the per-entity breakdown is hover-only (see tooltipCallbacksJs
   // below), never printed on the segments.
   const datasetsJs = isStacked
-    ? entities.map((e, i) => {
+    ? entities.map((_, i) => {
         const isLast = i === entities.length - 1;
         const datalabelsJs = isLast
           ? `{ anchor: 'end', align: 'end', offset: 10, formatter: (v, ctx) => { const t = ((window['siState${slideId}'] || {}).stackTotals || [])[ctx.dataIndex]; return t == null ? '' : fmtRent(t); }, color: '#2C194D', font: { size: 12, weight: '700' } }`
           : `{ display: false }`;
         return `{
-          type: 'bar', label: ${JSON.stringify(e.pmcName)},
+          type: 'bar', label: ${JSON.stringify(entityLabels[i])},
           data: ${JSON.stringify(entityRentArrays[i])},
           backgroundColor: '${hexToRgba(entityColors[i], 0.55)}',
           borderColor: '${entityColors[i]}', borderWidth: 1.5, borderRadius: 4,
@@ -4113,16 +4166,24 @@ export function renderPortfolioComparison(input: PortfolioComparisonInput): Slid
   // same color as Since Inception's segments and Adoption Trend's lines), not a second palette.
   const entityColors = entities.map((_, i) => entityColor(i));
   const narColor = (r: number) => (r >= 0.15 ? "#1a9e6a" : r >= 0.08 ? "#d97706" : "#dc5050");
+  // Entity cell shows the display-shortened name (same displayEntityNames call as every
+  // switcher/legend - Kevin: "remove the (an asset living company) from the entity name in this
+  // comparison table"); data-sort keeps the FULL name, and a title tooltip carries it whenever
+  // the shortening actually removed something, so nothing is lost.
+  const entityLabels = displayEntityNames(entities.map((e) => e.pmcName));
 
   const bodyRows = entities
     .map((e, i) => {
       const sparkHtml = sparklineSvg(e.monthlySeries, entityColors[i]);
+      const nameFull = _e(e.pmcName);
+      const nameDisp = _e(entityLabels[i]);
+      const nameTitle = nameDisp !== nameFull ? ` title="${nameFull}"` : "";
       // Entity names WRAP (white-space:normal, no ellipsis/max-width) - Kevin's catch on the
       // 8-entity Asset Living deck: "don't truncate the names ... just wrap the text". Rows grow
       // to fit; the table below is sized to fill the slide's height anyway (see the container).
       return `
         <tr>
-          <td data-sort="${_e(e.pmcName)}" style="padding:8px 10px;font-size:12px;font-weight:600;color:${NAVY};white-space:normal;overflow-wrap:anywhere;line-height:1.3;">${_e(e.pmcName)}</td>
+          <td data-sort="${nameFull}"${nameTitle} style="padding:8px 10px;font-size:12px;font-weight:600;color:${NAVY};white-space:normal;overflow-wrap:anywhere;line-height:1.3;">${nameDisp}</td>
           <td data-sort="${e.unitsOnFlex}" style="padding:8px 10px;font-size:12px;text-align:right;">${e.unitsOnFlex.toLocaleString("en-US")}</td>
           <td data-sort="${e.payingResidents}" style="padding:8px 10px;font-size:12px;text-align:right;">${e.payingResidents.toLocaleString("en-US")}</td>
           <td data-sort="${e.adoptionRate}" style="padding:8px 10px;font-size:12px;text-align:right;font-weight:700;color:${narColor(e.adoptionRate)};">${fmtPct(e.adoptionRate)}</td>
