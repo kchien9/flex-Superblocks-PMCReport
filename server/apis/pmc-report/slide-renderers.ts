@@ -52,7 +52,13 @@ function _e(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 
+// Every currency formatter in this deck (TS helpers here and in get-pmc-monthly-report.ts /
+// expansion-renderers.ts / speaker-notes.ts, plus the fmtRent/fmtK closures embedded in the
+// Chart.js tick/label/tooltip JS below) rolls to a $X.XXB tier at >= 1e9 - Kevin's catch on the
+// 8-entity Asset Living deck, where combined lifetime rent printed as "$2210.5M". K/M behaviour
+// below 1e9 is unchanged everywhere.
 function fmtCurrency(n: number): string {
+  if (n >= 1_000_000_000) return `$${(n / 1_000_000_000).toFixed(2)}B`;
   if (n >= 1_000_000) return `$${(n / 1_000_000).toFixed(1)}M`;
   if (n >= 1_000) return `$${(n / 1_000).toFixed(0)}K`;
   return `$${Math.round(n).toLocaleString()}`;
@@ -171,6 +177,7 @@ export function renderMetrosightEvidence(input: MetrosightInput): SlideResult {
 
   // Local currency formatter matching slides_prospect.py _fmt_dollars (lowercase k, 1 decimal)
   const fmtDollars = (n: number): string => {
+    if (n >= 1_000_000_000) return `$${(n / 1_000_000_000).toFixed(2)}B`;
     if (n >= 1_000_000) return `$${(n / 1_000_000).toFixed(1)}M`;
     if (n >= 1_000) return `$${(n / 1_000).toFixed(1)}k`;
     return `$${Math.round(n).toLocaleString()}`;
@@ -1660,7 +1667,7 @@ window['initSlide${slideId}'] = (function() {
   let done = false;
   return function() {
     if (done) return; done = true;
-    var fmtK = function(v) { return v >= 1e6 ? '$'+(v/1e6).toFixed(1)+'M' : v >= 1000 ? '$'+(v/1000).toFixed(1)+'K' : '$'+v; };
+    var fmtK = function(v) { return v >= 1e9 ? '$'+(v/1e9).toFixed(2)+'B' : v >= 1e6 ? '$'+(v/1e6).toFixed(1)+'M' : v >= 1000 ? '$'+(v/1000).toFixed(1)+'K' : '$'+v; };
     new Chart(document.getElementById('dqchart${slideId}'), {
       type: 'bar',
       data: {
@@ -2719,7 +2726,7 @@ window['initSlide${slideId}'] = (function() {
   let done = false;
   return function() {
     if (done) return; done = true;
-    var fmtRent = function(v) { if (!v) return '$0'; return v < 1e6 ? '$' + Math.round(v / 1e3) + 'K' : '$' + (v / 1e6).toFixed(1) + 'M'; };
+    var fmtRent = function(v) { if (!v) return '$0'; if (v >= 1e9) return '$' + (v / 1e9).toFixed(2) + 'B'; return v < 1e6 ? '$' + Math.round(v / 1e3) + 'K' : '$' + (v / 1e6).toFixed(1) + 'M'; };
     window['hrChart${slideId}'] = new Chart(document.getElementById('hrchart${slideId}'), {
       type: 'bar',
       data: {
@@ -3018,7 +3025,7 @@ window['initSlide${slideId}'] = (function() {
   let done = false;
   return function() {
     if (done) return; done = true;
-    const fmtRent = v => '$' + (v >= 1000000 ? (v/1000000).toFixed(2)+'M' : (v/1000).toFixed(0)+'K');
+    const fmtRent = v => '$' + (v >= 1e9 ? (v/1e9).toFixed(2)+'B' : v >= 1000000 ? (v/1000000).toFixed(2)+'M' : (v/1000).toFixed(0)+'K');
     const lineY = (chart, label, idx) => {
       const dsIdx = chart.data.datasets.findIndex(d => d.label === label);
       const meta = dsIdx >= 0 ? chart.getDatasetMeta(dsIdx) : null;
@@ -3531,6 +3538,7 @@ window['initSlide${slideId}'] = (function() {
     if (done) return; done = true;
     const fmtRent = v => {
       if (!v) return '$0';
+      if (v >= 1e9) return '$' + (v / 1e9).toFixed(2) + 'B';
       return v < 1e6 ? '$' + Math.round(v / 1e3) + 'K' : '$' + (v / 1e6).toFixed(1) + 'M';
     };
     // Mutable state the drawing plugin reads every redraw

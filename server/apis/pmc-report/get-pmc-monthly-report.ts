@@ -273,6 +273,10 @@ function applyTerminology(html: string, terminology: string | undefined): string
 }
 
 function fmtCurrency(v: number): string {
+  // $X.XXB tier (Kevin's catch on the 8-entity combined deck: lifetime rent printed as
+  // "$2210.5M"). Same tier added to every other currency formatter in this deck, TS and the
+  // embedded Chart.js JS alike, so text, ticks, labels and tooltips agree.
+  if (v >= 1_000_000_000) return `$${(v / 1_000_000_000).toFixed(2)}B`;
   if (v >= 1_000_000) {
     let s = (v / 1_000_000).toFixed(2).replace(/0+$/, "");
     if (s.endsWith(".")) s += "0";
