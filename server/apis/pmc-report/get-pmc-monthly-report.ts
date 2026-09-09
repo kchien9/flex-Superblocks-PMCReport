@@ -2304,10 +2304,14 @@ export default api({
     // sum exactly to the combined ones for the same year (verified in this task's synthetic
     // check). Only fires for QBR + more than 1 combined entity - a single-PMC report never pays
     // for it.
+    // TOTAL_BILLS added for the Portfolio Comparison slide's all-time "Total Bills Paid" column
+    // (Kevin's ask) - same additive SUM over the same rows, so per-entity lifetime bills sum
+    // exactly to the combined query's BILLS_PAID, i.e. the Since Inception subtitle's figure.
     const EntityYearlyRentSchema = z.object({
       PMC_NAME: z.string(),
       YEAR: z.number(),
       TOTAL_RENT: z.number().nullable(),
+      TOTAL_BILLS: z.number().nullable(),
       YTD_RENT: z.number().nullable(),
     });
 
@@ -2779,6 +2783,7 @@ export default api({
                 PMC_NAME,
                 YEAR(BP_MONTH) AS YEAR,
                 SUM(RENT_PAID_AMOUNT) AS TOTAL_RENT,
+                SUM(BILLS_PAID_COUNT) AS TOTAL_BILLS,
                 SUM(CASE WHEN MONTH(BP_MONTH) <= ? THEN RENT_PAID_AMOUNT ELSE 0 END) AS YTD_RENT
              FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS
              WHERE PMC_NAME IN (${allPmcNames.map(() => "?").join(", ")})
@@ -4737,38 +4742,14 @@ export default api({
       };
     });
 
-    // Per-entity rows for the new Portfolio Comparison slide (Task 13). Reuses entityBreakdown
-    // above (Task 9's per-entity current-month totals) and entityMonthlyData (Task 11's per-
-    // entity monthly adoption series, built earlier from the same groupRowsByPmc(inNetwork)
-    // grouping) - no new aggregation, no new query. Shared by both QBR and Expansion below
-    // (same "build once, both branches read it" convention Tasks 8-12 already established for
-    // entityBreakdown/entityYearlyData/entityMonthlyData themselves). A single-PMC report
-    // yields a 1-entry array here, which renderPortfolioComparison's own "needs 2+" check keeps
-    // the slide from rendering at all.
-    const portfolioComparisonEntities: PortfolioComparisonEntity[] = entityBreakdown.map((eb) => {
-      const em = entityMonthlyData.find((e) => e.pmcName === eb.pmcName);
-      return {
-        pmcName: eb.pmcName,
-        unitsOnFlex: eb.totalUnits,
-        payingResidents: eb.currentResidents,
-        adoptionRate: eb.currentNar,
-        rentPaid: eb.currentRent,
-        monthlySeries: (em?.monthly ?? []).map((m) => m.adoptionRate),
-      };
-    });
-    // The Combined row's own trend sparkline - the real combined adoption-rate-by-month series
-    // (same monthlyTotals the bold Adoption Trend line draws), not summed/averaged from the
-    // entities' own series above (see PortfolioComparisonInput's doc comment for why that would
-    // be wrong).
-    const portfolioComparisonCombinedSeries = monthlyTotals.map((m) => m.adoptionRate);
-
     // Yearly rent/bills history for the Since Inception slide (Task 10 combined totals, now
     // also feeding Expansion per Kevin's scope addition after Task 15). Hoisted up here - same
-    // "build once, both branches read it" convention as entityBreakdown/portfolioComparison*
-    // just above - rather than living only inside the QBR-only block further down, since
-    // Expansion's own switch case below needs these same two arrays. yearlyRentBillsRows/
-    // entityYearlyRentRows are now gated on needsSinceInception (QBR + Expansion), not
-    // needsQBRQueries alone - see that flag's declaration near the top of this function.
+    // "build once, both branches read it" convention as entityBreakdown just above - rather
+    // than living only inside the QBR-only block further down, since Expansion's own switch
+    // case below needs these same two arrays. yearlyRentBillsRows/entityYearlyRentRows are now
+    // gated on needsSinceInception (QBR + Expansion), not needsQBRQueries alone - see that
+    // flag's declaration near the top of this function. Built BEFORE portfolioComparison*
+    // below, which reads the per-entity lifetime totals off entityYearlyRentRows.
     const yearlyData: YearlyData[] = yearlyRentBillsRows.map(r => ({
       year: r.YEAR,
       totalRent: r.TOTAL_RENT ?? 0,
@@ -4794,6 +4775,51 @@ export default api({
       }
       return { pmcName: name, totalRentByYear, ytdRentByYear };
     });
+
+    // Per-entity ALL-TIME rent/bills for the Portfolio Comparison slide's "Total Rent Paid" /
+    // "Total Bills Paid" columns (Kevin's ask). Summed over every year of the per-entity yearly
+    // query above - the SAME unbounded, unfiltered "true history" rows the Since Inception
+    // stacked bar draws - NOT entityBreakdown.currentRent (one month) or anything windowed to
+    // lookback_months. Since that query shares its WHERE clause with the combined yearly query,
+    // these per-entity totals sum exactly to the combined lifetime figures below, which are the
+    // Since Inception subtitle's own "$X guaranteed and N bills paid since <year>" numbers.
+    const entityLifetimeByPmc = new Map<string, { rent: number; bills: number }>();
+    for (const r of entityYearlyRentRows) {
+      const cur = entityLifetimeByPmc.get(r.PMC_NAME) ?? { rent: 0, bills: 0 };
+      cur.rent += r.TOTAL_RENT ?? 0;
+      cur.bills += r.TOTAL_BILLS ?? 0;
+      entityLifetimeByPmc.set(r.PMC_NAME, cur);
+    }
+    const combinedLifetimeRent = yearlyData.reduce((s, y) => s + y.totalRent, 0);
+    const combinedLifetimeBills = yearlyData.reduce((s, y) => s + y.billsPaid, 0);
+
+    // Per-entity rows for the new Portfolio Comparison slide (Task 13). Reuses entityBreakdown
+    // above (Task 9's per-entity current-month totals), entityMonthlyData (Task 11's per-
+    // entity monthly adoption series, built earlier from the same groupRowsByPmc(inNetwork)
+    // grouping) and entityLifetimeByPmc just above - no new aggregation, no new query. Shared
+    // by both QBR and Expansion below (same "build once, both branches read it" convention
+    // Tasks 8-12 already established for entityBreakdown/entityYearlyData/entityMonthlyData
+    // themselves). A single-PMC report yields a 1-entry array here, which
+    // renderPortfolioComparison's own "needs 2+" check keeps the slide from rendering at all.
+    const portfolioComparisonEntities: PortfolioComparisonEntity[] = entityBreakdown.map((eb) => {
+      const em = entityMonthlyData.find((e) => e.pmcName === eb.pmcName);
+      const lt = entityLifetimeByPmc.get(eb.pmcName);
+      return {
+        pmcName: eb.pmcName,
+        unitsOnFlex: eb.totalUnits,
+        payingResidents: eb.currentResidents,
+        adoptionRate: eb.currentNar,
+        rentPaid: eb.currentRent,
+        lifetimeRent: lt?.rent,
+        lifetimeBills: lt?.bills,
+        monthlySeries: (em?.monthly ?? []).map((m) => m.adoptionRate),
+      };
+    });
+    // The Combined row's own trend sparkline - the real combined adoption-rate-by-month series
+    // (same monthlyTotals the bold Adoption Trend line draws), not summed/averaged from the
+    // entities' own series above (see PortfolioComparisonInput's doc comment for why that would
+    // be wrong).
+    const portfolioComparisonCombinedSeries = monthlyTotals.map((m) => m.adoptionRate);
 
     const execResult = renderExecSummary({
       pmcName: pmcDisplayName,
@@ -5045,6 +5071,13 @@ export default api({
         "since_inception",
         "residents_units",     // growth trend — residents paying across unit base
         "adoption_trend",      // growth trend — adoption by month
+        // New (Task 13) — Kevin's placement: right after Residents Paying + Adoption Trend and
+        // before the geographic breakdown (was just before expansion_case_close), so the
+        // per-entity table reads as the breakdown of the two combined trend charts it follows.
+        // Renders via the same pushSlide-driven "attempted but came back empty" mechanism as
+        // by_state/cohort_overview — not pre-filtered out of this array — since
+        // renderPortfolioComparison itself returns empty html for <=1 entity.
+        "portfolio_comparison",
         "cohort_overview",     // growth trend — performance by rollout-month cohort
         "by_state",            // geographic breakdown
         "retention",           // resident behavior / loyalty bucket
@@ -5056,12 +5089,6 @@ export default api({
         "expansion_metrosight",
         "expansion_gap",
         "testimonials",
-        // New (Task 13) — right before the mandatory close, near the other entity-breakdown
-        // slides but after the growth-trend/benchmark/gap slides have made their case. Renders
-        // via the same pushSlide-driven "attempted but came back empty" mechanism as by_state/
-        // cohort_overview above — not pre-filtered out of this array — since
-        // renderPortfolioComparison itself returns empty html for <=1 entity.
-        "portfolio_comparison",
         "expansion_case_close",
       ];
 
@@ -5369,6 +5396,9 @@ export default api({
               // Same month entityBreakdown's latestRows are filtered to (and the Exec Summary
               // tiles report) - names the window the numeric columns are a snapshot of.
               asOfMonth: latestCompletedMonth,
+              // Combined all-time totals = the Since Inception subtitle's own figures.
+              lifetimeRent: combinedLifetimeRent,
+              lifetimeBills: combinedLifetimeBills,
             });
             pushSlide(sid, r);
             break;
@@ -5993,6 +6023,9 @@ export default api({
       // Same month entityBreakdown's latestRows are filtered to (and the Exec Summary tiles
       // report) - names the window the numeric columns are a snapshot of.
       asOfMonth: latestCompletedMonth,
+      // Combined all-time totals = the Since Inception subtitle's own figures.
+      lifetimeRent: combinedLifetimeRent,
+      lifetimeBills: combinedLifetimeBills,
     });
 
     // Flask SLIDE_ORDER: [3, 54, 6, 21, 14, 49, 12, 39, 15, 26, 50, 44, 23, 58, 34, 45, 53, 57, 59]
@@ -6006,9 +6039,12 @@ export default api({
       renderCover(kpis),                        // Flask slide 1  - Cover
       execResult.html,                          // Flask slide 13 - Executive Summary
       sinceInceptionResult.html,                // Flask slide 56 - Bills & Rent Since Inception
-      portfolioComparisonResult.html,           // New (Task 13) - Portfolio Comparison (2+ entities only)
       residentsUnitsResult.html,                // Flask slide 54 - Residents + Units + Rent
       adoptionTrendHtml,                        // Flask slide 6  - Adoption Trend
+      // New (Task 13) - Portfolio Comparison (2+ entities only). Kevin's placement: after
+      // Residents Paying + Adoption Trend, before Geographic Breakdown - the table reads as the
+      // per-entity breakdown of the two combined trend charts it follows.
+      portfolioComparisonResult.html,
       projResult.html,                          // Flask slide 21 - Portfolio Projection
       cohortHtml,                               // Flask slide 14 - Cohort Analysis
       stateResult.html,                         // Flask slide 12 - Geographic Breakdown

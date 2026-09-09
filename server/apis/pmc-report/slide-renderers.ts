@@ -3677,8 +3677,9 @@ window['siYtd${slideId}'] = {
 // mechanism (a single-select switcher or a stacked bar, both meant to declutter an N-entity
 // view down to something readable), this slide's whole reason to exist IS the side-by-side
 // comparison, so it's a plain sortable table instead. Column order is a hard requirement -
-// Kevin's explicit fix, already corrected once during this project: Entity, Units on Flex,
-// Paying Residents, Adoption Rate, Rent Paid, Trend. Only renders (non-empty html) when
+// Kevin's explicit fix, revised twice during this project: Entity, Units on Flex, Paying
+// Residents, Adoption Rate (<month>), Rent Paid (<month>), Total Rent Paid, Total Bills Paid,
+// Trend. Only renders (non-empty html) when
 // there's more than 1 combined entity - a single-PMC report has nothing to compare, so this
 // slide should not appear at all, same "byte-identical when <=1 entity" contract every other
 // entity-breakdown consumer in this plan already follows.
@@ -3687,7 +3688,17 @@ export interface PortfolioComparisonEntity {
   unitsOnFlex: number;
   payingResidents: number;
   adoptionRate: number;
+  /** Rent paid IN the as-of month only (entityBreakdown.currentRent) - a single month, never a
+   * cumulative figure. The header says so explicitly ("Rent Paid (Sep 2026)"). */
   rentPaid: number;
+  /** ALL-TIME rent / bills since this entity joined Flex (Kevin's ask for "total rent paid" and
+   * "bills paid" columns) - summed by the call site over the per-entity yearly rows Task 10's
+   * Since Inception stacked bar draws (the unbounded, unfiltered "true history" query), NOT
+   * entityBreakdown.currentRent summed over the lookback window (that would be a T12/period
+   * figure, not lifetime). Optional only so a caller without the yearly rows degrades to a "—"
+   * cell, never a wrong number. */
+  lifetimeRent?: number;
+  lifetimeBills?: number;
   /** This entity's own adoption-rate-by-month series (fraction, 0-1) - the exact same per-
    * entity data Adoption Trend's thin per-entity lines draw (Task 11's
    * AdoptionTrendEntityMonthly), condensed into a tiny sparkline instead of a full chart line.
@@ -3716,12 +3727,23 @@ export interface PortfolioComparisonInput {
    * ambiguous) and in an "as of" note under the title (covering the other three). Optional only
    * so a caller without it degrades to the old unlabelled headers, never a wrong label. */
   asOfMonth?: string | null;
+  /** The Combined row's all-time totals - MUST be the same figures the Since Inception subtitle
+   * prints ("$X guaranteed and N bills paid since <year>"), i.e. the combined yearly query's
+   * sums, threaded in by the call site rather than re-summed here from the entity rows (the
+   * two agree by construction since both queries share a WHERE clause, but the subtitle is the
+   * source of truth the AE will be reading a slide earlier). Optional for the same "degrade to a
+   * blank cell" reason as the per-entity fields. */
+  lifetimeRent?: number;
+  lifetimeBills?: number;
 }
 
 export function renderPortfolioComparison(input: PortfolioComparisonInput): SlideResult {
   const { slideId, entities, combinedMonthlySeries, asOfMonth } = input;
   if (entities.length <= 1) return { html: "", js: "" };
   const asOfLabel = asOfMonth ? monthLabel(asOfMonth) : "";
+  const EM_DASH = "—";
+  const fmtLifetimeRent = (v: number | undefined) => (v == null ? EM_DASH : fmtCurrency(v));
+  const fmtLifetimeBills = (v: number | undefined) => (v == null ? EM_DASH : Math.round(v).toLocaleString("en-US"));
 
   // Combined row: sum units/residents/rent; Adoption Rate RECOMPUTED from the summed
   // residents/units, never averaged across the entity rows' own percentages - averaging is
@@ -3740,13 +3762,18 @@ export function renderPortfolioComparison(input: PortfolioComparisonInput): Slid
   const bodyRows = entities
     .map((e, i) => {
       const sparkHtml = sparklineSvg(e.monthlySeries, entityColors[i]);
+      // Entity names WRAP (white-space:normal, no ellipsis/max-width) - Kevin's catch on the
+      // 8-entity Asset Living deck: "don't truncate the names ... just wrap the text". Rows grow
+      // to fit; the table below is sized to fill the slide's height anyway (see the container).
       return `
         <tr>
-          <td data-sort="${_e(e.pmcName)}" style="padding:8px 10px;font-size:12px;font-weight:600;color:${NAVY};white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:180px;">${_e(e.pmcName)}</td>
+          <td data-sort="${_e(e.pmcName)}" style="padding:8px 10px;font-size:12px;font-weight:600;color:${NAVY};white-space:normal;overflow-wrap:anywhere;line-height:1.3;">${_e(e.pmcName)}</td>
           <td data-sort="${e.unitsOnFlex}" style="padding:8px 10px;font-size:12px;text-align:right;">${e.unitsOnFlex.toLocaleString("en-US")}</td>
           <td data-sort="${e.payingResidents}" style="padding:8px 10px;font-size:12px;text-align:right;">${e.payingResidents.toLocaleString("en-US")}</td>
           <td data-sort="${e.adoptionRate}" style="padding:8px 10px;font-size:12px;text-align:right;font-weight:700;color:${narColor(e.adoptionRate)};">${fmtPct(e.adoptionRate)}</td>
-          <td data-sort="${e.rentPaid}" style="padding:8px 10px;font-size:12px;text-align:right;color:${PURPLE};">${fmtCurrency(e.rentPaid)}</td>
+          <td data-sort="${e.rentPaid}" style="padding:8px 10px;font-size:12px;text-align:right;">${fmtCurrency(e.rentPaid)}</td>
+          <td data-sort="${e.lifetimeRent ?? 0}" style="padding:8px 10px;font-size:12px;text-align:right;color:${PURPLE};font-weight:600;">${fmtLifetimeRent(e.lifetimeRent)}</td>
+          <td data-sort="${e.lifetimeBills ?? 0}" style="padding:8px 10px;font-size:12px;text-align:right;">${fmtLifetimeBills(e.lifetimeBills)}</td>
           <td style="padding:6px 10px;text-align:center;">${sparkHtml}</td>
         </tr>`;
     })
@@ -3765,11 +3792,22 @@ export function renderPortfolioComparison(input: PortfolioComparisonInput): Slid
           <td style="padding:9px 10px;font-size:12px;text-align:right;font-weight:800;color:#fff;">${combinedResidents.toLocaleString("en-US")}</td>
           <td style="padding:9px 10px;font-size:12px;text-align:right;font-weight:800;color:#fff;">${fmtPct(combinedAdoptionRate)}</td>
           <td style="padding:9px 10px;font-size:12px;text-align:right;font-weight:800;color:#fff;">${fmtCurrency(combinedRent)}</td>
+          <td style="padding:9px 10px;font-size:12px;text-align:right;font-weight:800;color:#fff;">${fmtLifetimeRent(input.lifetimeRent)}</td>
+          <td style="padding:9px 10px;font-size:12px;text-align:right;font-weight:800;color:#fff;">${fmtLifetimeBills(input.lifetimeBills)}</td>
           <td style="padding:6px 10px;text-align:center;">${combinedSparkHtml}</td>
         </tr>`;
 
-  const cols = ["Entity", "Units on Flex", "Paying Residents", "Adoption Rate", asOfLabel ? `Rent Paid (${asOfLabel})` : "Rent Paid", "Trend"];
-  const colWidths = ["24%", "16%", "18%", "14%", "16%", "12%"];
+  // Column order is a hard requirement (Kevin, revised twice): Entity · Units on Flex · Paying
+  // Residents · Adoption Rate (<month>) · Rent Paid (<month>) · Total Rent Paid · Total Bills
+  // Paid · Trend. The two "(<month>)" headers name the single month the snapshot columns are
+  // for; the two "Total" columns are all-time since each entity joined Flex.
+  const cols = [
+    "Entity", "Units on Flex", "Paying Residents",
+    asOfLabel ? `Adoption Rate (${asOfLabel})` : "Adoption Rate",
+    asOfLabel ? `Rent Paid (${asOfLabel})` : "Rent Paid",
+    "Total Rent Paid", "Total Bills Paid", "Trend",
+  ];
+  const colWidths = ["21%", "10%", "11%", "12%", "12%", "12%", "12%", "10%"];
   const thHtml = cols
     .map((c, i) => {
       // Trend has no single scalar to sort by (it's a sparkline, not a number) - left
@@ -3780,21 +3818,33 @@ export function renderPortfolioComparison(input: PortfolioComparisonInput): Slid
       const arrow = sortable ? `<span id="arrow${slideId}-${i}" style="display:inline-block;width:12px;"></span>` : "";
       return (
         `<th${onclick} id="th${slideId}-${i}" style="padding:8px 10px;text-align:${i === 0 ? "left" : "center"};` +
-        `font-size:10px;color:${GRAY};text-transform:uppercase;letter-spacing:0.06em;` +
+        `font-size:10px;color:${GRAY};text-transform:uppercase;letter-spacing:0.06em;white-space:normal;` +
         `${sortable ? "cursor:pointer;" : ""}user-select:none;width:${colWidths[i]};">${c}${arrow}</th>`
       );
     })
     .join("");
 
+  // Subtitle states both windows in plain words (Kevin: "rent paid sep 26 still doesn't answer
+  // my question - is it all time rent, ytd rent, or what?"): the four snapshot columns are ONE
+  // month; the two Total columns are all-time. Falls back to "the latest completed month" when
+  // the call site didn't pass asOfMonth.
+  const monthWords = asOfLabel ? `for ${_e(asOfLabel)} (latest completed month)` : "for the latest completed month";
+  const subtitle = `Units, Residents, Adoption and Rent Paid are ${monthWords}; Total Rent Paid / Total Bills Paid are all-time since joining Flex. Click a column header to sort.`;
+
+  // The table fills the slide's remaining height (container flex:1 + table height:100% - the
+  // browser distributes the extra height across the rows) instead of a short table over a big
+  // blank bottom (Kevin: "there's a lot of whitespace at bottom we can fill"). With more
+  // entities than fit, the container scrolls exactly as before; the <tfoot> Combined row stays
+  // pinned outside the sortable <tbody> either way.
   const html = `
   <div class="slide" id="slide-${slideId}" style="background:#fff;">
     <div class="slide-header">
       <div class="slide-label">Portfolio</div>
       <div class="slide-title">Portfolio Comparison</div>
-      <div style="font-size:11px;color:#a09cb0;margin-top:4px;">Every subsidiary side by side${asOfLabel ? ` - all figures as of ${_e(asOfLabel)} (latest completed month)` : ""} - click a column header to sort</div>
+      <div style="font-size:11px;color:#a09cb0;margin-top:4px;">${subtitle}</div>
     </div>
-    <div style="overflow-y:auto;flex:1;min-height:0;">
-      <table style="width:100%;border-collapse:collapse;table-layout:fixed;">
+    <div style="overflow-y:auto;flex:1;min-height:0;display:flex;flex-direction:column;">
+      <table style="width:100%;height:100%;border-collapse:collapse;table-layout:fixed;">
         <thead><tr id="thead${slideId}" style="border-bottom:2px solid #eceaf2;position:sticky;top:0;background:#fff;z-index:1;">${thHtml}</tr></thead>
         <tbody id="tbody${slideId}">${bodyRows}</tbody>
         <tfoot style="background:${PURPLE};">${combinedRow}</tfoot>
