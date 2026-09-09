@@ -9,11 +9,36 @@ const PURPLE = "#6A3DB8";
 const NAVY = "#2C194D"; // deck's one standard navy (was #1e1145 — a darker, off-brand shade)
 const GRAY = "#6b7280";
 
-// The one "N entities, N distinct colors" palette in this codebase - originally local to the
-// testimonial-quote avatars below, hoisted to module scope (Task 10, Since Inception stacked
-// bar) so both consumers cycle through the literal same array instead of two copies drifting
-// apart. Reuse this, don't invent a second palette, for any future "one color per entity" need.
+// Testimonial-quote avatar colors ONLY (renderCustomerExperience). This used to double as the
+// per-entity palette for the combined-PMC slides, which is how the 8-entity Asset Living deck
+// ended up with "a few purple colors" (Kevin): 7 entries, two of them violets (#6A3DB8 and
+// #7c3aed), so entity 7 wrapped back onto entity 0's purple and entity 6 sat next to it in a
+// near-identical shade. Entity coloring now lives in ENTITY_PALETTE/entityColor below.
 const AVATAR_PALETTE = ["#6A3DB8", "#1a9e6a", "#d97706", "#2563eb", "#0891b2", "#9d174d", "#7c3aed"];
+
+// The one "N combined entities, N distinct colors" palette. Index 0 is Flex purple so the
+// primary entity stays on-brand; the rest are deliberately spread across the hue wheel with no
+// second violet, so 8 entities get 8 unmistakably different colors (2 spares before any wrap).
+// Every entity-colored element on every combined slide - Since Inception stacked segments +
+// legend swatches, Adoption Trend entity lines + legend chips, Portfolio Comparison sparklines -
+// goes through entityColor(i) with i = the entity's position in the shared allPmcNames order
+// (groupRowsByPmc in get-pmc-monthly-report.ts normalizes entityBreakdown / entityYearlyData /
+// entityMonthlyData to that one order), so the SAME entity is the SAME color on every slide.
+const ENTITY_PALETTE = [
+  "#6A3DB8", // 0 Flex purple (primary entity)
+  "#d97706", // 1 amber
+  "#0891b2", // 2 teal
+  "#1a9e6a", // 3 green
+  "#db2777", // 4 pink
+  "#2563eb", // 5 blue
+  "#ea580c", // 6 orange-red
+  "#64748b", // 7 slate
+  "#92400e", // 8 brown (spare)
+  "#65a30d", // 9 lime (spare)
+];
+function entityColor(i: number): string {
+  return ENTITY_PALETTE[i % ENTITY_PALETTE.length];
+}
 
 function hexToRgba(hex: string, alpha: number): string {
   const h = hex.replace("#", "");
@@ -2192,7 +2217,7 @@ export function renderAdoptionTrend(input: {
   let entityToggleJs = "";
   if (showEntityLines) {
     entityMonthlyEntries.forEach((e, i) => {
-      const col = AVATAR_PALETTE[i % AVATAR_PALETTE.length];
+      const col = entityColor(i);
       const label = _e(e.pmcName);
       entityLinesJs += `
     datasets.push({
@@ -3187,7 +3212,7 @@ export function renderSinceInception(input: SinceInceptionInput): SlideResult {
   // keeps every branch below on the exact same single-dataset code path as before this existed.
   const entities = input.entityYearlyData ?? [];
   const isStacked = entities.length > 1;
-  const entityColors = entities.map((_, i) => AVATAR_PALETTE[i % AVATAR_PALETTE.length]);
+  const entityColors = entities.map((_, i) => entityColor(i));
 
   const years = yearlyData.map(y => y.year);
   const rentRaw = yearlyData.map(y => y.totalRent);
@@ -3685,9 +3710,9 @@ export function renderPortfolioComparison(input: PortfolioComparisonInput): Slid
   const combinedRent = entities.reduce((s, e) => s + e.rentPaid, 0);
   const combinedAdoptionRate = combinedUnits > 0 ? combinedResidents / combinedUnits : 0;
 
-  // One color per entity - reuses the module-level AVATAR_PALETTE (Task 10's "N entities, N
-  // colors" convention), not a second palette.
-  const entityColors = entities.map((_, i) => AVATAR_PALETTE[i % AVATAR_PALETTE.length]);
+  // One color per entity - the shared module-level ENTITY_PALETTE (same index = same entity =
+  // same color as Since Inception's segments and Adoption Trend's lines), not a second palette.
+  const entityColors = entities.map((_, i) => entityColor(i));
   const narColor = (r: number) => (r >= 0.15 ? "#1a9e6a" : r >= 0.08 ? "#d97706" : "#dc5050");
 
   const bodyRows = entities
@@ -4205,8 +4230,8 @@ export function renderCustomerExperience(input: {
   // ── Quote cards (only when testimonials exist) ──
   let quotesHtml = "";
   if (nQuotes > 0) {
-    // AVATAR_PALETTE is now module-level (see top of file) - shared with the Since Inception
-    // stacked bar's per-entity colors (Task 10), not redeclared here.
+    // AVATAR_PALETTE is module-level (see top of file); avatars are its only remaining consumer -
+    // per-entity coloring on the combined slides uses ENTITY_PALETTE/entityColor instead.
     const roleColors: Record<string, string> = {
       Resident: "#1a9e6a",
       "Property Manager": "#6A3DB8",

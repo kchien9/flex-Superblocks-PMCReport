@@ -3292,13 +3292,26 @@ export default api({
     // Used by the Exec Summary switcher, Since Inception's stacked bar, Adoption Trend's
     // per-entity lines, the Residents/Units/Rent switcher, and the Portfolio Comparison table -
     // one grouping utility, five consumers.
+    //
+    // Entity ORDER is normalized to allPmcNames (the primary pmc_name first, then the
+    // additional_pmc_names as entered), not Map insertion order of whatever rows happened to
+    // come first. Those three source row sets are each sorted differently (inNetwork: BP_MONTH,
+    // PROPERTY_NAME; latestRows: PROPERTY_NAME within one month; entityYearlyRentRows:
+    // PMC_NAME, YEAR), so first-seen order gave entityMonthlyData / entityBreakdown /
+    // entityYearlyData three DIFFERENT entity orders - and since every combined slide colors
+    // entity i with entityColor(i), the same subsidiary showed up in a different color on each
+    // slide (Kevin's "a few purple colors" catch). A PMC with no rows in a given set is simply
+    // absent (same as before); a row whose PMC_NAME isn't in allPmcNames can't occur (every
+    // query filters PMC_NAME IN allPmcNames) but is appended at the end rather than dropped.
     function groupRowsByPmc<T extends { PMC_NAME: string }>(rows: T[]): Map<string, T[]> {
       const map = new Map<string, T[]>();
+      for (const name of allPmcNames) map.set(name, []);
       for (const r of rows) {
         const list = map.get(r.PMC_NAME);
         if (list) list.push(r);
         else map.set(r.PMC_NAME, [r]);
       }
+      for (const [name, list] of map) if (list.length === 0) map.delete(name);
       return map;
     }
 
