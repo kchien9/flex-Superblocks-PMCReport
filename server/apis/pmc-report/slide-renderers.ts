@@ -3370,16 +3370,20 @@ export function renderSinceInception(input: SinceInceptionInput): SlideResult {
   // Non-stacked branch is the exact original single-dataset object, untouched, so a single-PMC
   // report's generated JS is byte-identical to before this task. Stacked branch gives each
   // entity its own bar dataset sharing stack id 'rent' (Chart.js's built-in stacked-bar sum) -
-  // only the LAST entity's dataset carries a datalabel, formatted off the pre-existing combined
-  // rentSolidJs array so the printed total above each bar is the real stack height, not just
-  // that one entity's segment (no separate "total" dataset needed - Chart.js already sums the
-  // stack visually). Every other entity's dataset has datalabels explicitly OFF - the per-entity
-  // breakdown is hover-only (see tooltipCallbacksJs below), never printed on the segments.
+  // only the LAST entity's dataset carries a datalabel, formatted off the combined stack totals
+  // so the printed total above each bar is the real stack height, not just that one entity's
+  // segment (no separate "total" dataset needed - Chart.js already sums the stack visually).
+  // The totals are read LIVE from siState.stackTotals (which flexToggleSIView swaps between the
+  // Full-Year and YTD arrays), not baked in from rentSolidJs - baking them in meant the YTD view
+  // kept printing the Full-Year totals over YTD-height bars (and mis-indexed whenever the YTD
+  // view has fewer year columns than the Full-Year one). Every other entity's dataset has
+  // datalabels explicitly OFF - the per-entity breakdown is hover-only (see tooltipCallbacksJs
+  // below), never printed on the segments.
   const datasetsJs = isStacked
     ? entities.map((e, i) => {
         const isLast = i === entities.length - 1;
         const datalabelsJs = isLast
-          ? `{ anchor: 'end', align: 'end', offset: 10, formatter: (v, ctx) => { const t = (${rentSolidJs})[ctx.dataIndex]; return t == null ? '' : fmtRent(t); }, color: '#2C194D', font: { size: 12, weight: '700' } }`
+          ? `{ anchor: 'end', align: 'end', offset: 10, formatter: (v, ctx) => { const t = ((window['siState${slideId}'] || {}).stackTotals || [])[ctx.dataIndex]; return t == null ? '' : fmtRent(t); }, color: '#2C194D', font: { size: 12, weight: '700' } }`
           : `{ display: false }`;
         return `{
           type: 'bar', label: ${JSON.stringify(e.pmcName)},
@@ -3407,15 +3411,25 @@ export function renderSinceInception(input: SinceInceptionInput): SlideResult {
   // segment under the cursor, largest first, with the stack total in the footer. Entities at $0
   // that year (not yet on Flex) are filtered out rather than listed as "$0" noise. It also drops
   // the "% vs prior year" afterLabel (that clause reads dataset[0]'s own data as if it were the
-  // combined total, which in stacked mode it isn't). Non-stacked branch is the exact original
-  // filter + callbacks object, untouched.
+  // combined total, which in stacked mode it isn't). The footer also carries the incomplete
+  // current year's "Projected (combined)" figure when hovering that year in Full-Year view
+  // (Kevin: "where's the projection?" - the dashed overlay is drawn by the plugin, but the
+  // hover listed only actuals). Reads siState.projRent/nReal live, so it disappears in the YTD
+  // view (projRent null there) exactly like the overlay does. Non-stacked branch is the exact
+  // original filter + callbacks object, untouched.
   const tooltipFilterJs = isStacked
     ? `item => item.parsed.y != null && item.parsed.y !== 0`
     : `item => item.parsed.y != null`;
   const stackedInteractionJs = isStacked ? `\n        interaction: { mode: 'index', intersect: false },` : "";
   const tooltipCallbacksJs = isStacked
     ? `label: ctx => ctx.dataset.label + ': ' + fmtRent(ctx.parsed.y),
-              footer: items => items.length > 1 ? 'Total: ' + fmtRent(items.reduce((s, it) => s + (it.parsed.y || 0), 0)) : ''`
+              footer: items => {
+                const lines = [];
+                if (items.length > 1) lines.push('Total: ' + fmtRent(items.reduce((s, it) => s + (it.parsed.y || 0), 0)));
+                const st = window['siState${slideId}'];
+                if (items.length && st && st.projRent != null && items[0].dataIndex === st.nReal - 1) lines.push('Projected (combined): ' + fmtRent(st.projRent));
+                return lines;
+              }`
     : `label: ctx => ctx.dataset.label + ': ' + fmtRent(ctx.parsed.y),
               afterLabel: ctx => {
                 const i = ctx.dataIndex;
