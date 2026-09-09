@@ -238,6 +238,42 @@ function resolvePropertyPeerMetric(
   return null;
 }
 
+// ─── PMC-level "largest PMCs on Flex" rung ─────────────────────────────────────────────────
+// Kevin's call (2026-09-09): when the PMC-level size ladder in get-pmc-monthly-report.ts
+// exhausts every size-matched tier (an 8-entity combined portfolio at ~464k units has no PMC on
+// Flex anywhere inside even the widest ±70% band), the peer set should be "the largest PMCs on
+// Flex" - the network's top size tier - before falling all the way to the unrestricted
+// network-wide median. Defined concretely as the top LARGEST_PMCS_TIER_N candidates by total
+// integrated units (the same per-PMC totalUnits every other rung compares against), and only
+// eligible when the ladder failed from ABOVE: fewer than `minPeers` candidates reach even the
+// last size tier's lower bound (0.30 x subject units), i.e. the subject outsizes the network.
+// A tiny PMC that exhausted the ladder for the opposite reason keeps the existing fallback -
+// "largest PMCs on Flex" would be a nonsense comparison there.
+export const LARGEST_PMCS_TIER_N = 10;
+export const LARGEST_PMCS_TIER_LABEL = "largest PMCs on Flex";
+
+export function largestPmcsPeerTier<T extends { name: string; totalUnits: number }>(
+  candidates: T[],
+  subjectUnits: number,
+  opts: { minPeers?: number; topN?: number; sizeLowMult?: number } = {},
+): { peers: T[]; label: string } | null {
+  const minPeers = opts.minPeers ?? 5;
+  const topN = opts.topN ?? LARGEST_PMCS_TIER_N;
+  const sizeLowMult = opts.sizeLowMult ?? 0.30;
+  if (subjectUnits <= 0) return null;
+  // 3 = the ladder's final size tier's own minPeers: if 3+ candidates sit at/above its lower
+  // bound, that tier didn't fail because the subject outsizes the network (they were above the
+  // upper bound instead, or the subject is the small one) - not this rung's case.
+  const reachingBand = candidates.filter((c) => c.totalUnits >= subjectUnits * sizeLowMult).length;
+  if (reachingBand >= 3) return null;
+  const peers = [...candidates]
+    .filter((c) => c.totalUnits > 0)
+    .sort((a, b) => b.totalUnits - a.totalUnits)
+    .slice(0, topN);
+  if (peers.length < minPeers) return null;
+  return { peers, label: LARGEST_PMCS_TIER_LABEL };
+}
+
 export function resolvePropertyPeerNar(
   state: string, units: number, avgRent: number, monthsLive: number,
   excludePmcNames: string[], pool: NetworkPoolProperty[],

@@ -25,6 +25,7 @@ export const QBR_SLIDES: SlideOption[] = [
   { id: "properties_offline", label: "Properties Offline", defaultOn: true, description: "Properties that left the network this period." },
   { id: "residents_units", label: "Residents, Units & Rent", defaultOn: true, description: "Residents, units, and rent collected over time." },
   { id: "adoption_trend", label: "Adoption Trend", defaultOn: true, description: "Adoption rate over time, vs. similar PMCs." },
+  { id: "portfolio_comparison", label: "Portfolio Comparison", defaultOn: true, description: "Every subsidiary side by side - units, residents, adoption, this month's rent, all-time rent and bills, plus each one's adoption trend sparkline over the lookback window. Only shows up when you're combining multiple PMCs into one report." },
   { id: "d2c_split", label: "D2C Marketing Split", defaultOn: true, description: "How many properties have Flex marketing turned on." },
   { id: "high_rent", label: "Flex For Everyone", defaultOn: true, description: "Proof that even higher-rent residents use Flex." },
   { id: "by_state", label: "By State", defaultOn: true, description: "Adoption broken out by state." },
@@ -57,8 +58,10 @@ export const NEW_LOGO_SLIDES: SlideOption[] = [
 export const EXPANSION_SLIDES: SlideOption[] = [
   { id: "cover", label: "Cover", defaultOn: true, description: "Title slide with total units and units already live." },
   { id: "exec_bottom_line", label: "Executive Bottom Line", defaultOn: true, description: "The big numbers, framed to build the case for expanding." },
+  { id: "since_inception", label: "Bills & Rent Since Inception", defaultOn: true, description: "The whole relationship, year by year." },
   { id: "residents_units", label: "Residents, Units & Rent", defaultOn: true, description: "Residents, units, and rent collected over time." },
   { id: "adoption_trend", label: "Adoption Trend", defaultOn: true, description: "Same chart as QBR — only shows the peer comparison when they're winning it." },
+  { id: "portfolio_comparison", label: "Portfolio Comparison", defaultOn: true, description: "Every subsidiary side by side - units, residents, adoption, this month's rent, all-time rent and bills, plus each one's adoption trend sparkline over the lookback window. Only shows up when you're combining multiple PMCs into one report." },
   { id: "cohort_overview", label: "Cohort Overview", defaultOn: true, description: "How each group of properties has grown since going live." },
   { id: "by_state", label: "By State", defaultOn: true, description: "Adoption broken out by state." },
   { id: "retention", label: "Retention", defaultOn: true, description: "How many residents keep coming back." },

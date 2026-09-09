@@ -53,6 +53,7 @@ export default function PMCMonthlyReportPage() {
   const effectiveProspectData = prospectData ?? cachedProspectData;
 
   const pmcNames = pmcData?.pmcNames ?? [];
+  const pmcPresets = pmcData?.presets ?? [];
 
   // ─── Handlers ───────────────────────────────────────────────────────────────
   const handleQBRGenerate = useCallback(async (state: QBRFormState) => {
@@ -61,7 +62,7 @@ export default function PMCMonthlyReportPage() {
     const lookback = state.review_period === "quarter" ? 3 : state.review_period === "ytd" ? new Date().getMonth() + 1 : 12;
     const args = {
       pmc_name: state.pmc_name || state.ownership_report_name || "Custom Portfolio",
-      second_pmc: state.second_pmc || "",
+      additional_pmc_names: state.additional_pmc_names,
       report_name: state.report_name || "",
       lookback_months: lookback,
       deck_mode: "qbr" as const,
@@ -70,7 +71,6 @@ export default function PMCMonthlyReportPage() {
       total_portfolio_units: 0,
       presenting_mode: state.delivery === "presenting",
       comparison_months: state.comparison_months ?? 1,
-      growth_slides: "auto" as const,
       // Kevin's catch: this existed on QBRFormState and updated on toggle, but was never
       // actually included in the args sent to the API — the control did nothing.
       terminology: state.terminology as "resident" | "household",
@@ -141,7 +141,7 @@ export default function PMCMonthlyReportPage() {
     const lookback = state.review_period === "quarter" ? 3 : state.review_period === "ytd" ? new Date().getMonth() + 1 : 12;
     const args = {
       pmc_name: state.pmc_name,
-      second_pmc: "",
+      additional_pmc_names: state.additional_pmc_names,
       report_name: "",
       lookback_months: lookback,
       deck_mode: "expansion" as const,
@@ -151,7 +151,6 @@ export default function PMCMonthlyReportPage() {
       expansion_slides: [...state.selected_slides],
       presenting_mode: state.delivery === "presenting",
       comparison_months: state.comparison_months ?? 1,
-      growth_slides: state.growth_slides as "auto" | "include" | "exclude",
       sparklines: state.sparklines as "auto" | "include" | "exclude",
       period_comparison: state.period_comparison as "auto" | "include" | "exclude",
       terminology: state.terminology as "resident" | "household",
@@ -265,13 +264,13 @@ export default function PMCMonthlyReportPage() {
         {/* Tab content */}
         <div className="p-5 max-w-6xl">
           {activeTab === "qbr" && (
-            <QBRTab pmcNames={pmcNames} pmcLoading={pmcLoading} generating={generating} onGenerate={handleQBRGenerate} />
+            <QBRTab pmcNames={pmcNames} pmcPresets={pmcPresets} pmcLoading={pmcLoading} generating={generating} onGenerate={handleQBRGenerate} />
           )}
           {activeTab === "new_logo" && (
             <NewLogoTab generating={generating} onGenerate={handleNewLogoGenerate} />
           )}
           {activeTab === "expansion" && (
-            <ExpansionTab pmcNames={pmcNames} pmcLoading={pmcLoading} generating={generating} onGenerate={handleExpansionGenerate} />
+            <ExpansionTab pmcNames={pmcNames} pmcPresets={pmcPresets} pmcLoading={pmcLoading} generating={generating} onGenerate={handleExpansionGenerate} />
           )}
         </div>
       </div>

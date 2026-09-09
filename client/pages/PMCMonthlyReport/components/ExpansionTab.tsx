@@ -6,6 +6,7 @@ import { OwnershipGroupProperties } from "./OwnershipGroupProperties.js";
 import { SlidesPicker, EXPANSION_SLIDES, BENCHMARK_METRICS, defaultSlideSet } from "./SlidesPicker.js";
 import { TestimonialsEditor, type Testimonial } from "./TestimonialsEditor.js";
 import { ImportSlidesPicker, type ImportedSlide } from "./ImportSlidesPicker.js";
+import type { PmcPreset } from "../../../../server/apis/pmc-report/pmc-presets.js";
 
 /** Always-visible section — Slides and Testimonials are used on most builds and shouldn't be
  * buried behind a click. */
@@ -20,13 +21,13 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 
 export interface ExpansionFormState {
   pmc_name: string;
+  additional_pmc_names: string[];
   total_portfolio_units: string;
   property_ids: string[];
   ownership_report_name: string;
   review_period: string;
   comparison_months: number;
   delivery: string;
-  growth_slides: string;
   sparklines: string;
   period_comparison: string;
   terminology: string;
@@ -38,13 +39,16 @@ export interface ExpansionFormState {
 
 interface ExpansionTabProps {
   pmcNames: string[];
+  pmcPresets?: PmcPreset[];
   pmcLoading: boolean;
   generating: boolean;
   onGenerate: (state: ExpansionFormState) => void;
 }
 
-export function ExpansionTab({ pmcNames, pmcLoading, generating, onGenerate }: ExpansionTabProps) {
+export function ExpansionTab({ pmcNames, pmcPresets, pmcLoading, generating, onGenerate }: ExpansionTabProps) {
   const [selectedPMC, setSelectedPMC] = useState("");
+  // Repeatable "combine with N other PMCs" rows — same pattern as QBRTab.
+  const [additionalPmcs, setAdditionalPmcs] = useState<string[]>([]);
   const [totalPortfolioUnits, setTotalPortfolioUnits] = useState("");
   const [showCrossPMC, setShowCrossPMC] = useState(false);
   const [propertyIds, setPropertyIds] = useState<string[]>([]);
@@ -52,7 +56,6 @@ export function ExpansionTab({ pmcNames, pmcLoading, generating, onGenerate }: E
   const [reviewPeriod, setReviewPeriod] = useState("full");
   const [comparisonMonths, setComparisonMonths] = useState(3);
   const [delivery, setDelivery] = useState("presenting");
-  const [growthSlides, setGrowthSlides] = useState("auto");
   const [sparklines, setSparklines] = useState("auto");
   const [periodComparison, setPeriodComparison] = useState("auto");
   const [terminology, setTerminology] = useState("resident");
@@ -67,13 +70,16 @@ export function ExpansionTab({ pmcNames, pmcLoading, generating, onGenerate }: E
     if (!selectedPMC) return;
     onGenerate({
       pmc_name: selectedPMC,
+      // Defensive de-dupe/strip even though the row-level picker (below) already excludes the
+      // primary PMC and already-used rows from selection — a stale/edited state could otherwise
+      // still send the same entity twice, or send it alongside itself as "primary".
+      additional_pmc_names: Array.from(new Set(additionalPmcs.filter((n) => n.trim() && n !== selectedPMC))),
       total_portfolio_units: totalPortfolioUnits,
       property_ids: propertyIds,
       ownership_report_name: ownershipReportName,
       review_period: reviewPeriod,
       comparison_months: comparisonMonths,
       delivery,
-      growth_slides: growthSlides,
       sparklines,
       period_comparison: periodComparison,
       terminology,
@@ -82,7 +88,23 @@ export function ExpansionTab({ pmcNames, pmcLoading, generating, onGenerate }: E
       testimonials,
       imported_slides: importedSlides,
     });
-  }, [selectedPMC, totalPortfolioUnits, propertyIds, ownershipReportName, reviewPeriod, comparisonMonths, delivery, growthSlides, sparklines, periodComparison, terminology, selectedSlides, selectedMetrics, testimonials, importedSlides, onGenerate]);
+  }, [selectedPMC, additionalPmcs, totalPortfolioUnits, propertyIds, ownershipReportName, reviewPeriod, comparisonMonths, delivery, sparklines, periodComparison, terminology, selectedSlides, selectedMetrics, testimonials, importedSlides, onGenerate]);
+
+  // Preset "Load {family}" button — only surfaces when the primary PMC exactly matches a known
+  // combo family (e.g. Asset Living's subsidiaries). No match → matchingPreset is undefined and
+  // nothing renders; every other PMC's flow is unchanged.
+  const matchingPreset = (pmcPresets ?? []).find((p) => p.primaryPmcName === selectedPMC);
+
+  const handleLoadPreset = useCallback((preset: PmcPreset) => {
+    // Same Set-based dedup approach as the payload-build-time Array.from(new Set(...)) below —
+    // purely additive: only appends rows for names not already present as an additional PMC and
+    // not equal to the primary PMC. Never touches or removes anything already typed in.
+    setAdditionalPmcs((prev) => {
+      const existing = new Set(prev);
+      const toAdd = preset.subsidiaryPmcNames.filter((n) => !existing.has(n) && n !== selectedPMC);
+      return [...prev, ...toAdd];
+    });
+  }, [selectedPMC]);
 
   const inputCls = "w-full px-3 py-2 text-sm border border-gray-200 rounded-[4px] focus:outline-none focus:ring-2 focus:ring-[#6A3DB8]/30 focus:border-[#6A3DB8]";
 
@@ -97,6 +119,54 @@ export function ExpansionTab({ pmcNames, pmcLoading, generating, onGenerate }: E
       <div>
         <PMCSearch label="Property Management Company" placeholder="Search existing Flex customers..." value={selectedPMC} onChange={setSelectedPMC} pmcNames={pmcNames} loading={pmcLoading} />
         <p className="text-[10px] text-red-500 mt-0.5 font-medium">* Required</p>
+      </div>
+
+      {/* Additional PMCs — repeatable combine-with rows. Each row's own PMCSearch list has
+          already-used names filtered out (the primary PMC above, plus every other row's current
+          pick) so the same PMC can't be selected twice — no PMCSearch prop changes needed, just a
+          consumer-side filter of the pmcNames it's handed. */}
+      <div className="space-y-2">
+        <span className="text-sm font-medium text-gray-700">Additional PMCs to combine</span>
+        {additionalPmcs.map((name, i) => {
+          const usedElsewhere = new Set<string>();
+          if (selectedPMC) usedElsewhere.add(selectedPMC);
+          additionalPmcs.forEach((n, j) => {
+            if (j !== i && n) usedElsewhere.add(n);
+          });
+          const availablePmcNames = pmcNames.filter((n) => !usedElsewhere.has(n));
+          return (
+            <div key={i} className="relative">
+              <PMCSearch
+                label={`PMC ${i + 2}`}
+                placeholder="Search for a PMC..."
+                value={name}
+                onChange={(v) => setAdditionalPmcs((prev) => prev.map((p, j) => (j === i ? v : p)))}
+                pmcNames={availablePmcNames}
+                loading={pmcLoading}
+                optional
+              />
+              <button
+                type="button"
+                onClick={() => setAdditionalPmcs((prev) => prev.filter((_, j) => j !== i))}
+                className="absolute top-0 right-0 text-[10px] text-gray-400 hover:text-gray-600"
+              >
+                remove
+              </button>
+            </div>
+          );
+        })}
+        <button type="button" onClick={() => setAdditionalPmcs((prev) => [...prev, ""])} className="text-xs text-[#6A3DB8] hover:underline">
+          + Add another PMC
+        </button>
+        {matchingPreset && (
+          <button
+            type="button"
+            onClick={() => handleLoadPreset(matchingPreset)}
+            className="ml-3 text-xs text-[#6A3DB8] hover:underline font-medium"
+          >
+            Load {matchingPreset.label}
+          </button>
+        )}
       </div>
 
       {/* Total Portfolio Units */}
@@ -170,17 +240,10 @@ export function ExpansionTab({ pmcNames, pmcLoading, generating, onGenerate }: E
         </div>
         <div>
           <div className="flex items-center justify-between">
-            <label className="text-sm font-medium text-gray-700">Growth trend slides</label>
-            <ToggleGroup options={[{ value: "auto", label: "Auto" }, { value: "include", label: "Include" }, { value: "exclude", label: "Exclude" }]} value={growthSlides} onChange={setGrowthSlides} />
-          </div>
-          <p className="text-[11px] text-gray-400 mt-1">Auto: on for SMB (no AM running a separate QBR, so this deck doubles as their performance review), off for MM+/Enterprise (their AM already covers performance in a dedicated QBR, so this stays focused on the expansion ask). Include if this account has no AM, or you want to show the historic trend anyway.</p>
-        </div>
-        <div>
-          <div className="flex items-center justify-between">
             <label className="text-sm font-medium text-gray-700">Exec tile sparklines</label>
             <ToggleGroup options={[{ value: "auto", label: "Auto" }, { value: "include", label: "Include" }, { value: "exclude", label: "Exclude" }]} value={sparklines} onChange={setSparklines} />
           </div>
-          <p className="text-[11px] text-gray-400 mt-1">Auto: shows on the exec tile whenever Growth trend slides above are off (a condensed stand-in for the full charts), hidden when they are on (no need for both). Override either way independent of that setting.</p>
+          <p className="text-[11px] text-gray-400 mt-1">Auto: hidden by default - the Residents/Units/Rent, Adoption Trend, and Cohort Overview slides always render on Expansion decks now, so the condensed exec-tile version is redundant. Override either way if you want them anyway.</p>
         </div>
         <div>
           <div className="flex items-center justify-between">

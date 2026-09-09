@@ -6,6 +6,7 @@ import { OwnershipGroupProperties } from "./OwnershipGroupProperties.js";
 import { SlidesPicker, QBR_SLIDES, BENCHMARK_METRICS, defaultSlideSet } from "./SlidesPicker.js";
 import { TestimonialsEditor, type Testimonial } from "./TestimonialsEditor.js";
 import { ImportSlidesPicker, type ImportedSlide } from "./ImportSlidesPicker.js";
+import type { PmcPreset } from "../../../../server/apis/pmc-report/pmc-presets.js";
 
 function Section({ title, children, defaultOpen = false }: { title: string; children: React.ReactNode; defaultOpen?: boolean }) {
   const [open, setOpen] = useState(defaultOpen);
@@ -33,7 +34,7 @@ function StaticSection({ title, children }: { title: string; children: React.Rea
 
 export interface QBRFormState {
   pmc_name: string;
-  second_pmc: string;
+  additional_pmc_names: string[];
   report_name: string;
   property_ids: string[];
   ownership_report_name: string;
@@ -71,16 +72,18 @@ const KPI_TILES: { id: string; label: string }[] = [
 
 interface QBRTabProps {
   pmcNames: string[];
+  pmcPresets?: PmcPreset[];
   pmcLoading: boolean;
   generating: boolean;
   onGenerate: (state: QBRFormState) => void;
 }
 
-export function QBRTab({ pmcNames, pmcLoading, generating, onGenerate }: QBRTabProps) {
+export function QBRTab({ pmcNames, pmcPresets, pmcLoading, generating, onGenerate }: QBRTabProps) {
   const [reportBasis, setReportBasis] = useState<"pmc" | "ownership">("pmc");
   const [selectedPMC, setSelectedPMC] = useState("");
-  const [showSecondPMC, setShowSecondPMC] = useState(false);
-  const [secondPMC, setSecondPMC] = useState("");
+  // Repeatable "combine with N other PMCs" rows — replaces the old single showSecondPMC/secondPMC
+  // pair. Empty-string rows are allowed while a row is mid-pick; filtered out at generate time.
+  const [additionalPmcs, setAdditionalPmcs] = useState<string[]>([]);
   const [reportName, setReportName] = useState("");
   const [showCrossPMC, setShowCrossPMC] = useState(false);
   const [propertyIds, setPropertyIds] = useState<string[]>([]);
@@ -126,7 +129,12 @@ export function QBRTab({ pmcNames, pmcLoading, generating, onGenerate }: QBRTabP
     if (!canGenerate) return;
     onGenerate({
       pmc_name: reportBasis === "pmc" ? selectedPMC : "",
-      second_pmc: reportBasis === "pmc" ? secondPMC : "",
+      // Defensive de-dupe/strip even though the row-level picker (below) already excludes the
+      // primary PMC and already-used rows from selection — a stale/edited state could otherwise
+      // still send the same entity twice, or send it alongside itself as "primary".
+      additional_pmc_names: reportBasis === "pmc"
+        ? Array.from(new Set(additionalPmcs.filter((n) => n.trim() && n !== selectedPMC)))
+        : [],
       report_name: reportBasis === "pmc" ? reportName : ownershipReportName,
       property_ids: propertyIds,
       ownership_report_name: reportBasis === "ownership" ? ownershipReportName : "",
@@ -149,18 +157,33 @@ export function QBRTab({ pmcNames, pmcLoading, generating, onGenerate }: QBRTabP
       show_engagement_peer_median: showEngagementPeerMedian,
       imported_slides: importedSlides,
     });
-  }, [canGenerate, reportBasis, selectedPMC, secondPMC, reportName, propertyIds, ownershipReportName, totalCompanyUnits, partnerSinceOverride, reviewPeriod, delivery, terminology, d2cMarketing, comparisonMonths, selectedSlides, selectedMetrics, testimonials, hiddenKpiTiles, showAdoptionPortfolioAvg, showAdoptionPeerMedian, showEngagementObserved, showEngagementPortfolioAvg, showEngagementPeerMedian, importedSlides, onGenerate]);
+  }, [canGenerate, reportBasis, selectedPMC, additionalPmcs, reportName, propertyIds, ownershipReportName, totalCompanyUnits, partnerSinceOverride, reviewPeriod, delivery, terminology, d2cMarketing, comparisonMonths, selectedSlides, selectedMetrics, testimonials, hiddenKpiTiles, showAdoptionPortfolioAvg, showAdoptionPeerMedian, showEngagementObserved, showEngagementPortfolioAvg, showEngagementPeerMedian, importedSlides, onGenerate]);
 
   const handleBasisChange = useCallback((v: string) => {
     setReportBasis(v as "pmc" | "ownership");
     // Clear PMC fields when switching to ownership mode
     if (v === "ownership") {
       setSelectedPMC("");
-      setSecondPMC("");
-      setShowSecondPMC(false);
+      setAdditionalPmcs([]);
       setReportName("");
     }
   }, []);
+
+  // Preset "Load {family}" button — only surfaces when the primary PMC exactly matches a known
+  // combo family (e.g. Asset Living's subsidiaries). No match → matchingPreset is undefined and
+  // nothing renders; every other PMC's flow is unchanged.
+  const matchingPreset = (pmcPresets ?? []).find((p) => p.primaryPmcName === selectedPMC);
+
+  const handleLoadPreset = useCallback((preset: PmcPreset) => {
+    // Same Set-based dedup approach as the payload-build-time Array.from(new Set(...)) below —
+    // purely additive: only appends rows for names not already present as an additional PMC and
+    // not equal to the primary PMC. Never touches or removes anything already typed in.
+    setAdditionalPmcs((prev) => {
+      const existing = new Set(prev);
+      const toAdd = preset.subsidiaryPmcNames.filter((n) => !existing.has(n) && n !== selectedPMC);
+      return [...prev, ...toAdd];
+    });
+  }, [selectedPMC]);
 
   const inputCls = "w-full px-3 py-2 text-sm border border-gray-200 rounded-[4px] focus:outline-none focus:ring-2 focus:ring-[#6A3DB8]/30 focus:border-[#6A3DB8]";
 
@@ -193,19 +216,53 @@ export function QBRTab({ pmcNames, pmcLoading, generating, onGenerate }: QBRTabP
             <p className="text-[10px] text-red-500 mt-0.5 font-medium">* Required</p>
           </div>
 
-          {/* Second PMC */}
-          {!showSecondPMC ? (
-            <button type="button" onClick={() => setShowSecondPMC(true)} className="text-xs text-[#6A3DB8] hover:underline">
-              + Add Second PMC
+          {/* Additional PMCs — repeatable combine-with rows. Each row's own PMCSearch list has
+              already-used names filtered out (the primary PMC above, plus every other row's
+              current pick) so the same PMC can't be selected twice — no PMCSearch prop changes
+              needed, just a consumer-side filter of the pmcNames it's handed. */}
+          <div className="space-y-2">
+            <span className="text-sm font-medium text-gray-700">Additional PMCs to combine</span>
+            {additionalPmcs.map((name, i) => {
+              const usedElsewhere = new Set<string>();
+              if (selectedPMC) usedElsewhere.add(selectedPMC);
+              additionalPmcs.forEach((n, j) => {
+                if (j !== i && n) usedElsewhere.add(n);
+              });
+              const availablePmcNames = pmcNames.filter((n) => !usedElsewhere.has(n));
+              return (
+                <div key={i} className="relative">
+                  <PMCSearch
+                    label={`PMC ${i + 2}`}
+                    placeholder="Search for a PMC..."
+                    value={name}
+                    onChange={(v) => setAdditionalPmcs((prev) => prev.map((p, j) => (j === i ? v : p)))}
+                    pmcNames={availablePmcNames}
+                    loading={pmcLoading}
+                    optional
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setAdditionalPmcs((prev) => prev.filter((_, j) => j !== i))}
+                    className="absolute top-0 right-0 text-[10px] text-gray-400 hover:text-gray-600"
+                  >
+                    remove
+                  </button>
+                </div>
+              );
+            })}
+            <button type="button" onClick={() => setAdditionalPmcs((prev) => [...prev, ""])} className="text-xs text-[#6A3DB8] hover:underline">
+              + Add another PMC
             </button>
-          ) : (
-            <div className="relative">
-              <PMCSearch label="Second PMC" placeholder="Combine with another PMC record..." value={secondPMC} onChange={setSecondPMC} pmcNames={pmcNames} loading={pmcLoading} optional />
-              {!secondPMC && (
-                <button type="button" onClick={() => setShowSecondPMC(false)} className="absolute top-0 right-0 text-[10px] text-gray-400 hover:text-gray-600">cancel</button>
-              )}
-            </div>
-          )}
+            {matchingPreset && (
+              <button
+                type="button"
+                onClick={() => handleLoadPreset(matchingPreset)}
+                className="ml-3 text-xs text-[#6A3DB8] hover:underline font-medium"
+              >
+                Load {matchingPreset.label}
+              </button>
+            )}
+          </div>
 
           {/* Cross-PMC Properties (collapsed link) */}
           {!showCrossPMC ? (
@@ -341,7 +398,11 @@ export function QBRTab({ pmcNames, pmcLoading, generating, onGenerate }: QBRTabP
           testimonials={testimonials}
           onChange={setTestimonials}
           pmcName={reportBasis === "pmc" ? selectedPMC : ""}
-          secondPmcName={reportBasis === "pmc" ? secondPMC : ""}
+          // TestimonialsEditor's fetch only supports one secondary name (pmc_name_2) — out of
+          // scope for this task to extend to N. Best-effort: use the first additional row so the
+          // common 2-PMC case still auto-fetches combined testimonials; 3+ PMC combines just
+          // won't pull the 3rd+ entity's testimonials automatically.
+          secondPmcName={reportBasis === "pmc" ? additionalPmcs[0] || "" : ""}
         />
       </StaticSection>
 

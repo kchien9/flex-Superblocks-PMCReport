@@ -11,6 +11,7 @@ function _e(s: string): string {
 }
 
 function fmtCurrency(v: number): string {
+  if (v >= 1_000_000_000) return `$${(v / 1_000_000_000).toFixed(2)}B`;
   if (v >= 1_000_000) {
     let s = (v / 1_000_000).toFixed(2).replace(/0+$/, "");
     if (s.endsWith(".")) s += "0";
@@ -744,6 +745,7 @@ export function renderExpansionMetrosight(input: ExpansionMetrosightInput): Slid
   const turnHiGap   = turnsGap * 3500;
 
   function fmt(n: number): string {
+    if (n >= 1_000_000_000) return `$${(n / 1_000_000_000).toFixed(2)}B`;
     if (n >= 1_000_000) return `$${(n / 1_000_000).toFixed(1)}M`;
     if (n >= 1_000) return `$${Math.round(n / 1_000).toFixed(0)}k`;
     return `$${n.toLocaleString("en-US")}`;

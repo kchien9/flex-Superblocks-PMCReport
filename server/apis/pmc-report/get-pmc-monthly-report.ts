@@ -15,8 +15,14 @@ import {
   renderCustomerExperience,
   computePropertyTrendFlags,
   renderImportedSlide,
+  renderPortfolioComparison,
+  displayEntityNames,
+  entitySwitchButton,
+  sparklineSvg,
+  previousCalendarQuarter,
+  buildQuarterAddsSeries,
 } from "./slide-renderers.js";
-import type { BenchmarkMetric, ResidentTrend, Testimonial, TrendFlag, YearlyData, NewRolloutCandidate, DisabledPropertyRow } from "./slide-renderers.js";
+import type { BenchmarkMetric, ResidentTrend, Testimonial, TrendFlag, YearlyData, NewRolloutCandidate, DisabledPropertyRow, PortfolioComparisonEntity, QuarterAddsSeries } from "./slide-renderers.js";
 import { buildSpeakerNotesHtml, buildExpansionSpeakerNotesHtml, EXPANSION_SLIDE_TITLES } from "./speaker-notes.js";
 import type { SpeakerNotesKpis, SpeakerNotesBenchmark, SpeakerNotesMonthlyRow } from "./speaker-notes.js";
 import {
@@ -30,14 +36,13 @@ import {
   propertyAgeBucket,
   resolvePropertyPeerNar,
   resolvePropertyPeerEngagement,
+  largestPmcsPeerTier,
 } from "./peer-matching.js";
 
 const SNOWFLAKE_SSO = "d38ee94a-4e93-46f5-ab44-c65a99b3aea5";
 
-// ─── Module-level cache: network pool (same for all PMCs in a given cutoff month) ───
+// ─── Shared row shape for the property-pool peer-matching query below ───
 type NetworkPoolRow = { PMC_NAME: string; PROPERTY_NAME: string; PROPERTY_STATE: string | null; PROPERTY_UNIT_COUNT: number; RENT_PAID_AMOUNT: number | null; BILLS_PAID_COUNT: number | null; ROLLOUT_MONTH: string | null; T12_CONNECTIONS: number | null; MEDIAN_RENTER_INCOME: number | null };
-let _networkPoolCache: { cutoff: string; data: NetworkPoolRow[]; fetchedAt: number } | null = null;
-const _NETWORK_POOL_TTL_MS = 10 * 60 * 1000; // 10 minutes — unused while caching is disabled, see below
 
 // ─── Peer-matching geo helpers (faithful port of Flask's generator/data.py:1047-1440) ───
 // Ported because the peer-median/Peer Benchmarks cohort was found to diverge from Flask's:
@@ -224,6 +229,18 @@ function monthOnly(dateStr: string): string {
   return d.toLocaleDateString("en-US", { month: "long", timeZone: "UTC" });
 }
 
+// One-line definition of what a "BP month" is, printed once on the Exec Summary (Kevin's ask:
+// "can we be clear that we're showing September BP month (which is technically like August
+// cal) - just don't want to invite questions of 'we're only 9 days into September'"). Every
+// other place the deck prints the reporting month just carries the "BP month" / "BP" suffix
+// and leans on this sentence for the definition.
+function bpMonthExplainer(reportingMonth: string): string {
+  const d = new Date(reportingMonth + "T00:00:00Z");
+  const short = d.toLocaleDateString("en-US", { month: "short", year: "numeric", timeZone: "UTC" });
+  const long = monthOnly(reportingMonth);
+  return `Months are Flex bill-pay (BP) months. The ${short} BP month covers ${long} rent — activity that closed at the start of ${long}.`;
+}
+
 // Snowflake's PMC_NAME sometimes carries a "(FKA <old name>)" suffix for continuity after a
 // rename/acquisition (e.g. "AG Living (FKA Ashland Greene Capital Partners)"). Useful in a
 // system-of-record, but reads as clutter on every slide title across QBR/Expansion/New Logo —
@@ -273,6 +290,10 @@ function applyTerminology(html: string, terminology: string | undefined): string
 }
 
 function fmtCurrency(v: number): string {
+  // $X.XXB tier (Kevin's catch on the 8-entity combined deck: lifetime rent printed as
+  // "$2210.5M"). Same tier added to every other currency formatter in this deck, TS and the
+  // embedded Chart.js JS alike, so text, ticks, labels and tooltips agree.
+  if (v >= 1_000_000_000) return `$${(v / 1_000_000_000).toFixed(2)}B`;
   if (v >= 1_000_000) {
     let s = (v / 1_000_000).toFixed(2).replace(/0+$/, "");
     if (s.endsWith(".")) s += "0";
@@ -293,25 +314,9 @@ function rentWindowLabel(opts: { partnerSince: string | null; lookbackMonths: nu
   return `last ${opts.lookbackMonths} months`;
 }
 
-function sparklineSvg(values: (number | null)[], color = "#6A3DB8", w = 64, h = 20): string {
-  const vals = values.filter((v): v is number => v !== null);
-  if (vals.length < 2) return "";
-  const mn = Math.min(...vals);
-  const mx = Math.max(...vals);
-  const rng = mx > mn ? mx - mn : 0.001;
-  const n = vals.length;
-  const pts = vals
-    .map((v, i) => `${(i * w / (n - 1)).toFixed(1)},${(h - 2 - ((v - mn) / rng) * (h - 4)).toFixed(1)}`)
-    .join(" ");
-  const lx = w;
-  const ly = (h - 2 - ((vals[vals.length - 1] - mn) / rng) * (h - 4)).toFixed(1);
-  return (
-    `<svg width="${w}" height="${h}" style="overflow:visible;display:block;">` +
-    `<polyline points="${pts}" fill="none" stroke="${color}" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>` +
-    `<circle cx="${lx}" cy="${ly}" r="2.5" fill="${color}"/>` +
-    `</svg>`
-  );
-}
+// sparklineSvg moved to slide-renderers.ts (Task 13) - exported and imported from there now, so
+// the new Portfolio Comparison table's per-row trend cell reuses this exact mechanism instead of
+// a second one, and this file no longer keeps its own separate copy.
 
 // --- HTML Slide Renderers ---
 
@@ -327,9 +332,11 @@ function renderCover(kpis: { pmcName: string; reportingMonth: string; partnerSin
   // Expansion (Kevin's ask - tried relabeling it "Track Record" first, didn't like that either;
   // this isn't a review, so nothing needs to fill that slot). QBR keeps its own third tile
   // exactly as before - Flask's render_cover, generator/slides.py:91-92.
+  // "BP month(s)" suffix (Kevin's ask) so the period reads as Flex bill-pay months, not calendar
+  // months - the Exec Summary carries the one-line definition (bpMonthExplainer).
   const periodRange = kpis.firstMonth
-    ? `${monthLabel(kpis.firstMonth)} – ${monthLabel(kpis.reportingMonth)}`
-    : monthLabel(kpis.reportingMonth);
+    ? `${monthLabel(kpis.firstMonth)} – ${monthLabel(kpis.reportingMonth)} BP months`
+    : `${monthLabel(kpis.reportingMonth)} BP month`;
   const periodTileHtml = kpis.isExpansion ? "" : `
       <div><div style="font-size:10px;letter-spacing:0.14em;text-transform:uppercase;color:rgba(255,255,255,0.28);margin-bottom:6px;font-family:'ABCDiatype',sans-serif;">Reporting Period</div>
            <div style="font-size:16px;font-weight:600;color:rgba(255,255,255,0.85);font-family:'ABCDiatype',sans-serif;">${periodRange}</div></div>`;
@@ -337,12 +344,12 @@ function renderCover(kpis: { pmcName: string; reportingMonth: string; partnerSin
   <div class="slide active" id="slide-1" style="background:#2C194D;justify-content:center;align-items:flex-start;">
     <div style="font-size:11px;letter-spacing:0.18em;text-transform:uppercase;color:#DDC6F9;margin-bottom:20px;font-weight:600;font-family:'ABCDiatype',sans-serif;">${deckLabel}</div>
     <div style="font-size:76px;font-weight:500;line-height:1.0;color:#fff;margin-bottom:12px;letter-spacing:-0.02em;font-family:'ABCDiatype',sans-serif;">${kpis.pmcName}</div>
-    <div style="font-size:22px;font-weight:400;color:rgba(255,255,255,0.45);margin-bottom:72px;font-family:'ABCDiatype',sans-serif;">${monthLabel(kpis.reportingMonth)}</div>
+    <div style="font-size:22px;font-weight:400;color:rgba(255,255,255,0.45);margin-bottom:72px;font-family:'ABCDiatype',sans-serif;">${monthLabel(kpis.reportingMonth)} BP month</div>
     <div style="display:flex;gap:52px;">
       <div><div style="font-size:10px;letter-spacing:0.14em;text-transform:uppercase;color:rgba(255,255,255,0.28);margin-bottom:6px;font-family:'ABCDiatype',sans-serif;">Partner Since</div>
            <div style="font-size:16px;font-weight:600;color:rgba(255,255,255,0.85);font-family:'ABCDiatype',sans-serif;">${monthLabel(kpis.partnerSince)}</div></div>
       <div><div style="font-size:10px;letter-spacing:0.14em;text-transform:uppercase;color:rgba(255,255,255,0.28);margin-bottom:6px;font-family:'ABCDiatype',sans-serif;">${propsLabel}</div>
-           <div style="font-size:16px;font-weight:600;color:rgba(255,255,255,0.85);font-family:'ABCDiatype',sans-serif;">${kpis.propertyCount}</div></div>
+           <div style="font-size:16px;font-weight:600;color:rgba(255,255,255,0.85);font-family:'ABCDiatype',sans-serif;">${kpis.propertyCount.toLocaleString("en-US")}</div></div>
       ${periodTileHtml}
     </div>
     <div style="position:absolute;right:100px;top:50%;transform:translateY(-50%);width:380px;height:380px;border-radius:50%;background:radial-gradient(circle,rgba(106,61,184,0.22) 0%,transparent 68%);"></div>
@@ -388,6 +395,30 @@ interface ExecSummaryInput {
   // delinquency_shielded. Chosen at generation time (Kevin's ask) - see hidden_kpi_tiles on the
   // top-level input schema for why this isn't a live post-generation toggle.
   hiddenTiles?: string[];
+  // One entry per combined entity's own current-month numbers (Task 9: Exec Summary switcher).
+  // Built by the call site via groupRowsByPmc(latestRows), grouped + aggregated once per entity
+  // instead of once overall. A switcher is rendered only when this has more than 1 entry - a
+  // single-PMC report passes either [] or a 1-entry array and gets no switcher at all, with
+  // output identical to before this field existed. The prev* fields are each entity's OWN
+  // figures at the same comparison month the combined prevResidents/prevRent/prevNar/
+  // prevPropertyCount above come from (null when the entity has no rows that month), so
+  // switching entities swaps the period-comparison pills along with the tile values (Kevin's
+  // catch: "the delta tiles only show change for the all-in PMC and don't update on the
+  // subsidiaries"). currentNewSignups + monthly (Kevin's follow-up on the hero sub-line: "this
+  // number doesnt change based on the pmc selected either") let the switcher swap EVERY node the
+  // Combined view derives from kpis/monthlyTotals - the hero window rent, the new-residents tile
+  // + its "N last 3 months" sub-label, and all five sparklines - not just the four tile values.
+  // `monthly` is this entity's own series over the same window monthlyTotals covers (sparse:
+  // only months the entity has rows in, chronological), built from the same inNetwork rows, so
+  // the per-entity figures sum exactly to the combined ones. What still can't switch: True
+  // repeat rate (PARTNER_REPORTING_CORE_METRICS / cohort query, combined only) and Delinquency
+  // shielded (a single combined SUM) - neither has a per-entity source in this report.
+  entityBreakdown?: {
+    pmcName: string; currentResidents: number; currentRent: number; currentNar: number; propertyCount: number; totalUnits: number;
+    prevResidents: number | null; prevRent: number | null; prevNar: number | null; prevPropertyCount: number | null;
+    currentNewSignups: number;
+    monthly: { month: string; billsPaid: number; units: number; rentPaid: number; newSignups: number; adoptionRate: number }[];
+  }[];
 }
 
 function renderExecSummary(d: ExecSummaryInput): { html: string; js: string } {
@@ -419,7 +450,7 @@ function renderExecSummary(d: ExecSummaryInput): { html: string; js: string } {
     if (fmt === "pct") txt = `${Math.abs(pct).toFixed(1)}%`;
     else if (fmt === "pp") txt = `${(Math.abs(delta) * 100).toFixed(1)}pp`;
     else if (fmt === "currency") txt = fmtCurrency(Math.abs(delta));
-    else txt = Math.abs(Math.round(delta)).toLocaleString();
+    else txt = Math.abs(Math.round(delta)).toLocaleString("en-US");
     // "No change" handling: if the formatted text would display as 0, show grey "No change" instead
     if (/^0(\.0+)?(pp|%|)$/.test(txt)) {
       const lbl = fmt === "pp" ? "adoption" : fmt === "pct" ? "change" : "";
@@ -432,7 +463,6 @@ function renderExecSummary(d: ExecSummaryInput): { html: string; js: string } {
   }
 
   // ── Sparkline builder ─────────────────────────────────────────────────────
-  const tail12 = d.monthlyTotals.slice(-12);
   function sparkSvg(values: number[], width = 72, height = 22): string {
     const valid = values.filter((v) => v > 0);
     if (valid.length < 3) return "";
@@ -448,21 +478,6 @@ function renderExecSummary(d: ExecSummaryInput): { html: string; js: string } {
     }).join(" L ");
     return `<svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" fill="none" style="display:block;margin-top:8px;opacity:0.7;"><path d="M ${pts}" stroke="${color}" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
   }
-
-  const showSparks = d.showSparklines !== false;
-  const narSparkVals = tail12.map((m) => m.adoptionRate);
-  const residentsSparkVals = tail12.map((m) => m.billsPaid);
-  const signupsSparkVals = tail12.map((m) => m.newSignups);
-  const narSparkRaw = showSparks ? sparkSvg(narSparkVals) : "";
-  const residentsSparkRaw = showSparks ? sparkSvg(residentsSparkVals) : "";
-  const signupsSparkRaw = showSparks ? sparkSvg(signupsSparkVals) : "";
-  // Wrap in identifiable divs so toggle buttons can show/hide them
-  const narSparkHtml = narSparkRaw ? `<div id="sp_nar_${slideId}">${narSparkRaw}</div>` : "";
-  const residentsSparkHtml = residentsSparkRaw ? `<div id="sp_res_${slideId}">${residentsSparkRaw}</div>` : "";
-  const signupsSparkHtml = signupsSparkRaw ? `<div id="ss_${slideId}">${signupsSparkRaw}</div>` : "";
-
-  // ── Monthly rent for hero sparkline ────────────────────────────────────────
-  const monthlyRentVals = tail12.map((m) => m.rentPaid);
 
   // Hero sparkline: Flask's real version (render_expansion_bottom_line, generator/slides.py:
   // ~7750-7767, ~7967-7993) is a CUMULATIVE running sum of monthly rent — deliberately always
@@ -492,21 +507,49 @@ function renderExecSummary(d: ExecSummaryInput): { html: string; js: string } {
       + `<path d="${lineD}" stroke="rgba(255,255,255,0.55)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>`
       + `</svg>`;
   }
-  const heroSparkSvgHtml = heroSparkSvg(monthlyRentVals);
 
-  // ── Monthly rent sparkline (small white line in hero bottom) ──────────────
-  const moRentSparkRaw = showSparks ? sparkSvg(monthlyRentVals, 100, 36).replace(/#1a9e6a|#dc5050|#9ca3af/g, "rgba(255,255,255,0.6)") : "";
+  const showSparks = d.showSparklines !== false;
+  // Every sparkline on the slide (the four small trend lines + the hero's cumulative area) comes
+  // out of this one function - applied to monthlyTotals for the Combined view, and to each
+  // entity's own monthly series for the switcher payload below - so an entity's sparks are built
+  // by the exact code path the Combined ones are, over the same trailing-12 window.
+  function sparksFor(monthly: ExecSummaryInput["monthlyTotals"]) {
+    const t12 = monthly.slice(-12);
+    const rentVals = t12.map((m) => m.rentPaid);
+    return {
+      nar: showSparks ? sparkSvg(t12.map((m) => m.adoptionRate)) : "",
+      res: showSparks ? sparkSvg(t12.map((m) => m.billsPaid)) : "",
+      sig: showSparks ? sparkSvg(t12.map((m) => m.newSignups)) : "",
+      hero: heroSparkSvg(rentVals),
+      // Monthly rent sparkline (small white line in hero bottom) - same builder, recolored.
+      mo: showSparks ? sparkSvg(rentVals, 100, 36).replace(/#1a9e6a|#dc5050|#9ca3af/g, "rgba(255,255,255,0.6)") : "",
+    };
+  }
+  const combinedSparks = sparksFor(d.monthlyTotals);
+  const narSparkRaw = combinedSparks.nar;
+  const residentsSparkRaw = combinedSparks.res;
+  const signupsSparkRaw = combinedSparks.sig;
+  // Wrap in identifiable divs so toggle buttons can show/hide them (and, with the entity
+  // switcher live, so flexSwitchEntity can swap the svg inside each wrapper).
+  const narSparkHtml = narSparkRaw ? `<div id="sp_nar_${slideId}">${narSparkRaw}</div>` : "";
+  const residentsSparkHtml = residentsSparkRaw ? `<div id="sp_res_${slideId}">${residentsSparkRaw}</div>` : "";
+  const signupsSparkHtml = signupsSparkRaw ? `<div id="ss_${slideId}">${signupsSparkRaw}</div>` : "";
+  const heroSparkSvgHtml = combinedSparks.hero;
+  const moRentSparkRaw = combinedSparks.mo;
   const moRentSparkSvg = moRentSparkRaw ? `<div id="sp_mo_${slideId}">${moRentSparkRaw}</div>` : "";
 
   // ── Hero rent pill (white-on-dark) ────────────────────────────────────────
-  let heroPill = "";
-  if (d.prevRent !== null && d.prevRent > 0) {
-    const delta = d.currentRent - d.prevRent;
-    const pctDelta = (delta / d.prevRent) * 100;
+  // A function (not a one-off) so the entity switcher below can build each entity's own hero
+  // pill with the exact same rule the Combined one uses.
+  function heroRentPill(curRent: number, prevRent: number | null): string {
+    if (prevRent === null || prevRent <= 0) return "";
+    const delta = curRent - prevRent;
+    const pctDelta = (delta / prevRent) * 100;
     const sign = delta >= 0 ? "+" : "\u2212";
     const col = delta >= 0 ? "#6dffca" : "#ffaaaa";
-    heroPill = `<div class="exec-delta" style="display:inline-block;background:rgba(255,255,255,0.12);color:${col};font-size:10px;font-weight:700;border-radius:6px;padding:3px 9px;margin-top:8px;">${sign}${Math.abs(pctDelta).toFixed(1)}% ${_vs}</div>`;
+    return `<div class="exec-delta" style="display:inline-block;background:rgba(255,255,255,0.12);color:${col};font-size:10px;font-weight:700;border-radius:6px;padding:3px 9px;margin-top:8px;">${sign}${Math.abs(pctDelta).toFixed(1)}% ${_vs}</div>`;
   }
+  const heroPill = heroRentPill(d.currentRent, d.prevRent);
 
   // ── Avg rent per household ────────────────────────────────────────────────
   const avgPayment = d.currentResidents > 0 ? Math.round(d.currentRent / d.currentResidents) : 0;
@@ -545,9 +588,13 @@ function renderExecSummary(d: ExecSummaryInput): { html: string; js: string } {
   }
 
   // ── New signups QTD sub-label ─────────────────────────────────────────────
-  const last3 = d.monthlyTotals.slice(-3);
-  const qtdSignups = last3.reduce((s, m) => s + m.newSignups, 0);
-  const signupsSub = qtdSignups > 0 ? `${qtdSignups.toLocaleString()} last 3 months` : "first-time Flex payments this month";
+  // A function so the entity switcher below can build each entity's own sub-label with the
+  // exact rule the Combined one uses (same reason heroRentPill / sparksFor are functions).
+  function signupsSubFor(monthly: ExecSummaryInput["monthlyTotals"]): string {
+    const qtd = monthly.slice(-3).reduce((s, m) => s + m.newSignups, 0);
+    return qtd > 0 ? `${qtd.toLocaleString("en-US")} last 3 months` : "first-time Flex payments this month";
+  }
+  const signupsSub = signupsSubFor(d.monthlyTotals);
 
   // ── SVG icons for tiles ────────────────────────────────────────────────────
   const svgBldg = '<svg width="13" height="13" viewBox="0 0 14 14" fill="none"><rect x="2" y="4" width="7" height="8.5" rx="0.8" stroke="#6A3DB8" stroke-width="1.3"/><path d="M9 7h2.5v5.5H9" stroke="#6A3DB8" stroke-width="1.3" stroke-linejoin="round"/><path d="M4.5 7v0M6.5 7v0M4.5 9.5v0M6.5 9.5v0" stroke="#6A3DB8" stroke-width="1.5" stroke-linecap="round"/></svg>';
@@ -564,15 +611,15 @@ function renderExecSummary(d: ExecSummaryInput): { html: string; js: string } {
   }
 
   // ── Small tile helper ─────────────────────────────────────────────────────
-  function tile(label: string, value: string, sublabel: string, pillHtml: string, sparkHtml = "", icon = ""): string {
+  function tile(label: string, value: string, sublabel: string, pillHtml: string, sparkHtml = "", icon = "", valueId = "", sublabelId = ""): string {
     const labelRow = icon
       ? `<div style="display:flex;align-items:center;gap:6px;margin-bottom:10px;">${iconCircle(icon)}<div style="font-size:13px;color:#2d2550;font-weight:700;">${label}</div></div>`
       : `<div style="font-size:13px;color:#2d2550;font-weight:700;margin-bottom:10px;">${label}</div>`;
     return `<div style="padding:18px 18px 16px;border-radius:10px;background:#f8f7ff;display:flex;flex-direction:column;">
       ${labelRow}
       <div style="flex:1;display:flex;flex-direction:column;justify-content:center;">
-        <div style="font-size:34px;font-weight:700;color:#1a1040;letter-spacing:-0.03em;line-height:1;">${value}</div>
-        ${pillHtml}${sparkHtml}${sublabel ? `<div style="font-size:11px;color:#6b7280;font-weight:500;margin-top:6px;">${sublabel}</div>` : ""}
+        <div style="font-size:34px;font-weight:700;color:#1a1040;letter-spacing:-0.03em;line-height:1;"${valueId ? ` id="${valueId}"` : ""}>${value}</div>
+        ${pillHtml}${sparkHtml}${sublabel ? `<div style="font-size:11px;color:#6b7280;font-weight:500;margin-top:6px;"${sublabelId ? ` id="${sublabelId}"` : ""}>${sublabel}</div>` : ""}
       </div>
     </div>`;
   }
@@ -588,11 +635,130 @@ function renderExecSummary(d: ExecSummaryInput): { html: string; js: string } {
   const TILE_COLS_BY_VISIBLE_COUNT: Record<number, number> = { 0: 1, 1: 1, 2: 2, 3: 3, 4: 2, 5: 3, 6: 3 };
   const tileCols = TILE_COLS_BY_VISIBLE_COUNT[visibleTileCount] ?? 3;
 
-  // ── Delta toggle check ────────────────────────────────────────────────────
+  // ── Entity switcher (Task 9: combined multi-PMC exec summary) ─────────────
+  // Only rendered when entityBreakdown has 2+ entries. Everything else in this function stays
+  // untouched when it doesn't - the value-tile ids below are only added when the switcher is
+  // actually rendered, so a single-PMC report's HTML is byte-identical to before this existed.
+  const entities = d.entityBreakdown ?? [];
+  const showEntitySwitcher = entities.length > 1;
+  let entitySwitcherHtml = "";
+  let entitySwitcherJs = "";
+
+  // Period-comparison pills for the un-switched (Combined) tiles. Built here, ahead of the
+  // switcher payload, because the Combined payload entry reuses these exact strings.
   const pillProps = pill(d.propertyCount, d.prevPropertyCount, "abs");
   const pillResidents = pill(d.currentResidents, d.prevResidents, "abs");
   const pillNar = pill(nar, d.prevNar, "pp");
-  const anyDelta = !!(pillProps || pillResidents || pillNar || heroPill);
+  // Per-entity pills, computed with the same pill()/heroRentPill() rules and the same "_vs"
+  // label as the Combined ones - only the inputs differ (each entity's own current + prior-
+  // period figures). An entity with no prior-period rows gets prev* = null and therefore the
+  // same empty pill the Combined view shows when its own prior is missing.
+  const entityPills = entities.map((e) => ({
+    props: pill(e.propertyCount, e.prevPropertyCount, "abs"),
+    res: pill(e.currentResidents, e.prevResidents, "abs"),
+    nar: pill(e.currentNar, e.prevNar, "pp"),
+    rent: heroRentPill(e.currentRent, e.prevRent),
+  }));
+  // Wraps a pill in a swappable container when the switcher is live. display:contents keeps
+  // the pill div itself as the flex item / inline-block it already is (the wrapper generates
+  // no box), so the switcher's presence changes nothing about layout - and the wrapper is
+  // always emitted (even around an empty Combined pill) so an entity that DOES have a delta
+  // has somewhere to land.
+  const wrapPill = (key: string, html: string) => showEntitySwitcher
+    ? `<span id="ep_${key}_${slideId}" style="display:contents">${html}</span>`
+    : html;
+
+  if (showEntitySwitcher) {
+    // Explicit "en-US" (here and on the tile values below) - a bare toLocaleString() follows the
+    // runtime's default ICU locale, which in a container with no LANG set is the POSIX variant
+    // that prints "2717" with no grouping at all (Kevin: "2,717 instead of 2717").
+    const fmtEntity = (residents: number, rent: number, narVal: number, properties: number) => ({
+      residents: residents.toLocaleString("en-US"),
+      rent: fmtCurrency(rent),
+      nar: fmtPct(narVal),
+      properties: properties.toLocaleString("en-US"),
+      avg: residents > 0 ? `avg $${Math.round(rent / residents).toLocaleString("en-US")}/resident` : "",
+    });
+    // Combined entry mirrors exactly what the tile grid already shows (d.currentResidents etc,
+    // same numbers the un-switched tiles render below) - not re-derived from entities, so
+    // "Combined" always matches today's existing behavior regardless of how entityBreakdown was
+    // built upstream.
+    // Each entry also carries its fully rendered pills (same builders, see entityPills above) -
+    // Combined's are the very strings the static tiles below render, so restoring Combined puts
+    // back exactly what was there.
+    // Labels are display-shortened (displayEntityNames - "FPI (An Asset Living Company)" ->
+    // "FPI", full names if that would collide); the payload entries are addressed by index, so
+    // this is display-only and every number still comes from the full-name entity.
+    //
+    // Beyond the four tile values + pills, each entry carries every other node the slide derives
+    // from kpis/monthlyTotals (Kevin, on the hero sub-line: "this number doesnt change based on
+    // the pmc selected either" - the bar is that a Combined vs Entity screenshot differs in
+    // every pixel that encodes entity data): the hero window rent (`lifetime`), the new-
+    // residents tile value + "N last 3 months" sub-label, and all five sparklines - each built
+    // by the SAME function the static Combined markup uses (fmtCurrency / signupsSubFor /
+    // sparksFor), so Combined's strings here are byte-equal to what's rendered and an entity's
+    // are what the slide WOULD render if the deck were that entity alone. An entity's window
+    // rent is the sum of its own monthly rent - the same reduce the call site does over
+    // monthlyTotals for d.lifetimeRent.
+    const viewFor = (monthly: ExecSummaryInput["monthlyTotals"], newSignups: number, windowRent: number) => ({
+      lifetime: fmtCurrency(windowRent),
+      newSignups: newSignups.toLocaleString("en-US"),
+      signupsSub: signupsSubFor(monthly),
+      sparks: sparksFor(monthly),
+    });
+    const entityLabels = displayEntityNames(entities.map((e) => e.pmcName));
+    const payload = [
+      { label: "Combined", ...fmtEntity(d.currentResidents, d.currentRent, nar, d.propertyCount), ...viewFor(d.monthlyTotals, d.currentNewSignups, d.lifetimeRent), pills: { props: pillProps, res: pillResidents, nar: pillNar, rent: heroPill } },
+      ...entities.map((e, i) => ({
+        label: entityLabels[i],
+        ...fmtEntity(e.currentResidents, e.currentRent, e.currentNar, e.propertyCount),
+        ...viewFor(e.monthly, e.currentNewSignups, e.monthly.reduce((s, m) => s + m.rentPaid, 0)),
+        pills: entityPills[i],
+      })),
+    ];
+    // Index-based onclick (not the entity name) - sidesteps having to escape arbitrary PMC names
+    // (apostrophes, quotes, etc.) into a JS string literal inside an HTML attribute. "Combined"
+    // (payload index 0) stays a plain un-accented pill; entity pills (payload index i = entity
+    // i-1) go through the shared entitySwitchButton (short name + entityColor(i-1) left accent,
+    // the same index that colors this entity on the chart slides) - the Adoption Trend style,
+    // standardized across all three switchers.
+    const btns = payload.map((p, i) =>
+      i === 0
+        ? `<button class="spark-ctrl-btn is-active" onclick="flexSwitchEntity(${slideId},0,this)">${_e(p.label)}</button>`
+        : entitySwitchButton(i - 1, _e(p.label), `flexSwitchEntity(${slideId},${i},this)`)
+    ).join("");
+    entitySwitcherHtml = `<div class="spark-ctrl presenter-control" style="flex-wrap:wrap;max-width:460px;">${btns}</div>`;
+    // Embed everything as JSON in a script variable, toggle via a shared function defined once -
+    // same convention as flexToggleSpark just above. Escape "<" so a PMC name containing
+    // "</script>" can't break out of the inline script tag.
+    const jsonPayload = JSON.stringify(payload).replace(/</g, "\\u003c");
+    entitySwitcherJs = `window.execEntityData=window.execEntityData||{};window.execEntityData[${slideId}]=${jsonPayload};`
+      + `if(!window.flexSwitchEntity){window.flexSwitchEntity=function(slideId,idx,btn){`
+      + `var d=(window.execEntityData[slideId]||[])[idx];if(!d)return;`
+      + `function setTxt(id,txt){var el=document.getElementById(id);if(el&&txt!==undefined)el.textContent=txt;}`
+      + `function setHtml(id,h){var el=document.getElementById(id);if(el&&h!==undefined)el.innerHTML=h;}`
+      + `setTxt('ev_props_'+slideId,d.properties);setTxt('ev_res_'+slideId,d.residents);`
+      + `setTxt('ev_nar_'+slideId,d.nar);setTxt('ev_rent_'+slideId,d.rent);setTxt('ev_avg_'+slideId,d.avg);`
+      + `setTxt('ev_lifetime_'+slideId,d.lifetime);setTxt('ev_newsig_'+slideId,d.newSignups);setTxt('ev_sigsub_'+slideId,d.signupsSub);`
+      + `var p=d.pills||{};setHtml('ep_props_'+slideId,p.props);setHtml('ep_res_'+slideId,p.res);`
+      + `setHtml('ep_nar_'+slideId,p.nar);setHtml('ep_rent_'+slideId,p.rent);`
+      // Sparklines swap INSIDE their existing wrappers (sp_nar_/sp_res_/ss_/sp_mo_ are the same
+      // divs flexToggleSpark shows/hides, so a hidden sparkline stays hidden across a switch);
+      // the hero area gets its own wrapper id below. A wrapper only exists when the Combined
+      // view has that sparkline, and an entity can only have one when Combined does (Combined's
+      // months are a superset of every entity's), so a missing wrapper is never a lost entity spark.
+      + `var s=d.sparks||{};setHtml('ev_hspark_'+slideId,s.hero);setHtml('sp_nar_'+slideId,s.nar);`
+      + `setHtml('sp_res_'+slideId,s.res);setHtml('ss_'+slideId,s.sig);setHtml('sp_mo_'+slideId,s.mo);`
+      + `var row=btn.parentElement;if(row){Array.prototype.forEach.call(row.children,function(b){b.classList.toggle('is-active',b===btn);});}`
+      + `};}`;
+  }
+
+  // ── Delta toggle check ────────────────────────────────────────────────────
+  // With the switcher live, an entity's pill can exist even when Combined's doesn't, so the
+  // Hide/Show-change toggle has to account for every entry's pills - otherwise a subsidiary's
+  // delta would have no way to be hidden. Without the switcher this is exactly the old check.
+  const anyEntityDelta = showEntitySwitcher && entityPills.some((p) => !!(p.props || p.res || p.nar || p.rent));
+  const anyDelta = !!(pillProps || pillResidents || pillNar || heroPill) || anyEntityDelta;
 
   // Starts hidden when the form-level toggle forces it (Kevin's ask) - the button and its
   // onclick logic are otherwise unchanged, so the live in-deck override still works exactly the
@@ -623,10 +789,11 @@ function renderExecSummary(d: ExecSummaryInput): { html: string; js: string } {
         <!-- Kevin's ask: the sparkline toggles were the last thing on the slide, easy to miss
              below the tile grid - moved up next to the other presenter control (deltaToggle)
              so both are visible together at the top, not hunted for at the bottom. -->
-        <div style="display:flex;align-items:center;gap:8px;">${sparkCtrlHtml}${deltaToggle}</div>
+        <div style="display:flex;align-items:center;gap:8px;">${entitySwitcherHtml}${sparkCtrlHtml}${deltaToggle}</div>
       </div>
       <div class="slide-title" style="margin-bottom:6px;">What we've built together.</div>
-      <div style="font-size:12px;color:#6b7280;">${pmc} &middot; ${reportingMonth} &nbsp;&middot;&nbsp; Partner since ${_e(sinceLbl)}</div>
+      <div style="font-size:12px;color:#6b7280;">${pmc} &middot; ${reportingMonth} BP month &nbsp;&middot;&nbsp; Partner since ${_e(sinceLbl)}</div>
+      <div style="font-size:11px;color:#a09cb0;margin-top:4px;">${bpMonthExplainer(d.reportingMonth)}</div>
     </div>
     <div style="flex:1;display:grid;grid-template-columns:minmax(0,5fr) minmax(0,7fr);gap:16px;min-height:0;">
       <!-- Hero: Rent Guaranteed -->
@@ -635,16 +802,16 @@ function renderExecSummary(d: ExecSummaryInput): { html: string; js: string } {
         ${iconCircle(svgCoinsW, true)}
         <span style="font-size:13px;color:rgba(255,255,255,0.75);font-weight:700;">Rent guaranteed</span>
       </div>
-        <div style="font-size:46px;font-weight:700;color:#fff;letter-spacing:-0.03em;line-height:1;">${fmtCurrency(d.lifetimeRent)}</div>
+        <div style="font-size:46px;font-weight:700;color:#fff;letter-spacing:-0.03em;line-height:1;"${showEntitySwitcher ? ` id="ev_lifetime_${slideId}"` : ""}>${fmtCurrency(d.lifetimeRent)}</div>
         <div style="font-size:12px;color:rgba(255,255,255,0.55);font-weight:500;margin-top:5px;">${rwl.toLowerCase()}</div>
-        <div style="flex:1;min-height:40px;display:flex;align-items:flex-end;margin:12px 0 4px;">${heroSparkSvgHtml}</div>
+        <div style="flex:1;min-height:40px;display:flex;align-items:flex-end;margin:12px 0 4px;"${showEntitySwitcher ? ` id="ev_hspark_${slideId}"` : ""}>${heroSparkSvgHtml}</div>
         <div style="border-top:1px solid rgba(255,255,255,0.10);padding-top:14px;">
           <div style="font-size:13px;color:rgba(255,255,255,0.75);font-weight:700;margin-bottom:5px;">Rent guaranteed this month</div>
           <div style="display:flex;align-items:flex-end;justify-content:space-between;gap:8px;">
             <div>
-              <div style="font-size:28px;font-weight:700;color:#fff;letter-spacing:-0.02em;">${fmtCurrency(d.currentRent)}</div>
-              ${heroPill}
-              ${avgPayment > 0 ? `<div style="font-size:11px;color:rgba(255,255,255,0.40);margin-top:5px;">avg $${avgPayment.toLocaleString()}/resident</div>` : ""}
+              <div style="font-size:28px;font-weight:700;color:#fff;letter-spacing:-0.02em;"${showEntitySwitcher ? ` id="ev_rent_${slideId}"` : ""}>${fmtCurrency(d.currentRent)}</div>
+              ${wrapPill("rent", heroPill)}
+              ${avgPayment > 0 ? `<div style="font-size:11px;color:rgba(255,255,255,0.40);margin-top:5px;"${showEntitySwitcher ? ` id="ev_avg_${slideId}"` : ""}>avg $${avgPayment.toLocaleString("en-US")}/resident</div>` : ""}
             </div>
             ${moRentSparkSvg ? `<div style="flex-shrink:0;">${moRentSparkSvg}</div>` : ""}
           </div>
@@ -652,10 +819,10 @@ function renderExecSummary(d: ExecSummaryInput): { html: string; js: string } {
       </div>
       <!-- 6 Metric Tiles (3-wide grid, rows auto-size to however many remain after hiding) -->
       <div style="display:grid;grid-template-columns:repeat(${tileCols},1fr);grid-auto-rows:1fr;gap:12px;">
-        ${hiddenTileSet.has("active_properties") ? "" : tile("Active properties", d.propertyCount.toLocaleString(), "", pillProps, "", svgBldg)}
-        ${hiddenTileSet.has("residents_paying") ? "" : tile("Residents paying", d.currentResidents.toLocaleString(), "", pillResidents, residentsSparkHtml, svgPerson)}
-        ${hiddenTileSet.has("new_residents") ? "" : tile("New residents paying this month", d.currentNewSignups.toLocaleString(), signupsSub, "", signupsSparkHtml, svgNewP)}
-        ${hiddenTileSet.has("adoption_rate") ? "" : tile("Adoption rate", fmtPct(nar), "", pillNar, narSparkHtml, svgPct)}
+        ${hiddenTileSet.has("active_properties") ? "" : tile("Active properties", d.propertyCount.toLocaleString("en-US"), "", wrapPill("props", pillProps), "", svgBldg, showEntitySwitcher ? `ev_props_${slideId}` : "")}
+        ${hiddenTileSet.has("residents_paying") ? "" : tile("Residents paying", d.currentResidents.toLocaleString("en-US"), "", wrapPill("res", pillResidents), residentsSparkHtml, svgPerson, showEntitySwitcher ? `ev_res_${slideId}` : "")}
+        ${hiddenTileSet.has("new_residents") ? "" : tile("New residents paying this month", d.currentNewSignups.toLocaleString("en-US"), signupsSub, "", signupsSparkHtml, svgNewP, showEntitySwitcher ? `ev_newsig_${slideId}` : "", showEntitySwitcher ? `ev_sigsub_${slideId}` : "")}
+        ${hiddenTileSet.has("adoption_rate") ? "" : tile("Adoption rate", fmtPct(nar), "", wrapPill("nar", pillNar), narSparkHtml, svgPct, showEntitySwitcher ? `ev_nar_${slideId}` : "")}
         ${hiddenTileSet.has("true_repeat_rate") ? "" : tile("True repeat rate", retentionVal, retentionSub, "", "", svgRepeat)}
         ${hiddenTileSet.has("delinquency_shielded") ? "" : tile("Delinquency shielded", dqVal, dqSub, dqPill, "", svgShield)}
       </div>
@@ -667,7 +834,7 @@ function renderExecSummary(d: ExecSummaryInput): { html: string; js: string } {
     ? `if(!window.flexToggleSpark){window.flexToggleSpark=function(id,btn){var el=document.getElementById(id);if(!el)return;var h=el.style.display==="none";el.style.display=h?"":"none";btn.classList.toggle("is-hidden",!h);};}`
     : "";
 
-  return { html, js: sparkJs };
+  return { html, js: sparkJs + entitySwitcherJs };
 }
 
 
@@ -752,7 +919,7 @@ function renderCohortAnalysis(input: CohortOverviewInput & { slideId: number }):
             ${ageTag}
           </div>
           <div><div style="font-size:9px;text-transform:uppercase;letter-spacing:0.07em;color:#a09cb0;">Active</div>
-               <div style="font-size:17px;font-weight:700;color:#1d1d1d;">${c.propertyCount}</div></div>
+               <div style="font-size:17px;font-weight:700;color:#1d1d1d;">${c.propertyCount.toLocaleString("en-US")}</div></div>
           <div><div style="font-size:9px;text-transform:uppercase;letter-spacing:0.07em;color:#a09cb0;">Total Units</div>
                <div style="font-size:17px;font-weight:700;color:#1d1d1d;">${c.totalUnits.toLocaleString()}</div></div>
           <div><div style="font-size:9px;text-transform:uppercase;letter-spacing:0.07em;color:#a09cb0;">Residents Paying</div>
@@ -1331,21 +1498,33 @@ function renderStateBreakdown(input: StateBreakdownInput): { html: string; js: s
 
 
 function renderFullPropertyTable(
-  snapshot: { propertyName: string; units: number; billsPaid: number; newSignups: number; prevSignups?: number; adoptionRate: number; rentPaid?: number; cumRent?: number; rolloutMonth?: string | null }[],
+  snapshot: { propertyName: string; pmcName?: string; units: number; billsPaid: number; newSignups: number; prevSignups?: number; adoptionRate: number; rentPaid?: number; cumRent?: number; rolloutMonth?: string | null }[],
   slideId: number
 ): string {
+  // "PMC" column right after Property, ONLY when the report combines 2+ PMCs (Kevin's ask on the
+  // 8-entity Asset Living deck: with every subsidiary's properties in one list, the property
+  // name alone doesn't say whose it is). Gated on >= 2 DISTINCT pmcName values in the snapshot -
+  // not on the field merely being present - so a single-PMC report's table is byte-identical
+  // to before this existed. Wraps rather than truncates, same as the Entity cell in Portfolio
+  // Comparison. Names are display-shortened via displayEntityNames (same call as every other
+  // entity label in a combined deck; collision-safe, so sorting on the short name groups
+  // exactly as the full name would) - mirrors Flask's _pmc_disp.
+  const uniqPmc = [...new Set(snapshot.map((r) => r.pmcName).filter((n): n is string => !!n))];
+  const showPmc = uniqPmc.length >= 2;
+  const pmcShort = displayEntityNames(uniqPmc);
+  const pmcDisp = new Map(uniqPmc.map((n, i) => [n, pmcShort[i]]));
   let rows = "";
   for (const row of snapshot) {
     const narColor = row.adoptionRate >= 0.20 ? "#1a9e6a" : row.adoptionRate >= 0.10 ? "#d97706" : "#dc5050";
     const curSig = Math.round(row.newSignups);
     const prevSig = Math.round(row.prevSignups ?? 0);
-    let sigHtml = String(curSig);
+    let sigHtml = curSig.toLocaleString("en-US");
     if (prevSig > 0) {
       const delta = curSig - prevSig;
       const deltaPct = Math.abs(delta / prevSig) * 100;
       const arr = delta >= 0 ? "▲" : "▼";
       const sigColor = delta >= 0 ? "#1a9e6a" : "#dc5050";
-      sigHtml = `${curSig} <span style="font-size:10px;color:${sigColor};white-space:nowrap;">${arr}${deltaPct.toFixed(0)}%</span>`;
+      sigHtml = `${curSig.toLocaleString("en-US")} <span style="font-size:10px;color:${sigColor};white-space:nowrap;">${arr}${deltaPct.toFixed(0)}%</span>`;
     }
     const thisMonthRent = row.rentPaid ?? 0;
     const totalRent = row.cumRent ?? thisMonthRent;
@@ -1353,12 +1532,16 @@ function renderFullPropertyTable(
     const rmRaw = row.rolloutMonth ?? "";
     const rmSort = rmRaw ? rmRaw.replace(/-/g, "").slice(0, 6) : "0";
     const rmDisplay = rmRaw ? new Date(rmRaw + "T00:00:00Z").toLocaleDateString("en-US", { year: "numeric", month: "short", timeZone: "UTC" }) : "-";
+    const pmcName = _e(pmcDisp.get(row.pmcName ?? "") ?? row.pmcName ?? "");
+    const pmcCell = showPmc
+      ? `\n          <td data-sort="${pmcName}" style="padding:6px 8px;font-size:11px;color:#524e5b;white-space:normal;overflow-wrap:anywhere;line-height:1.3;">${pmcName}</td>`
+      : "";
     rows += `
         <tr>
-          <td data-sort="${_e(row.propertyName)}" style="padding:6px 8px;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:160px;">${_e(row.propertyName)}</td>
+          <td data-sort="${_e(row.propertyName)}" style="padding:6px 8px;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:160px;">${_e(row.propertyName)}</td>${pmcCell}
           <td data-sort="${rmSort}" style="padding:6px 8px;font-size:12px;text-align:right;color:#a09cb0;">${rmDisplay}</td>
-          <td data-sort="${row.units}" style="padding:6px 8px;font-size:12px;text-align:right;">${row.units.toLocaleString()}</td>
-          <td data-sort="${row.billsPaid}" style="padding:6px 8px;font-size:12px;text-align:right;">${Math.round(row.billsPaid)}</td>
+          <td data-sort="${row.units}" style="padding:6px 8px;font-size:12px;text-align:right;">${row.units.toLocaleString("en-US")}</td>
+          <td data-sort="${row.billsPaid}" style="padding:6px 8px;font-size:12px;text-align:right;">${Math.round(row.billsPaid).toLocaleString("en-US")}</td>
           <td data-sort="${curSig}" style="padding:6px 8px;font-size:12px;text-align:right;">${sigHtml}</td>
           <td data-sort="${row.adoptionRate}" style="padding:6px 8px;font-size:12px;text-align:right;font-weight:700;color:${narColor};">${fmtPct(row.adoptionRate)}</td>
           <td data-sort="${thisMonthRent}" style="padding:6px 8px;font-size:12px;text-align:right;">${fmtCurrency(thisMonthRent)}</td>
@@ -1366,8 +1549,14 @@ function renderFullPropertyTable(
         </tr>`;
   }
 
-  const cols = ["Property", "Rollout Month", "Units", "Current Paying Residents", "New Signups (vs Last Mo.)", "Adoption", "This Month Rent", "Total Rent Paid"];
-  const colWidths = ["18%", "11%", "8%", "13%", "14%", "10%", "13%", "13%"];
+  // With the PMC column in, Property + PMC share what Property alone had (18% -> 16% + 12%) and
+  // the numeric columns give up a point or two each, so the row still sums to 100%.
+  const cols = showPmc
+    ? ["Property", "PMC", "Rollout Month", "Units", "Current Paying Residents", "New Signups (vs Last Mo.)", "Adoption", "This Month Rent", "Total Rent Paid"]
+    : ["Property", "Rollout Month", "Units", "Current Paying Residents", "New Signups (vs Last Mo.)", "Adoption", "This Month Rent", "Total Rent Paid"];
+  const colWidths = showPmc
+    ? ["16%", "12%", "10%", "7%", "12%", "13%", "8%", "11%", "11%"]
+    : ["18%", "11%", "8%", "13%", "14%", "10%", "13%", "13%"];
   const thHtml = cols
     .map((c, i) =>
       `<th onclick="flexSortTable(${slideId},${i})" id="th${slideId}-${i}" ` +
@@ -1526,7 +1715,7 @@ function buildDeckHtml(params: {
   </div>
 </div>
 <div class="footer-left">
-  Flexible Finance, Inc. &copy; ${report_year} | Confidential &nbsp;&middot;&nbsp; ${pmc_name} &middot; ${report_month}
+  Flexible Finance, Inc. &copy; ${report_year} | Confidential &nbsp;&middot;&nbsp; ${pmc_name} &middot; ${report_month} ${report_year} BP month
 </div>
 <div class="footer-right">
   <div class="deck-actions">
@@ -1859,7 +2048,13 @@ export default api({
 
   input: z.object({
     pmc_name: z.string(),
-    second_pmc: z.string().optional().default(""),
+    // Replaces the old single extra-PMC field (capped at exactly one extra entity) - a real
+    // array, no hardcoded limit. pmc_name stays the "primary" entity for display (cover title, etc.);
+    // this is everyone else being combined in. Plain .optional() + resolve the [] default at the
+    // call site below, NOT .optional().default([]) - that combo makes the field required in the
+    // generated call-site type, the same zod gotcha this file's other optional fields already
+    // avoid (see sparklines for precedent).
+    additional_pmc_names: z.array(z.string()).optional(),
     report_name: z.string().optional().default(""),
     lookback_months: z.number().int().default(12),
     deck_mode: z.enum(["qbr", "new_logo", "expansion"]).default("qbr"),
@@ -1874,22 +2069,17 @@ export default api({
     expansion_slides: z.array(z.string()).optional(),
     presenting_mode: z.boolean().optional().default(false),
     comparison_months: z.number().int().optional().default(1),
-    // Growth trend slides (residents_units/adoption_trend/cohort_overview) override.
-    // "auto" preserves the SMB-only default; "include"/"exclude" force the segment veto
-    // either way. Plain optional (not .default()) like expansion_slides above — a concurrent
-    // edit changed this to .default("auto"), which makes the field REQUIRED in the generated
-    // call-site type (breaks QBR/new_logo callers that don't pass it); restored, with the
-    // fallback handled at the derivation site instead (`growth_slides ?? "auto"`).
-    growth_slides: z.enum(["auto", "include", "exclude"]).optional(),
     // Exec tile sparklines / period-comparison pills, independent manual overrides (Kevin's
     // ask - "I want to be able to toggle everything if we want", on top of the implicit
-    // sparklines-follow-growth-slides behavior). "auto" preserves today's derived default for
-    // each; "include"/"exclude" force it either way. Same plain-optional convention as
-    // growth_slides above (not .default()) for the same call-site-required reason.
+    // sparklines-follow-growth-trend-slides behavior — see showGrowthSlides below). "auto"
+    // preserves today's derived default for each; "include"/"exclude" force it either way.
+    // Plain optional (not .default()) like expansion_slides above — a concurrent edit changing
+    // either to .default("auto") would make the field REQUIRED in the generated call-site type
+    // (breaks QBR/new_logo callers that don't pass it).
     sparklines: z.enum(["auto", "include", "exclude"]).optional(),
     period_comparison: z.enum(["auto", "include", "exclude"]).optional(),
     // Resident/household terminology, every deck mode (Kevin's ask, 2026-08-19). Plain
-    // optional like growth_slides above — same .default() call-site-required gotcha.
+    // optional like sparklines above — same .default() call-site-required gotcha.
     terminology: z.enum(["resident", "household"]).optional(),
     // Which of the 6 exec-summary KPI tiles to omit entirely (Kevin's ask). Chosen at
     // generation time, not a live post-generation toggle — the download button re-serializes
@@ -1897,7 +2087,7 @@ export default api({
     // a live click-to-hide wouldn't survive into the downloaded file with today's architecture.
     // Valid keys: active_properties, residents_paying, new_residents, adoption_rate,
     // true_repeat_rate, delinquency_shielded.
-    // Plain optional (not .default()), like growth_slides above — a concurrent edit changing
+    // Plain optional (not .default()), like sparklines above — a concurrent edit changing
     // any of these to .default() would make it REQUIRED in the generated call-site type
     // (breaks every caller that doesn't pass it). Fallback handled at the usage site instead:
     // hiddenTileSet = new Set(d.hiddenTiles ?? []), and benchmarkTableHeader/benchmarkRowCells
@@ -1975,7 +2165,12 @@ export default api({
     }).optional(),
   }),
 
-  async run(ctx, { pmc_name, second_pmc, report_name, lookback_months, deck_mode, adoption_target, testimonials, total_portfolio_units, expansion_slides, presenting_mode, comparison_months, growth_slides, sparklines, period_comparison, terminology, hidden_kpi_tiles, show_adoption_portfolio_avg, show_adoption_peer_median, show_engagement_observed, show_engagement_portfolio_avg, show_engagement_peer_median, imported_slides, hide_d2c }) {
+  async run(ctx, { pmc_name, additional_pmc_names, report_name, lookback_months, deck_mode, adoption_target, testimonials, total_portfolio_units, expansion_slides, presenting_mode, comparison_months, sparklines, period_comparison, terminology, hidden_kpi_tiles, show_adoption_portfolio_avg, show_adoption_peer_median, show_engagement_observed, show_engagement_portfolio_avg, show_engagement_peer_median, imported_slides, hide_d2c }) {
+    // Single resolved list every downstream query/array-builder reads from - pmc_name first
+    // (the "primary" entity), then whatever else is being combined in. Replaces the old
+    // old `hasSecondPmc ? [pmc_name, secondPmcName] : [pmc_name]` ternary pattern repeated at 4 call sites below.
+    const allPmcNames = [pmc_name, ...(additional_pmc_names ?? [])];
+
     // Compute bp_safe_cutoff
     const today = new Date();
     const dayOfMonth = today.getDate();
@@ -2092,7 +2287,7 @@ export default api({
 
     // Peer-candidate profile for GEO-TIER matching - fired here, immediately, rather than at
     // its point of use (~line 3700, after two entire sequential query batches) because its
-    // inputs (pmc_name/second_pmc/cutoffStr) are already available and it depends on nothing
+    // inputs (pmc_name/allPmcNames/cutoffStr) are already available and it depends on nothing
     // else this function computes. Awaited later at its original call site - same "fire early,
     // await late" pattern as networkPoolPromise/rollingPromise/zendeskPromise below. Performance
     // fix (Kevin's catch: GetPMCMonthlyReport taking 60+s vs Flask's ~20s) - this alone removes
@@ -2133,7 +2328,7 @@ export default api({
     // subtracting itself back out. Kevin's call (2026-08-13): keep this side correct rather than
     // reproducing Flask's undercount; Flask should get the equivalent fix (exclude subject
     // before the candidate pool is built) instead.
-    const peerCandidateSubjectPmcs = second_pmc ? [pmc_name, second_pmc] : [pmc_name];
+    const peerCandidateSubjectPmcs = allPmcNames;
     const peerCandidateRowsPromise = ctx.integrations.snowflake_sso.query(
       `SELECT PMC_NAME, PROPERTY_STATE,
               SUM(PROPERTY_UNIT_COUNT) AS UNITS,
@@ -2154,7 +2349,8 @@ export default api({
       { label: "Peer-candidate geo profile for tier matching (PMC x state grain, unsampled)" }
     ).catch(() => [] as z.infer<typeof PeerCandidateProfileSchema>[]);
 
-    const rows = await ctx.integrations.snowflake_sso.query(
+    const pmcNamePlaceholders = allPmcNames.map(() => "?").join(", ");
+    const allRows = await ctx.integrations.snowflake_sso.query(
       `SELECT
           TO_VARCHAR(BP_MONTH, 'YYYY-MM-DD') AS BP_MONTH,
           PROPERTY_NAME,
@@ -2174,47 +2370,15 @@ export default api({
           HAS_MARKETING_INTEGRATION,
           IS_MARKETING_OPT_IN
        FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS
-       WHERE PMC_NAME = ?
+       WHERE PMC_NAME IN (${pmcNamePlaceholders})
          AND BP_MONTH >= DATEADD('month', -?, CURRENT_DATE())
          AND BP_MONTH < ?
        ORDER BY BP_MONTH, PROPERTY_NAME
        LIMIT 10000`,
       RawRowSchema,
-      [pmc_name, lookback_months, cutoffStr],
-      { label: "Fetch PMC monthly report data" }
+      [...allPmcNames, lookback_months, cutoffStr],
+      { label: "Fetch PMC monthly report data (all combined entities)" }
     );
-
-    // If a second PMC is provided, fetch its rows and merge (UNION ALL)
-    let allRows = rows;
-    if (second_pmc) {
-      const secondRows = await ctx.integrations.snowflake_sso.query(
-        `SELECT
-            TO_VARCHAR(BP_MONTH, 'YYYY-MM-DD') AS BP_MONTH,
-            PROPERTY_NAME,
-            PMC_NAME,
-            PROPERTY_UNIT_COUNT,
-            TO_VARCHAR(ROLLOUT_MONTH, 'YYYY-MM-DD') AS ROLLOUT_MONTH,
-            CHARGED_USERS_COUNT AS CHARGED_USERS,
-            COALESCE(NEW_SIGNUPS_COUNT, 0) AS NEW_SIGNUPS,
-            BILLS_PAID_COUNT AS BILLS_PAID,
-            COALESCE(RENT_PAID_AMOUNT, 0) AS RENT_PAID,
-            PROPERTY_PUBLIC_ID,
-            PROPERTY_STATE,
-            IS_IN_NETWORK,
-            COALESCE(NEW_BILL_CONNECTIONS_PROPERTY, 0) AS NEW_BILL_CONNECTIONS,
-            HUBSPOT_DEAL_TOTAL_COMPANY_UNITS
-         FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS
-         WHERE PMC_NAME = ?
-           AND BP_MONTH >= DATEADD('month', -?, CURRENT_DATE())
-           AND BP_MONTH < ?
-         ORDER BY BP_MONTH, PROPERTY_NAME
-         LIMIT 10000`,
-        RawRowSchema,
-        [second_pmc, lookback_months, cutoffStr],
-        { label: "Fetch second PMC data for merge" }
-      );
-      allRows = [...rows, ...secondRows];
-    }
 
     // Display-only PMC name (FKA suffix stripped) — pmc_name itself stays untouched everywhere
     // it's used as a query parameter; this is only for what actually shows up on a slide.
@@ -2268,6 +2432,32 @@ export default api({
       YTD_RENT: z.number().nullable(),
       YTD_BILLS: z.number().nullable(),
       YTD_MONTHS_ACTIVE: z.number().nullable(),
+    });
+
+    // Task 10 (Since Inception stacked bar): per-entity breakdown of the SAME yearly rent
+    // history above, for combined multi-PMC reports only. Deliberately a SEPARATE query rather
+    // than adding PMC_NAME to YearlyRentBillsSchema's own GROUP BY - that query's MONTHS_ACTIVE
+    // is COUNT(DISTINCT BP_MONTH) computed across whichever combined entities have data in a
+    // given month; regrouping it by (YEAR, PMC_NAME) would turn that into a per-entity count,
+    // and summing per-entity counts back up would OVERCOUNT months where two entities both had
+    // activity in the same calendar month (which combined entities typically do) - silently
+    // breaking the incomplete-current-year projection logic that reads combined MONTHS_ACTIVE.
+    // TOTAL_RENT/YTD_RENT have no such issue (SUM is additive over any partition), so this query
+    // reuses the exact same WHERE filter (same allPmcNames IN-list, same BP_MONTH < cutoffStr
+    // bound, same deliberately-unfiltered "true history" convention - no IS_IN_NETWORK clause)
+    // as the combined query, just grouped one dimension finer - guaranteeing per-entity totals
+    // sum exactly to the combined ones for the same year (verified in this task's synthetic
+    // check). Only fires for QBR + more than 1 combined entity - a single-PMC report never pays
+    // for it.
+    // TOTAL_BILLS added for the Portfolio Comparison slide's all-time "Total Bills Paid" column
+    // (Kevin's ask) - same additive SUM over the same rows, so per-entity lifetime bills sum
+    // exactly to the combined query's BILLS_PAID, i.e. the Since Inception subtitle's figure.
+    const EntityYearlyRentSchema = z.object({
+      PMC_NAME: z.string(),
+      YEAR: z.number(),
+      TOTAL_RENT: z.number().nullable(),
+      TOTAL_BILLS: z.number().nullable(),
+      YTD_RENT: z.number().nullable(),
     });
 
     const PropertyTrendSchema = z.object({
@@ -2357,8 +2547,18 @@ export default api({
     // true_repeat_rate below Flask's real number). `latestCompletedMonth` (computed further
     // down from monthlyTotals) is the same concept but isn't available yet at this point in
     // the pipeline — this mirrors its exact filter using the already-fetched `rows` instead.
+    //
+    // Post-unification note (Task 2, multi-PMC combining): the old two-query architecture kept
+    // a separate `rows` (subject `pmc_name` only, pre-merge) around specifically for this calc,
+    // distinct from the merged `allRows`. Resolved (Kevin's call): "latest completed month"
+    // considers the FULL combined set, not just the primary pmc_name - if any combined entity
+    // has real in-network activity in a month, that month counts, and the roll-up for that
+    // month sums whatever's actually there. Explicitly NOT gated on every entity having data
+    // (a lagging subsidiary doesn't hold the whole report back a month) - "just show everything
+    // that's available in any given month... make sure the roll up accounts for the roll up
+    // each time."
     const currentMonthStrForReporting = new Date(today.getFullYear(), today.getMonth(), 1).toISOString().slice(0, 10);
-    const inNetworkBpMonths = rows
+    const inNetworkBpMonths = allRows
       .filter((r) => r.IS_IN_NETWORK && r.CHARGED_USERS > 0
         && !(dayOfMonth <= 5 && r.BP_MONTH === currentMonthStrForReporting))
       .map((r) => r.BP_MONTH);
@@ -2367,154 +2567,24 @@ export default api({
       : new Date(cutoff.getFullYear(), cutoff.getMonth() - 1, 1).toISOString().slice(0, 10);
 
     // For expansion/new_logo modes, skip expensive queries that are only used by QBR:
-    // - yearlyRentBillsRows: Since Inception slide (QBR only)
+    // - yearlyRentBillsRows: Since Inception slide (now QBR + Expansion, see needsSinceInception
+    //   below - was QBR-only until Kevin's scope addition wiring this slide into Expansion too)
     // - trendRawRows: Property trend badges (QBR appendix only)
     const needsQBRQueries = deck_mode === "qbr";
+    // Since Inception (Task 10's stacked-bar-by-entity slide) now also renders on Expansion
+    // decks (Kevin's scope addition after Task 15) - both queries this gates just below are
+    // already scoped to allPmcNames (not a network-wide scan) and cheap, same "safe to widen"
+    // reasoning as needsRegionDetail a few lines down, so broadening the gate is preferred over
+    // computing a separate Expansion-only version of the same query.
+    const needsSinceInception = needsQBRQueries || deck_mode === "expansion";
 
-    // --- Network property pool (QBR only) — fired here, BEFORE the batch below, instead of
-    // after it finishes. Per Clark: the "IntegrationError code 4" failures aren't a broken
-    // Snowflake connection (SELECT 1 works fine) — they're the overall API step's time budget
-    // running out and Superblocks killing whatever query is still in flight, which reports back
-    // as a generic integration error rather than a clean timeout. This query used to only start
-    // AFTER the first Promise.all (6 queries) fully resolved, meaning it queued behind ~12 other
-    // queries before even beginning — and it's by far the heaviest single query in the whole
-    // report (15,000-row cap + a UDF chain), so it was consistently the one still running when
-    // the budget ran out. Starting it here, in parallel with everything else, gives it the same
-    // wall-clock head start as every other query instead of a ~12-query handicap.
-    // Currently write-only (its debug-panel reader was removed) - kept, not deleted, since it's
-    // a real query result and this file's own comments document real cost-diagnosis history
-    // around it; underscore-prefixed per this codebase's convention for intentionally-idle
-    // diagnostics rather than silently dropping a traced pipeline.
-    let _networkPool: NetworkPoolRow[] = [];
     // Dedicated property-level peer pool (Flask's pull_network_property_pool,
-    // generator/data.py:4900-5066) — see the full comment on PROPERTY_POOL_SQL below for why
-    // this can't just reuse networkPool.
+    // generator/data.py:4900-5066) — see the full comment on PROPERTY_POOL_SQL below.
     let propertyPool: NetworkPoolRow[] = [];
-    // Also currently write-only (debug-panel reader removed); underscore-prefixed for the same
-    // reason as _networkPool above.
+    // Currently write-only (debug-panel reader removed); underscore-prefixed per this
+    // codebase's convention for intentionally-idle diagnostics rather than silently
+    // dropping a traced pipeline.
     let _propertyPoolError: string | null = null;
-    // TEMPORARY diagnostic — captures the real error instead of silently swallowing it.
-    let _networkPoolError: string | null = null;
-    const NETWORK_POOL_SQL = `WITH prop_zip AS (
-                SELECT PROPERTY_PUBLIC_ID, PROPERTY_ZIP,
-                       ROW_NUMBER() OVER (PARTITION BY PROPERTY_PUBLIC_ID ORDER BY CREATED_AT_UTC DESC) AS rn
-                FROM PRODUCTION.ANALYTICS.DIM_PROPERTIES_PMCS
-             ),
-             latest AS (
-                -- cutoffStr is an EXCLUSIVE upper bound (1st of the next allowed month) — using
-                -- <= here let it match that exact stub month, which Snowflake pre-creates with
-                -- zeroed/null billing columns before it has real data. Every peer's "latest"
-                -- resolved to that empty month, zeroing out NAR/avg-rent for the entire network
-                -- pool and breaking every rent-matched peer tier. Must be strict <.
-                SELECT MAX(BP_MONTH) AS bp_month
-                FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS
-                WHERE BP_MONTH < ? AND IS_INTEGRATED_TOTAL = TRUE
-             ),
-             agg AS (
-                SELECT
-                  PMC_NAME, PROPERTY_NAME,
-                  MAX(CASE WHEN BP_MONTH = (SELECT bp_month FROM latest) THEN PROPERTY_STATE END) AS PROPERTY_STATE,
-                  MAX(CASE WHEN BP_MONTH = (SELECT bp_month FROM latest) THEN PROPERTY_UNIT_COUNT END) AS PROPERTY_UNIT_COUNT,
-                  MAX(CASE WHEN BP_MONTH = (SELECT bp_month FROM latest) THEN RENT_PAID_AMOUNT END) AS RENT_PAID_AMOUNT,
-                  MAX(CASE WHEN BP_MONTH = (SELECT bp_month FROM latest) THEN BILLS_PAID_COUNT END) AS BILLS_PAID_COUNT,
-                  MAX(ROLLOUT_MONTH) AS ROLLOUT_MONTH,
-                  SUM(CASE WHEN BP_MONTH >= DATEADD('month', -12, (SELECT bp_month FROM latest))
-                            AND BP_MONTH <= (SELECT bp_month FROM latest)
-                       THEN NEW_BILL_CONNECTIONS_PROPERTY ELSE 0 END) AS T12_CONNECTIONS,
-                  ANY_VALUE(PROPERTY_PUBLIC_ID) AS PROPERTY_PUBLIC_ID
-                FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS
-                WHERE IS_INTEGRATED_TOTAL = TRUE
-                  AND ROLLOUT_MONTH IS NOT NULL
-                  -- Real fix for the "IntegrationError code 4" failures: this GROUP BY was
-                  -- scanning/aggregating EVERY property's ENTIRE history network-wide with no
-                  -- date bound at all — by far the most expensive thing in the whole report
-                  -- (every other query here is scoped to one PMC or a short peer list). Nothing
-                  -- this CTE computes needs data older than 13 months back from "latest" — the
-                  -- MAX(CASE WHEN BP_MONTH = latest ...) columns only ever read the single latest
-                  -- month, and T12_CONNECTIONS' own SUM(CASE...) already only looks back 12
-                  -- months from latest. Bounding the scan to that same window cuts the aggregated
-                  -- row count by the same ratio as (network lifetime in months / 13) for any
-                  -- property with more history than that, with an identical result.
-                  AND BP_MONTH >= DATEADD('month', -13, (SELECT bp_month FROM latest))
-                  AND BP_MONTH <= (SELECT bp_month FROM latest)
-                GROUP BY PMC_NAME, PROPERTY_NAME
-             ),
-             subject_rows AS (
-                -- ALWAYS include the subject PMC's (and second_pmc's, if any) own properties,
-                -- unconditionally, regardless of the peer-sampling cap below. A single PMC never
-                -- has anywhere near enough properties to threaten the byte-size cap, but without
-                -- this, an unordered LIMIT over the full network can arbitrarily exclude the very
-                -- PMC this report is being generated for. (Historical note: this originally
-                -- guarded a subjectPoolProps read of this pool for the subject's own engagement
-                -- stat — that stat has since been moved to read directly from allRows/inNetwork
-                -- instead, per the engagement fix elsewhere in this file, so this CTE no longer
-                -- protects that specific stat. Left in place since the general principle — a
-                -- report should never silently lose its own subject's rows to an unordered cap —
-                -- still holds for whatever else reads this pool.)
-                SELECT PMC_NAME, PROPERTY_NAME, PROPERTY_STATE, PROPERTY_UNIT_COUNT,
-                       RENT_PAID_AMOUNT, BILLS_PAID_COUNT, ROLLOUT_MONTH, T12_CONNECTIONS,
-                       PROPERTY_PUBLIC_ID
-                FROM agg
-                WHERE PMC_NAME IN (?, ?)
-             ),
-             peer_candidates AS (
-                -- Peer sample: filtered + capped, but spread across PMCs (top 20 properties per
-                -- PMC by unit count) instead of an arbitrary unordered slice of the whole network.
-                -- An unordered LIMIT lets Snowflake return whatever 3000 rows it happens to scan
-                -- first, which can be dominated by one or two large PMCs and starve the rest --
-                -- this is almost certainly why the peer-median line came back flatter than the
-                -- real (unbounded) calculation. Spreading per-PMC keeps the sample representative
-                -- across the network instead of a lottery draw.
-                SELECT PMC_NAME, PROPERTY_NAME, PROPERTY_STATE, PROPERTY_UNIT_COUNT,
-                       RENT_PAID_AMOUNT, BILLS_PAID_COUNT, ROLLOUT_MONTH, T12_CONNECTIONS,
-                       PROPERTY_PUBLIC_ID
-                FROM (
-                   SELECT PMC_NAME, PROPERTY_NAME, PROPERTY_STATE, PROPERTY_UNIT_COUNT,
-                          RENT_PAID_AMOUNT, BILLS_PAID_COUNT, ROLLOUT_MONTH, T12_CONNECTIONS,
-                          PROPERTY_PUBLIC_ID,
-                          ROW_NUMBER() OVER (PARTITION BY PMC_NAME ORDER BY PROPERTY_UNIT_COUNT DESC) AS rn
-                   FROM agg
-                   WHERE PROPERTY_UNIT_COUNT >= 10
-                     AND PROPERTY_STATE IS NOT NULL AND PROPERTY_STATE != ''
-                     AND PMC_NAME NOT IN (?, ?)
-                )
-                WHERE rn <= 20
-                -- Per Clark: Superblocks enforces a ~5MB step-output size limit, and 15000 rows
-                -- x 9 columns, serialized with full JSON keys per row, plausibly lands right at
-                -- that ceiling -- a FIXED row limit hitting a FIXED byte cap fails identically
-                -- every single time, exactly what was observed across 3 different query bodies.
-                -- Cut hard to 3000 as a decisive test, comfortably clear of 5MB even at a
-                -- generous worst-case ~500 bytes/row (~1.5MB total); can be tuned back up now
-                -- that the cap is confirmed.
-                --
-                -- ORDER BY here is NOT optional. Snowflake gives no row-order guarantee for a
-                -- LIMIT with nothing ordering it -- which 3000 rows out of the full qualifying
-                -- pool actually survive can differ between two runs of the IDENTICAL query
-                -- against IDENTICAL data. That reshuffles which PMCs' properties get counted,
-                -- which reshuffles the tier-matching JS does downstream, which reshuffles who
-                -- ends up in lockedPeers -- this is what made the peer median swing wildly
-                -- between two reports generated 5 minutes apart with no real data change.
-                -- PMC_NAME, rn gives a fully stable, reproducible selection (alphabetical, then
-                -- each PMC's own top properties by size) -- deterministic, at the cost of a
-                -- mild bias toward alphabetically-early PMCs if the true pool exceeds 3000,
-                -- which is a far better trade than "random each run."
-                ORDER BY PMC_NAME, rn
-                LIMIT 3000
-             ),
-             candidates AS (
-                SELECT * FROM subject_rows
-                UNION ALL
-                SELECT * FROM peer_candidates
-             )
-             SELECT c.PMC_NAME, c.PROPERTY_NAME, c.PROPERTY_STATE, c.PROPERTY_UNIT_COUNT,
-                    c.RENT_PAID_AMOUNT, c.BILLS_PAID_COUNT, c.ROLLOUT_MONTH, c.T12_CONNECTIONS,
-                    PRODUCTION.ANALYTICS.FIPS_TO_CENSUS_DATA(
-                        PRODUCTION.ANALYTICS.ZIP_TO_FIPS(LEFT(p.PROPERTY_ZIP, 5)),
-                        'median_renter_household_income'
-                    ) AS MEDIAN_RENTER_INCOME
-             FROM candidates c
-             LEFT JOIN prop_zip p
-               ON p.PROPERTY_PUBLIC_ID = c.PROPERTY_PUBLIC_ID AND p.rn = 1`;
     // Region detail (DMA sub-region breakdown, "By State" slide's drill-down rows) - Kevin's
     // ask: Expansion's own "By State" slide never got this even though QBR's has had it all
     // along. Hoisted out of the QBR-only batch below (same "fire early" pattern networkPoolPromise
@@ -2553,58 +2623,6 @@ export default api({
           [pmc_name, reportingMonthStr],
           { label: "Pull DMA region detail for geo slide dropdowns" }
         ).catch(() => [] as { PROPERTY_STATE: string; PROPERTY_REGION: string; PROPERTIES: number; TOTAL_UNITS: number; BILLS_PAID: number }[]);
-
-    const networkPoolPromise = !needsQBRQueries
-      ? Promise.resolve([] as NetworkPoolRow[])
-      : (async (): Promise<NetworkPoolRow[]> => {
-          // Retry-with-backoff is separate, cheap insurance against any additional transient
-          // blip on top of the timeout fix above — harmless if the timeout fix alone is enough.
-          const maxAttempts = 3;
-          let lastErr: unknown = null;
-          for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-            try {
-              // second_pmc defaults to "" (never undefined, per the input schema) when not
-              // provided -- duplicating pmc_name in its place is a harmless no-op for both the
-              // IN and NOT IN clauses (a repeated value changes nothing), and keeps exactly 2
-              // placeholders in each clause regardless of whether a second PMC was passed.
-              const subjectPmcsForPool = [pmc_name, second_pmc || pmc_name];
-              const netRows = await ctx.integrations.snowflake_sso.query(
-                NETWORK_POOL_SQL,
-                NetworkPoolSchema,
-                [cutoffStr, ...subjectPmcsForPool, ...subjectPmcsForPool],
-                { label: "Pull network property pool for peer matching (incl. median renter income for RTI tier)" }
-              );
-              _networkPoolCache = { cutoff: cutoffStr, data: netRows, fetchedAt: Date.now() };
-              return netRows;
-            } catch (err) {
-              lastErr = err;
-              if (attempt < maxAttempts) {
-                await new Promise((resolve) => setTimeout(resolve, 750 * attempt));
-              }
-            }
-          }
-          // TEMPORARY diagnostic — err.message alone was just a generic Superblocks wrapper
-          // ("Integration ... failed during 'query'") with no real Snowflake-side detail. Walk
-          // every own-enumerable property (err.cause, err.response, err.details, etc. — whatever
-          // this integration error shape actually carries) so the debug panel surfaces the real
-          // underlying failure instead of the wrapper text alone.
-          const err = lastErr;
-          const base = err instanceof Error ? err.message : String(err);
-          let extra = "";
-          try {
-            const props = err && typeof err === "object" ? Object.getOwnPropertyNames(err) : [];
-            const extraProps = props.filter((p) => p !== "message" && p !== "stack");
-            if (extraProps.length > 0) {
-              const dump: Record<string, unknown> = {};
-              for (const p of extraProps) dump[p] = (err as Record<string, unknown>)[p];
-              extra = " | extra: " + JSON.stringify(dump, null, 0).slice(0, 2000);
-            }
-          } catch {
-            // ignore — best-effort diagnostic only
-          }
-          _networkPoolError = `${base}${extra} (failed after ${maxAttempts} attempts)`;
-          return [] as NetworkPoolRow[];
-        })();
 
     // Dedicated property-level peer pool — Flask's real pull_network_property_pool
     // (generator/data.py:4900-5066), NOT a reuse of networkPool above. networkPool is
@@ -2841,7 +2859,7 @@ export default api({
       ROLLOUT_DATE: z.string(),
       FIRST_CONNECTED_AT: z.string(),
     });
-    const [metricsRows, dqShieldedRows, yearlyRentBillsRows, trendRawRows, retentionCohortRows, customerMonthRows, subjectSignupTimingRows] = await Promise.all([
+    const [metricsRows, dqShieldedRows, yearlyRentBillsRows, entityYearlyRentRows, trendRawRows, retentionCohortRows, customerMonthRows, subjectSignupTimingRows] = await Promise.all([
       ctx.integrations.snowflake_sso.query(
         `SELECT TO_VARCHAR(BP_MONTH, 'YYYY-MM-DD') AS BP_MONTH, NAR, SEGMENT_NAR_AVG,
                 BILLS_PAID, BILLS_PAID_NEW, BILLS_PAID_REPEAT, BILLS_PAID_PREV_MONTH,
@@ -2866,17 +2884,17 @@ export default api({
                 SUM(RENT_NOT_COLLECTED) AS RENT_NOT_COLLECTED,
                 SUM(NUMBER_OF_RESIDENTS) AS NUMBER_OF_RESIDENTS
          FROM PRODUCTION.EXTERNAL_REPORTING.DQ_PROPERTY
-         WHERE PMC_NAME = ?
+         WHERE PMC_NAME IN (${allPmcNames.map(() => "?").join(", ")})
            AND BP_MONTH >= DATEADD('month', -13, CURRENT_DATE())
            AND BP_MONTH < ?
          GROUP BY 1
          ORDER BY 1 DESC
          LIMIT 50`,
         DqShieldedRowSchema,
-        [pmc_name, cutoffStr],
+        [...allPmcNames, cutoffStr],
         { label: "Fetch DQ shielded data from DQ_PROPERTY" }
       ),
-      needsQBRQueries
+      needsSinceInception
         ? ctx.integrations.snowflake_sso.query(
             `SELECT
                 YEAR(BP_MONTH) AS YEAR,
@@ -2887,7 +2905,7 @@ export default api({
                 SUM(CASE WHEN MONTH(BP_MONTH) <= ? THEN BILLS_PAID_COUNT ELSE 0 END) AS YTD_BILLS,
                 COUNT(DISTINCT CASE WHEN MONTH(BP_MONTH) <= ? THEN BP_MONTH END) AS YTD_MONTHS_ACTIVE
              FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS
-             WHERE PMC_NAME = ?
+             WHERE PMC_NAME IN (${allPmcNames.map(() => "?").join(", ")})
                AND BP_MONTH < ?
              GROUP BY 1
              ORDER BY 1
@@ -2900,10 +2918,33 @@ export default api({
             // time. A property's CURRENT network status has no bearing on whether past history
             // happened (Kevin's catch: Flask showed $12.43M/7,239 bills, this showed $12.4M/7,230).
             YearlyRentBillsSchema,
-            [cutoffMonthNum, cutoffMonthNum, cutoffMonthNum, pmc_name, cutoffStr],
+            [cutoffMonthNum, cutoffMonthNum, cutoffMonthNum, ...allPmcNames, cutoffStr],
             { label: "Fetch since-inception yearly totals (unbounded)" }
           )
         : Promise.resolve([] as z.infer<typeof YearlyRentBillsSchema>[]),
+      needsSinceInception && allPmcNames.length > 1
+        ? ctx.integrations.snowflake_sso.query(
+            `SELECT
+                PMC_NAME,
+                YEAR(BP_MONTH) AS YEAR,
+                SUM(RENT_PAID_AMOUNT) AS TOTAL_RENT,
+                SUM(BILLS_PAID_COUNT) AS TOTAL_BILLS,
+                SUM(CASE WHEN MONTH(BP_MONTH) <= ? THEN RENT_PAID_AMOUNT ELSE 0 END) AS YTD_RENT
+             FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS
+             WHERE PMC_NAME IN (${allPmcNames.map(() => "?").join(", ")})
+               AND BP_MONTH < ?
+             GROUP BY 1, 2
+             ORDER BY 1, 2
+             LIMIT 500`,
+            // Same unfiltered "true history" convention and same WHERE bounds as
+            // YearlyRentBillsSchema's combined query just above - see the schema comment for
+            // why this has to be a separate query instead of adding PMC_NAME to that one's own
+            // GROUP BY. Gated on allPmcNames.length > 1 - a single-PMC report never fires this.
+            EntityYearlyRentSchema,
+            [cutoffMonthNum, ...allPmcNames, cutoffStr],
+            { label: "Fetch since-inception yearly totals per combined entity (stacked bar)" }
+          )
+        : Promise.resolve([] as z.infer<typeof EntityYearlyRentSchema>[]),
       needsQBRQueries
         ? ctx.integrations.snowflake_sso.query(
             `SELECT PROPERTY_NAME,
@@ -2947,14 +2988,14 @@ export default api({
             -- explains the small residual gap remaining after the first active-properties fix.
             SELECT PROPERTY_NAME
             FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS
-            WHERE PMC_NAME = ?
+            WHERE PMC_NAME IN (${allPmcNames.map(() => "?").join(", ")})
               AND BP_MONTH = ?::DATE
               AND IS_IN_NETWORK = TRUE
          ),
          scoped_props AS (
             SELECT PROPERTY_PUBLIC_ID, BP_MONTH
             FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS
-            WHERE PMC_NAME = ?
+            WHERE PMC_NAME IN (${allPmcNames.map(() => "?").join(", ")})
               AND PROPERTY_NAME IN (SELECT PROPERTY_NAME FROM active_properties)
               AND IS_IN_NETWORK = TRUE
               AND BP_MONTH >= DATEADD('month', -?, ?::DATE)
@@ -3011,11 +3052,11 @@ export default api({
          GROUP BY b.LOYALTY_BUCKET, t.cnt, r.cnt, e.cnt`,
         RetentionCohortSchema,
         // Flask: max(3, lookback_months) (app.py:730) — floor so a very short override can't
-        // starve the cohort window entirely. First two params (pmc_name, reportingMonthStr)
-        // resolve active_properties' latest-month snapshot; third (pmc_name again) is
+        // starve the cohort window entirely. First param group (allPmcNames, reportingMonthStr)
+        // resolves active_properties' latest-month snapshot; second allPmcNames spread is
         // scoped_props' own PMC_NAME filter, needed now that the join key is PROPERTY_NAME
         // (not unique across the whole network) instead of PROPERTY_PUBLIC_ID.
-        [pmc_name, reportingMonthStr, pmc_name, Math.max(3, lookback_months), cutoffStr, cutoffStr, reportingMonthStr, reportingMonthStr],
+        [...allPmcNames, reportingMonthStr, ...allPmcNames, Math.max(3, lookback_months), cutoffStr, cutoffStr, reportingMonthStr, reportingMonthStr],
         { label: "Compute loyalty buckets & true repeat rate from customer cohort" }
       ).catch(() => [] as { LOYALTY_BUCKET: string; BUCKET_COUNT: number; TOTAL_CUSTOMERS: number; TRUE_REPEAT_RATE: number | null }[]),
       ctx.integrations.snowflake_sso.query(
@@ -3132,21 +3173,21 @@ export default api({
         SELECT MIN(o.CLOSED_AT_UTC) AS closed_at
         FROM PRODUCTION.SALES.FCT_SALES_OPPORTUNITIES o
         JOIN PRODUCTION.SALES.DIM_SALES_ACCOUNTS a ON o.SALES_ACCOUNT_KEY = a.SALES_ACCOUNT_KEY
-        JOIN (SELECT DISTINCT PMC_ID FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS WHERE PMC_NAME = ?) p
+        JOIN (SELECT DISTINCT PMC_ID FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS WHERE PMC_NAME IN (${allPmcNames.map(() => "?").join(", ")})) p
              ON a.PMC_ID = p.PMC_ID
         WHERE o.IS_CLOSED_WON = TRUE
         UNION ALL
         SELECT MIN(o.CLOSED_AT_UTC) AS closed_at
         FROM FLEX.SALES.FCT_CRM_OPPORTUNITY o
         JOIN FLEX.SALES.DIM_CRM_ACCOUNT_HISTORY a ON o.CRM_ACCOUNT_SK = a.CRM_ACCOUNT_SK
-        JOIN (SELECT DISTINCT PMC_ID FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS WHERE PMC_NAME = ?) p
+        JOIN (SELECT DISTINCT PMC_ID FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS WHERE PMC_NAME IN (${allPmcNames.map(() => "?").join(", ")})) p
              ON a.PMC_ID = p.PMC_ID
         WHERE a.IS_CURRENT = TRUE
           AND o.IS_CLOSED_WON = TRUE
        )
        SELECT TO_VARCHAR(MIN(closed_at), 'YYYY-MM-DD') AS LAUNCH_MONTH FROM opp_dates`,
       LaunchSchema,
-      [pmc_name, pmc_name],
+      [...allPmcNames, ...allPmcNames],
       { label: "Pull partner launch month from Salesforce opportunities (old + new schema)" }
     ).catch((err) => {
       partnerSinceError = err instanceof Error ? err.message : String(err);
@@ -3169,12 +3210,12 @@ export default api({
        FROM (
            SELECT PROPERTY_PUBLIC_ID, ROLLOUT_MONTH, MIN(BP_MONTH) AS first_billed_month
            FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS
-           WHERE PMC_NAME = ? AND ROLLOUT_MONTH IS NOT NULL
+           WHERE PMC_NAME IN (${allPmcNames.map(() => "?").join(", ")}) AND ROLLOUT_MONTH IS NOT NULL
            GROUP BY PROPERTY_PUBLIC_ID, ROLLOUT_MONTH
        ) t
        WHERE DATEDIFF('month', ROLLOUT_MONTH, first_billed_month) <= 3`,
       LaunchSchema,
-      [pmc_name],
+      [...allPmcNames],
       { label: "Pull guarded earliest rollout month for partner-since comparison" }
     ).catch(() => [{ LAUNCH_MONTH: null }] as { LAUNCH_MONTH: string | null }[]);
 
@@ -3188,15 +3229,19 @@ export default api({
     // CTE, data.py:2035-2043) because peers only feed a percentile position, not a displayed
     // headline number, so the noisier field is tolerated there but not for the subject's own
     // value.
+    // For combined entities, distinct PMC_NAMEs can map to distinct PMC_IDs (and therefore
+    // distinct Salesforce accounts) - dropped the old LIMIT 1 (which assumed exactly one
+    // subject) so every combined entity's account row comes back; downstream consumers now
+    // sum ACCOUNT_TOTAL_COMPANY_UNITS across all returned rows instead of reading a single row.
     const SubjectPortfolioTotalSchema = z.object({ TOTAL_COMPANY_UNITS: z.coerce.number().nullable() });
     let subjectPortfolioTotalError: string | null = null;
     const subjectPortfolioTotalPromise = ctx.integrations.snowflake_sso.query(
       `SELECT acc.ACCOUNT_TOTAL_COMPANY_UNITS AS TOTAL_COMPANY_UNITS
        FROM PRODUCTION.SALES.DIM_SALES_ACCOUNTS acc
-       JOIN (SELECT DISTINCT PMC_ID FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS WHERE PMC_NAME = ? LIMIT 1) p
+       JOIN (SELECT DISTINCT PMC_ID FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS WHERE PMC_NAME IN (${allPmcNames.map(() => "?").join(", ")})) p
             ON acc.PMC_ID = p.PMC_ID`,
       SubjectPortfolioTotalSchema,
-      [pmc_name],
+      [...allPmcNames],
       { label: "Subject PMC's true total company units from Salesforce accounts (for Portfolio Penetration denominator)" }
     ).catch((err) => {
       subjectPortfolioTotalError = err instanceof Error ? err.message : String(err);
@@ -3268,7 +3313,7 @@ export default api({
       // PMC in the same situation. Live-verified: Bridge PM's real percentile is 36%, not 1%,
       // and the corrected subject launch_month (2024-07-29) matches its own "since July 2024"
       // headline exactly.
-      const subjectPmcNames = second_pmc ? [pmc_name, second_pmc] : [pmc_name];
+      const subjectPmcNames = allPmcNames;
       const subjectPlaceholders = subjectPmcNames.map(() => "?").join(", ");
       const TenurePercentileSchema = z.object({
         PERCENTILE_FROM_TOP: z.number().nullable(),
@@ -3376,11 +3421,10 @@ export default api({
       // section now reads that directly instead of this separate, broken query - see the
       // newRolloutCandidates loop below.
 
-      const [networkPoolResult, propertyPoolResult, regionDetailResult, subjectIncomeRows, tenurePercentileRows, disabledPropertyResult] = await Promise.all([
-        networkPoolPromise, propertyPoolPromise, regionDetailPromise, subjectIncomePromise, tenurePercentilePromise,
+      const [propertyPoolResult, regionDetailResult, subjectIncomeRows, tenurePercentileRows, disabledPropertyResult] = await Promise.all([
+        propertyPoolPromise, regionDetailPromise, subjectIncomePromise, tenurePercentilePromise,
         disabledPropertiesPromise,
       ]);
-      _networkPool = networkPoolResult;
       propertyPool = propertyPoolResult;
       regionDetail = regionDetailResult;
       disabledPropertyRows = disabledPropertyResult;
@@ -3399,6 +3443,34 @@ export default api({
     // slides that need them - only the definition moved, not the await site.
 
     // --- Transform ---
+
+    // Groups already-merged rows by their own PMC_NAME - no new query needed, since the main
+    // pull (case allPmcNames.length > 1) keeps per-row entity attribution through the merge.
+    // Used by the Exec Summary switcher, Since Inception's stacked bar, Adoption Trend's
+    // per-entity lines, the Residents/Units/Rent switcher, and the Portfolio Comparison table -
+    // one grouping utility, five consumers.
+    //
+    // Entity ORDER is normalized to allPmcNames (the primary pmc_name first, then the
+    // additional_pmc_names as entered), not Map insertion order of whatever rows happened to
+    // come first. Those three source row sets are each sorted differently (inNetwork: BP_MONTH,
+    // PROPERTY_NAME; latestRows: PROPERTY_NAME within one month; entityYearlyRentRows:
+    // PMC_NAME, YEAR), so first-seen order gave entityMonthlyData / entityBreakdown /
+    // entityYearlyData three DIFFERENT entity orders - and since every combined slide colors
+    // entity i with entityColor(i), the same subsidiary showed up in a different color on each
+    // slide (Kevin's "a few purple colors" catch). A PMC with no rows in a given set is simply
+    // absent (same as before); a row whose PMC_NAME isn't in allPmcNames can't occur (every
+    // query filters PMC_NAME IN allPmcNames) but is appended at the end rather than dropped.
+    function groupRowsByPmc<T extends { PMC_NAME: string }>(rows: T[]): Map<string, T[]> {
+      const map = new Map<string, T[]>();
+      for (const name of allPmcNames) map.set(name, []);
+      for (const r of rows) {
+        const list = map.get(r.PMC_NAME);
+        if (list) list.push(r);
+        else map.set(r.PMC_NAME, [r]);
+      }
+      for (const [name, list] of map) if (list.length === 0) map.delete(name);
+      return map;
+    }
 
     // Monthly totals
     const monthMap = new Map<string, { billsPaid: number; units: number; rentPaid: number; newSignups: number; chargedUsers: number; propertyNames: Set<string> }>();
@@ -3454,6 +3526,52 @@ export default api({
       })
       .sort((a, b) => a.month.localeCompare(b.month));
 
+    // Per-entity monthly adoption rate for the Adoption Trend chart's per-entity lines
+    // (Task 11). Grouped from inNetwork - the exact same row set monthlyTotals above is built
+    // from - via groupRowsByPmc (Task 9's helper), one dimension finer. Deliberately sparse:
+    // each entity's own residents/units are summed only from ITS OWN rows per month, so a
+    // second entity that joined later naturally produces a shorter series here rather than a
+    // fabricated 0% for months before it existed - renderAdoptionTrend aligns this against the
+    // combined chart's own month axis and treats a missing month as a real gap. A single-PMC
+    // report yields a 1-entry array, which the renderer's own "needs 2+" check keeps off the
+    // chart, same discipline as Task 9's entityBreakdown and Task 10's entityYearlyData.
+    const entityMonthlyData = Array.from(groupRowsByPmc(inNetwork).entries()).map(([name, rows]) => {
+      const emMap = new Map<string, { billsPaid: number; units: number }>();
+      for (const row of rows) {
+        const existing = emMap.get(row.BP_MONTH) || { billsPaid: 0, units: 0 };
+        existing.billsPaid += row.BILLS_PAID;
+        existing.units += row.PROPERTY_UNIT_COUNT;
+        emMap.set(row.BP_MONTH, existing);
+      }
+      const entityMonthly = Array.from(emMap.entries())
+        .map(([month, { billsPaid, units }]) => ({ month, adoptionRate: units > 0 ? billsPaid / units : 0 }))
+        .sort((a, b) => a.month.localeCompare(b.month));
+      return { pmcName: name, monthly: entityMonthly };
+    });
+
+    // Per-entity monthly residents/units/rent for the Residents/Units/Rent view switcher
+    // (Task 12: Combined-or-one-entity). Same source rows (inNetwork) and same groupRowsByPmc
+    // helper as entityMonthlyData above - one more per-entity breakdown off the same grouping,
+    // no new query. Kept sparse here (only months an entity actually has rows for) - the
+    // renderer itself aligns each entity's series onto monthlyTotals' own month axis and fills
+    // any gap as 0 (a single-select switcher shows one dataset at a time, so a stable shared
+    // axis matters more here than the sparse-honest null gaps Adoption Trend's additive lines
+    // use above).
+    const residentsUnitsEntityMonthlyData = Array.from(groupRowsByPmc(inNetwork).entries()).map(([name, rows]) => {
+      const ruMap = new Map<string, { billsPaid: number; units: number; rentPaid: number }>();
+      for (const row of rows) {
+        const existing = ruMap.get(row.BP_MONTH) || { billsPaid: 0, units: 0, rentPaid: 0 };
+        existing.billsPaid += row.BILLS_PAID;
+        existing.units += row.PROPERTY_UNIT_COUNT;
+        existing.rentPaid += row.RENT_PAID;
+        ruMap.set(row.BP_MONTH, existing);
+      }
+      const monthly = Array.from(ruMap.entries())
+        .map(([month, { billsPaid, units, rentPaid }]) => ({ month, billsPaid, units, rentPaid }))
+        .sort((a, b) => a.month.localeCompare(b.month));
+      return { pmcName: name, monthly };
+    });
+
     // ── True first-time-payer counts (excluding win-backs) ──────────────────
     // Flask: pull_customer_monthly_signups() — customers whose first-ever payment
     // falls in that month. Overrides the simpler NEW_SIGNUPS_COUNT which includes
@@ -3485,6 +3603,24 @@ export default api({
       ? completedMonths[completedMonths.length - 1].month
       : monthlyTotals[monthlyTotals.length - 1]?.month || "";
 
+    // ── Quarter-adds cohort for the "Q<N> <YYYY> adds" toggle on Adoption Trend + Residents/
+    // Units & Rent (Kevin's ask 2026-09-09; spec: flex-pmc-reports docs/superpowers/specs/
+    // 2026-09-09-quarter-adds-toggle-design.md). Window = last completed CALENDAR quarter as of
+    // latestCompletedMonth; cohort = inNetwork properties with ROLLOUT_MONTH inside it, their own
+    // rows from rollout onward. Same per-month sums the two charts already aggregate (residents =
+    // BILLS_PAID, PROPERTY_UNIT_COUNT, RENT_PAID; adoption = residents/units recomputed in the
+    // renderer), over the same inNetwork rows, one combined series + one per entity via
+    // groupRowsByPmc (entities with no adds simply don't appear). No new queries. Computed once
+    // here, before the QBR/Expansion split, and passed to both renderers at both decks' call
+    // sites. Null cohort -> no toggle -> both renderers' output byte-identical to before.
+    const quarter = latestCompletedMonth ? previousCalendarQuarter(latestCompletedMonth) : null;
+    const quarterCombined = quarter ? buildQuarterAddsSeries(inNetwork, quarter) : null;
+    const quarterEntities = quarter && quarterCombined
+      ? Array.from(groupRowsByPmc(inNetwork).entries())
+        .map(([name, rows]) => ({ pmcName: name, series: buildQuarterAddsSeries(rows, quarter) }))
+        .filter((e): e is { pmcName: string; series: QuarterAddsSeries } => e.series != null)
+      : [];
+
     // Resident-level rents for the "Flex For Everyone" rent-bucket slide's Last Month/All Time
     // toggle (Kevin's ask - Expansion's own "high_rent" case never got this; QBR's has had it
     // all along, as its own separate query further down used to fire unconditionally). Hoisted
@@ -3501,7 +3637,7 @@ export default api({
             `WITH scoped_props AS (
                 SELECT PROPERTY_PUBLIC_ID, BP_MONTH
                 FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS
-                WHERE PMC_NAME = ?
+                WHERE PMC_NAME IN (${allPmcNames.map(() => "?").join(", ")})
                   AND IS_IN_NETWORK = TRUE
              ),
              latest AS (
@@ -3526,7 +3662,7 @@ export default api({
                AND n.HAS_BILL_PAID = TRUE
              LIMIT 50000`,
             ResidentRentSchema,
-            [pmc_name, latestCompletedMonth],
+            [...allPmcNames, latestCompletedMonth],
             { label: "Pull resident-level rents for rent bucket slide (last month)" }
           ).catch(() => [] as { RESIDENT_AMOUNT_PAID: number }[]),
           ctx.integrations.snowflake_sso.query(
@@ -3540,12 +3676,12 @@ export default api({
                 -- between Flask and Clark but All-Time didn't (Kevin's catch).
                 SELECT DISTINCT PROPERTY_PUBLIC_ID
                 FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS
-                WHERE PMC_NAME = ? AND IS_IN_NETWORK = TRUE AND BP_MONTH = ?
+                WHERE PMC_NAME IN (${allPmcNames.map(() => "?").join(", ")}) AND IS_IN_NETWORK = TRUE AND BP_MONTH = ?
              ),
              scoped_props AS (
                 SELECT PROPERTY_PUBLIC_ID, BP_MONTH
                 FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS
-                WHERE PMC_NAME = ?
+                WHERE PMC_NAME IN (${allPmcNames.map(() => "?").join(", ")})
                   AND IS_IN_NETWORK = TRUE
                   AND BP_MONTH < ?
                   AND PROPERTY_PUBLIC_ID IN (SELECT PROPERTY_PUBLIC_ID FROM active_props)
@@ -3560,7 +3696,7 @@ export default api({
              GROUP BY n.CUSTOMER_PUBLIC_ID
              LIMIT 50000`,
             AlltimeResidentSchema,
-            [pmc_name, latestCompletedMonth, pmc_name, cutoffStr],
+            [...allPmcNames, latestCompletedMonth, ...allPmcNames, cutoffStr],
             { label: "Pull all-time resident rent averages for rent bucket toggle" }
           ).catch(() => [] as { RESIDENT_AMOUNT_PAID: number; RESIDENT_TOTAL_PAID: number }[]),
         ]);
@@ -3606,6 +3742,9 @@ export default api({
         const propKey = `${r.PMC_NAME}||${r.PROPERTY_NAME}`;
         return {
           propertyName: r.PROPERTY_NAME,
+          // Additive (Kevin's ask: "in all props table bring in pmc name") - only
+          // renderFullPropertyTable reads it, and only when the report combines 2+ PMCs.
+          pmcName: r.PMC_NAME,
           units: r.PROPERTY_UNIT_COUNT,
           billsPaid: r.BILLS_PAID,
           newSignups: r.NEW_SIGNUPS ?? 0,
@@ -3678,12 +3817,12 @@ export default api({
       // shrinking the pool relative to Flask's real population.
       .filter((p) => p.monthsLive >= 7 && (p.billsPaid < 3 || (p.avgRent >= 700 && p.avgRent <= 2500)));
 
-    // Shared exclusion set for every peer-pool read below — on a combined 2-PMC report, both
-    // named PMCs' own properties must be excluded, or the second PMC's properties silently
-    // count as the first PMC's "peers" (and vice versa). Flask's resolver uses this same
+    // Shared exclusion set for every peer-pool read below — on a combined multi-PMC report,
+    // every named entity's own properties must be excluded, or one entity's properties
+    // silently count as another combined entity's "peers." Flask's resolver uses this same
     // exclusion set for every tier, including its network-wide fallback tier — there's no
     // separately-scoped fallback query on the Flask side to fall out of sync with.
-    const excludedPmcNames = second_pmc ? [pmc_name, second_pmc] : [pmc_name];
+    const excludedPmcNames = allPmcNames;
 
     // Apply per-property peer matching
     // Gate mirrors buildEstablishedPool's (slide-renderers.ts) — 7+mo live, and either
@@ -3793,12 +3932,14 @@ export default api({
     // comparison_months: look back N months for delta (Flask: _cmp_idx = max(1, min(comparison_months, len-1)))
     const cmpIdx = Math.max(1, Math.min(comparison_months ?? 1, latestIdx));
     const prevMonth = latestIdx >= cmpIdx ? monthlyTotals[latestIdx - cmpIdx] : null;
-    // Build "vs ..." label: show actual month name when comparison_months > 1
-    let vsLabel = "vs last month";
+    // Build "vs ..." label: show actual month name when comparison_months > 1. Suffixed "BP" so
+    // the pill reads as a bill-pay-month comparison (Kevin: "just don't want to invite questions
+    // of 'we're only 9 days into September'") - see bpMonthExplainer.
+    let vsLabel = "vs last BP month";
     if (prevMonth) {
       const prevDate = new Date(prevMonth.month + "T00:00:00");
       const monthNames = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-      vsLabel = `vs ${monthNames[prevDate.getMonth()]} ${prevDate.getFullYear()}`;
+      vsLabel = `vs ${monthNames[prevDate.getMonth()]} ${prevDate.getFullYear()} BP`;
     }
     const lifetimeRent = monthlyTotals.reduce((sum, m) => sum + m.rentPaid, 0);
 
@@ -3853,33 +3994,17 @@ export default api({
     // read sites still resolve correctly; hubspotSegment had no remaining reader, removed.
     const segmentNarAvg: number | null = null;
 
-    // --- Auto-derive is_smb (Flask app.py:1551-1553): mode of STATIC_PARENT_TEAM_NAME_OPPORTUNITY
-    // (the internal Flex sales/CS team assignment, aliased SEGMENT_TEAM above) across the PMC's
-    // rows, true when the most common team name is "SMB Manager". This is NOT a HubSpot
-    // company-segment field — PARTNER_REPORTING_CORE_METRICS.HUBSPOT_COMPANY_SEGMENT has no
-    // Flask equivalent and was a fabricated data source; removed.
-    const is_smb = (() => {
-      const counts = new Map<string, number>();
-      for (const r of inNetwork) {
-        if (!r.SEGMENT_TEAM) continue;
-        counts.set(r.SEGMENT_TEAM, (counts.get(r.SEGMENT_TEAM) ?? 0) + 1);
-      }
-      let modeTeam: string | null = null, modeCount = 0;
-      for (const [team, count] of counts) {
-        if (count > modeCount) { modeTeam = team; modeCount = count; }
-      }
-      return modeTeam === "SMB Manager";
-    })();
-
-    // Growth trend slides (residents_units/adoption_trend/cohort_overview) override —
-    // "auto" preserves the is_smb-only default above; "include"/"exclude" let an AE force
-    // the segment veto either way. Derived here (not inline at each gate) since it's needed
-    // by renderExecSummary's showSparklines below, ahead of where activeOrder is built.
-    // (Restored 2026-08-19 — a concurrent Superblocks-side edit reverted this derivation back
-    // to a plain is_smb check in the sparkline ternary below; re-synced with the same fix in
-    // flex-pmc-reports.)
-    const showGrowthSlides =
-      growth_slides === "include" || ((growth_slides ?? "auto") === "auto" && is_smb);
+    // Growth trend slides (residents_units/adoption_trend/cohort_overview) - unconditional for
+    // Expansion now (Kevin's ask: bring in the inception slide, residents paying, and adoption
+    // slide for every Expansion deck, not just SMB). Previously gated on is_smb (mode of
+    // STATIC_PARENT_TEAM_NAME_OPPORTUNITY, aliased SEGMENT_TEAM) with a growth_slides
+    // "auto"/"include"/"exclude" override; both the segment gate and the override input are
+    // gone, so this is now a flat `true`. Kept as a named const (not inlined) since it's still
+    // read by renderExecSummary's showSparklines below, to suppress the exec-tile sparklines
+    // now that the full residents_units chart always renders on Expansion. QBR never reads this
+    // at all (its own showSparklines branch is a hardcoded `false`), so this change is
+    // Expansion-only.
+    const showGrowthSlides = true;
 
     // Sparklines / period-comparison manual overrides (Kevin's ask) - null means "auto" (no
     // override; the existing derived default applies unchanged). Derived here, same reasoning
@@ -3964,8 +4089,8 @@ export default api({
     if (deck_mode === "expansion") {
       expTotalPortfolioEarly = total_portfolio_units || null;
       if (!expTotalPortfolioEarly) {
-        const [expPortfolioRow] = await subjectPortfolioTotalPromise;
-        const acctUnits = expPortfolioRow?.TOTAL_COMPANY_UNITS ?? 0;
+        const expPortfolioRows = await subjectPortfolioTotalPromise;
+        const acctUnits = expPortfolioRows.reduce((sum, r) => sum + (r.TOTAL_COMPANY_UNITS ?? 0), 0);
         expTotalPortfolioEarly = acctUnits > 0 ? acctUnits : (latestMonth?.units ?? 0);
       }
       // Region detail (Kevin's ask - Expansion's own "By State" slide never got QBR's DMA
@@ -4101,6 +4226,22 @@ export default api({
             lockedPeers = pool.map((c) => c.name);
             lockedPeersCriteria = tier.label;
             break;
+          }
+        }
+
+        // Step A3: "largest PMCs on Flex" rung (Kevin's call, 2026-09-09) - tried only after
+        // every size-matched tier above came up empty, and only when they failed because the
+        // subject outsizes the network (see largestPmcsPeerTier). Sets the same lockedPeers /
+        // lockedPeersCriteria every downstream peer path reads (rolling calendar-time median,
+        // tenure-cohort stageBenchmarksMap, Peer Benchmarks snapshot), so the Adoption Trend
+        // legend and the Peer Benchmarks slide both say "largest PMCs on Flex". If even this
+        // can't seat its min peers, lockedPeers stays empty and the existing network-wide
+        // fallback below is unchanged.
+        if (lockedPeers.length === 0) {
+          const largest = largestPmcsPeerTier(candidates, subjectUnits, { minPeers: 5 });
+          if (largest) {
+            lockedPeers = largest.peers.map((c) => c.name);
+            lockedPeersCriteria = largest.label;
           }
         }
       }
@@ -4524,11 +4665,11 @@ export default api({
       // query fails or the PMC has no matching account, Flask leaves pmc_penetration as None
       // rather than falling back to a different, less-trustworthy denominator — matched here
       // by leaving subjectPenetrationValue null instead of using the HubSpot field as a fallback.
-      const [subjectPortfolioRow] = await subjectPortfolioTotalPromise;
+      const subjectPortfolioRows = await subjectPortfolioTotalPromise;
       if (subjectPortfolioTotalError) {
         console.warn(`[PMC Report] subject portfolio-total Salesforce query failed for ${pmc_name}: ${subjectPortfolioTotalError}`);
       }
-      const subjectTotalCompanyUnits = subjectPortfolioRow?.TOTAL_COMPANY_UNITS ?? 0;
+      const subjectTotalCompanyUnits = subjectPortfolioRows.reduce((sum, r) => sum + (r.TOTAL_COMPANY_UNITS ?? 0), 0);
       // Numerator: latestMonth.units (IS_IN_NETWORK-filtered), NOT Flask's literal
       // current["property_unit_count"].sum() (unfiltered df, same missing-filter pattern as
       // the engagement bug fixed earlier). Verified live for Wellington: Flask's own SFDC
@@ -4641,7 +4782,11 @@ export default api({
                 PMC_NAME,
                 SUM(CHARGED_USERS_COUNT) / NULLIF(SUM(PROPERTY_UNIT_COUNT)::FLOAT, 0) AS nar
               FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS
-              WHERE PMC_NAME != ?
+              -- Every combined entity is excluded, not just the primary (was "PMC_NAME != ?"
+              -- bound to pmc_name alone - on a combined report the other entities' own NAR
+              -- leaked into their "network-wide" peer median). Same exclusion set as
+              -- peerCandidateSubjectPmcs / excludedPmcNames.
+              WHERE PMC_NAME NOT IN (${allPmcNames.map(() => "?").join(", ")})
                 AND IS_INTEGRATED_TOTAL = TRUE
                 -- cutoffStr is exclusive (see peer_latest above) — BETWEEN's inclusive upper
                 -- bound let this same query pick up the pre-created, not-yet-real stub month.
@@ -4669,7 +4814,7 @@ export default api({
            HAVING COUNT(*) >= 10
            ORDER BY BP_MONTH`,
           RollingPeerSchema,
-          [pmc_name, cutoffStr, cutoffStr, lookback_months, cutoffStr, cutoffStr],
+          [...allPmcNames, cutoffStr, cutoffStr, lookback_months, cutoffStr, cutoffStr],
           { label: "Network-wide rolling median NAR (fallback, P25/P50/P75)" }
         );
         for (const row of networkWideRolling) {
@@ -4764,6 +4909,149 @@ export default api({
       : null;
     const effectiveTrueRepeat = cohortTrueRepeatEarly ?? trueRepeatRate;
 
+    // Per-entity current-month numbers for the Exec Summary switcher (Task 9). Grouped from
+    // latestRows - the exact same row set the combined currentResidents/currentRent/totalUnits
+    // above are summed from (latestMonth's monthMap totals and totalUnitsAll are both built by
+    // reducing over this same inNetwork-filtered-to-latestCompletedMonth set) - so summing these
+    // per-entity numbers reproduces the combined figures exactly, not just approximately. A
+    // single-PMC report yields a 1-entry array here, which renderExecSummary treats as "no
+    // switcher" (needs 2+).
+    //
+    // Prior-period figures per entity come from the same comparison month (prevMonthStr, i.e.
+    // monthlyTotals[latestIdx - cmpIdx].month) the combined prevResidents/prevRent/prevNar/
+    // prevPropertyCount are read at, aggregated from the same inNetwork rows monthlyTotals is
+    // built from - so, like the current-month numbers, these sum exactly to the combined
+    // prior figures. An entity with no rows that month gets nulls (its pills render empty, the
+    // same state the Combined view is in when prevMonth is null).
+    const prevRowsByPmc = prevMonthStr
+      ? groupRowsByPmc(inNetwork.filter((r) => r.BP_MONTH === prevMonthStr))
+      : new Map<string, typeof inNetwork>();
+    // Each entity's own full monthly series over the report window (the same inNetwork rows
+    // monthlyTotals is summed from, one dimension finer - same grouping entityMonthlyData /
+    // residentsUnitsEntityMonthlyData use above, with newSignups added). Feeds the switcher's
+    // per-entity hero window rent, "N last 3 months" sub-label and sparklines; sparse (only
+    // months the entity has rows in), chronological like monthlyTotals.
+    const inNetworkByPmc = groupRowsByPmc(inNetwork);
+    const entityBreakdown = Array.from(groupRowsByPmc(latestRows).entries()).map(([name, rows]) => {
+      const residents = rows.reduce((s, r) => s + r.BILLS_PAID, 0);
+      const rent = rows.reduce((s, r) => s + r.RENT_PAID, 0);
+      const units = rows.reduce((s, r) => s + r.PROPERTY_UNIT_COUNT, 0);
+      const prevRows = prevRowsByPmc.get(name);
+      const prevResidents = prevRows ? prevRows.reduce((s, r) => s + r.BILLS_PAID, 0) : null;
+      const prevUnits = prevRows ? prevRows.reduce((s, r) => s + r.PROPERTY_UNIT_COUNT, 0) : null;
+      const prevProps = prevRows ? new Set(prevRows.map((r) => r.PROPERTY_NAME)).size : 0;
+      const ebMap = new Map<string, { billsPaid: number; units: number; rentPaid: number; newSignups: number }>();
+      for (const row of inNetworkByPmc.get(name) ?? []) {
+        const existing = ebMap.get(row.BP_MONTH) || { billsPaid: 0, units: 0, rentPaid: 0, newSignups: 0 };
+        existing.billsPaid += row.BILLS_PAID;
+        existing.units += row.PROPERTY_UNIT_COUNT;
+        existing.rentPaid += row.RENT_PAID;
+        existing.newSignups += row.NEW_SIGNUPS ?? 0;
+        ebMap.set(row.BP_MONTH, existing);
+      }
+      const monthly = Array.from(ebMap.entries())
+        // Same adoptionRate rule as monthlyTotals (units > 0 ? bills / units : 0).
+        .map(([month, m]) => ({ month, ...m, adoptionRate: m.units > 0 ? m.billsPaid / m.units : 0 }))
+        .sort((a, b) => a.month.localeCompare(b.month));
+      return {
+        pmcName: name,
+        currentResidents: residents,
+        currentRent: rent,
+        currentNar: units > 0 ? residents / units : 0,
+        propertyCount: new Set(rows.map((r) => r.PROPERTY_NAME)).size,
+        totalUnits: units,
+        prevResidents,
+        prevRent: prevRows ? prevRows.reduce((s, r) => s + r.RENT_PAID, 0) : null,
+        // Same rule as monthlyTotals' adoptionRate (units > 0 ? bills / units : 0).
+        prevNar: prevResidents !== null && prevUnits !== null ? (prevUnits > 0 ? prevResidents / prevUnits : 0) : null,
+        // Same "> 0 ? n : null" normalization the combined prevPropertyCount gets at the
+        // renderExecSummary call below.
+        prevPropertyCount: prevProps > 0 ? prevProps : null,
+        // Same NEW_SIGNUPS ?? 0 sum monthlyTotals' newSignups uses, over this entity's latest rows.
+        currentNewSignups: rows.reduce((s, r) => s + (r.NEW_SIGNUPS ?? 0), 0),
+        monthly,
+      };
+    });
+
+    // Yearly rent/bills history for the Since Inception slide (Task 10 combined totals, now
+    // also feeding Expansion per Kevin's scope addition after Task 15). Hoisted up here - same
+    // "build once, both branches read it" convention as entityBreakdown just above - rather
+    // than living only inside the QBR-only block further down, since Expansion's own switch
+    // case below needs these same two arrays. yearlyRentBillsRows/entityYearlyRentRows are now
+    // gated on needsSinceInception (QBR + Expansion), not needsQBRQueries alone - see that
+    // flag's declaration near the top of this function. Built BEFORE portfolioComparison*
+    // below, which reads the per-entity lifetime totals off entityYearlyRentRows.
+    const yearlyData: YearlyData[] = yearlyRentBillsRows.map(r => ({
+      year: r.YEAR,
+      totalRent: r.TOTAL_RENT ?? 0,
+      billsPaid: r.BILLS_PAID ?? 0,
+      monthsActive: r.MONTHS_ACTIVE ?? 0,
+      ytdRent: r.YTD_RENT ?? 0,
+      ytdBills: r.YTD_BILLS ?? 0,
+      ytdMonthsActive: r.YTD_MONTHS_ACTIVE ?? 0,
+    }));
+
+    // Per-entity yearly rent breakdown for the Since Inception stacked bar (Task 10). Grouped
+    // from entityYearlyRentRows via the same groupRowsByPmc helper Task 9 introduced -
+    // entityYearlyRentRows is already [] for a single-PMC report (query gated on
+    // allPmcNames.length > 1 above), so this yields [] here too, and renderSinceInception's own
+    // "needs 2+" check keeps the bar unstacked. Same array feeds both QBR's fixed-slide-3 call
+    // and Expansion's "since_inception" switch case below.
+    const entityYearlyData = Array.from(groupRowsByPmc(entityYearlyRentRows).entries()).map(([name, rows]) => {
+      const totalRentByYear: Record<number, number> = {};
+      const ytdRentByYear: Record<number, number> = {};
+      for (const r of rows) {
+        totalRentByYear[r.YEAR] = r.TOTAL_RENT ?? 0;
+        ytdRentByYear[r.YEAR] = r.YTD_RENT ?? 0;
+      }
+      return { pmcName: name, totalRentByYear, ytdRentByYear };
+    });
+
+    // Per-entity ALL-TIME rent/bills for the Portfolio Comparison slide's "Total Rent Paid" /
+    // "Total Bills Paid" columns (Kevin's ask). Summed over every year of the per-entity yearly
+    // query above - the SAME unbounded, unfiltered "true history" rows the Since Inception
+    // stacked bar draws - NOT entityBreakdown.currentRent (one month) or anything windowed to
+    // lookback_months. Since that query shares its WHERE clause with the combined yearly query,
+    // these per-entity totals sum exactly to the combined lifetime figures below, which are the
+    // Since Inception subtitle's own "$X guaranteed and N bills paid since <year>" numbers.
+    const entityLifetimeByPmc = new Map<string, { rent: number; bills: number }>();
+    for (const r of entityYearlyRentRows) {
+      const cur = entityLifetimeByPmc.get(r.PMC_NAME) ?? { rent: 0, bills: 0 };
+      cur.rent += r.TOTAL_RENT ?? 0;
+      cur.bills += r.TOTAL_BILLS ?? 0;
+      entityLifetimeByPmc.set(r.PMC_NAME, cur);
+    }
+    const combinedLifetimeRent = yearlyData.reduce((s, y) => s + y.totalRent, 0);
+    const combinedLifetimeBills = yearlyData.reduce((s, y) => s + y.billsPaid, 0);
+
+    // Per-entity rows for the new Portfolio Comparison slide (Task 13). Reuses entityBreakdown
+    // above (Task 9's per-entity current-month totals), entityMonthlyData (Task 11's per-
+    // entity monthly adoption series, built earlier from the same groupRowsByPmc(inNetwork)
+    // grouping) and entityLifetimeByPmc just above - no new aggregation, no new query. Shared
+    // by both QBR and Expansion below (same "build once, both branches read it" convention
+    // Tasks 8-12 already established for entityBreakdown/entityYearlyData/entityMonthlyData
+    // themselves). A single-PMC report yields a 1-entry array here, which
+    // renderPortfolioComparison's own "needs 2+" check keeps the slide from rendering at all.
+    const portfolioComparisonEntities: PortfolioComparisonEntity[] = entityBreakdown.map((eb) => {
+      const em = entityMonthlyData.find((e) => e.pmcName === eb.pmcName);
+      const lt = entityLifetimeByPmc.get(eb.pmcName);
+      return {
+        pmcName: eb.pmcName,
+        unitsOnFlex: eb.totalUnits,
+        payingResidents: eb.currentResidents,
+        adoptionRate: eb.currentNar,
+        rentPaid: eb.currentRent,
+        lifetimeRent: lt?.rent,
+        lifetimeBills: lt?.bills,
+        monthlySeries: (em?.monthly ?? []).map((m) => m.adoptionRate),
+      };
+    });
+    // The Combined row's own trend sparkline - the real combined adoption-rate-by-month series
+    // (same monthlyTotals the bold Adoption Trend line draws), not summed/averaged from the
+    // entities' own series above (see PortfolioComparisonInput's doc comment for why that would
+    // be wrong).
+    const portfolioComparisonCombinedSeries = monthlyTotals.map((m) => m.adoptionRate);
+
     const execResult = renderExecSummary({
       pmcName: pmcDisplayName,
       reportingMonth: latestCompletedMonth,
@@ -4788,12 +5076,14 @@ export default api({
       lifetimeDqShielded: lifetimeDqShielded > 0 ? lifetimeDqShielded : null,
       dqSinceComparison: dqSinceComparison != null && dqSinceComparison > 0 ? dqSinceComparison : null,
       hiddenTiles: hidden_kpi_tiles,
+      entityBreakdown,
       slideId: 2,
       // Flask: QBR always show_sparklines=False (hardcoded, unconditional).
       // Expansion: show_sparklines = not (_show_growth and 54 in active_exp_order).
       // Since slide 54 = "residents_units", suppress sparklines on expansion when the growth
-      // trend slides are showing (SMB by default, or forced via growth_slides="include") and
-      // that slide specifically is included (it renders the same data as a full chart).
+      // trend slides are showing (always, now that showGrowthSlides is unconditionally true
+      // for Expansion) and that slide specifically is included (it renders the same data as a
+      // full chart).
       // An empty expansion_slides array means "no filter" (all slides included) per the
       // activeOrder build below — match that semantics here rather than treating [] as "off".
       // sparklinesOverride is Expansion-only (Kevin's call: QBR stays exactly as-is - it never
@@ -5002,8 +5292,23 @@ export default api({
       const EXPANSION_SLIDE_ORDER = [
         "cover",
         "exec_bottom_line",
+        // New (scope addition after Task 15) — same renderSinceInception this same plan's
+        // Task 10 built for QBR, wired in here for the first time. Placed right after the KPI
+        // slide and before the other growth-trend slides, same relative position as QBR's own
+        // fixed order (Cover, Exec Summary, THEN Since Inception, THEN Residents/Units/Rent).
+        // Renders via the ordinary pushSlide "attempted but came back empty" path like
+        // portfolio_comparison/by_state above — not pre-filtered out of this array — since
+        // renderSinceInception itself returns empty html when yearlyData is empty.
+        "since_inception",
         "residents_units",     // growth trend — residents paying across unit base
         "adoption_trend",      // growth trend — adoption by month
+        // New (Task 13) — Kevin's placement: right after Residents Paying + Adoption Trend and
+        // before the geographic breakdown (was just before expansion_case_close), so the
+        // per-entity table reads as the breakdown of the two combined trend charts it follows.
+        // Renders via the same pushSlide-driven "attempted but came back empty" mechanism as
+        // by_state/cohort_overview — not pre-filtered out of this array — since
+        // renderPortfolioComparison itself returns empty html for <=1 entity.
+        "portfolio_comparison",
         "cohort_overview",     // growth trend — performance by rollout-month cohort
         "by_state",            // geographic breakdown
         "retention",           // resident behavior / loyalty bucket
@@ -5018,11 +5323,13 @@ export default api({
         "expansion_case_close",
       ];
 
-      // Growth trend slides are gated by showGrowthSlides (derived earlier, right after
-      // is_smb) rather than a bare is_smb check — "auto" keeps the SMB-only default,
-      // "include"/"exclude" override it. Also feeds the exec-tile sparkline suppression
-      // above, which is why it's derived once, early, instead of redeclared here.
-      const GROWTH_TREND_SLIDES = new Set(["residents_units", "adoption_trend", "cohort_overview"]);
+      // Growth trend slides (residents_units/adoption_trend/cohort_overview) used to be gated
+      // here by showGrowthSlides (a segment-based veto) via a GROWTH_TREND_SLIDES set-membership
+      // check. showGrowthSlides is now unconditionally `true` for Expansion (see its
+      // declaration above), so that gate could never fire and is removed - these 3 slides are
+      // ordinary members of EXPANSION_SLIDE_ORDER now, subject only to the same expansion_slides
+      // selection filter as everything else below. showGrowthSlides itself stays, since it still
+      // feeds the exec-tile sparkline suppression above.
 
       // Build active order: filter by expansion_slides if provided, then
       // force-append expansion_case_close at the end regardless of selection
@@ -5032,7 +5339,6 @@ export default api({
 
       const activeOrder = EXPANSION_SLIDE_ORDER.filter((sid) => {
         if (sid === "expansion_case_close") return false; // always appended below
-        if (GROWTH_TREND_SLIDES.has(sid) && !showGrowthSlides) return false;  // growth trend gate
         if (sid === "testimonials" && testimonials.length === 0) return false;
         return slideFilter === null || slideFilter.has(sid);
       });
@@ -5048,8 +5354,8 @@ export default api({
       // matching ladder ran) rather than re-deriving it here — same value, already computed.
       let expTotalPortfolio = expTotalPortfolioEarly ?? total_portfolio_units;
       if (!expTotalPortfolio) {
-        const [expPortfolioRow] = await subjectPortfolioTotalPromise;
-        const acctUnits = expPortfolioRow?.TOTAL_COMPANY_UNITS ?? 0;
+        const expPortfolioRows = await subjectPortfolioTotalPromise;
+        const acctUnits = expPortfolioRows.reduce((sum, r) => sum + (r.TOTAL_COMPANY_UNITS ?? 0), 0);
         expTotalPortfolio = acctUnits > 0 ? acctUnits : enrolledUnits;
       }
       const expNarPerc = segmentPercentiles.find((s) => s.metric === "NAR");
@@ -5126,6 +5432,26 @@ export default api({
             pushSlide(sid, execResult);
             break;
 
+          case "since_inception": {
+            // Same renderSinceInception call QBR makes below (fixed slideId 3 there) - here
+            // slideId is the dynamic slideNum this deck's switch already uses for every other
+            // case. yearlyData/entityYearlyData are hoisted above (shared with QBR), fed by the
+            // needsSinceInception-gated queries, which now fire for Expansion too. Renders the
+            // same non-stacked single-bar treatment QBR gets for a single-PMC report when
+            // entityYearlyData has <=1 entry - no separate Expansion-only fallback needed.
+            const r = renderSinceInception({
+              slideId: slideNum,
+              pmcName: pmcDisplayName,
+              reportingMonth: latestCompletedMonth,
+              yearlyData,
+              monthlyTotals,
+              partnerSince,
+              entityYearlyData,
+            });
+            pushSlide(sid, r);
+            break;
+          }
+
           case "by_state": {
             // Pre-check: skip if ≤2 distinct states (Flask: property_state.nunique() > 2)
             const distinctStates = new Set(latestRows.map(r => r.PROPERTY_STATE).filter(Boolean)).size;
@@ -5145,7 +5471,7 @@ export default api({
           }
 
           case "residents_units": {
-            const r = renderResidentsUnitsCombo({ slideId: slideNum, monthlyTotals });
+            const r = renderResidentsUnitsCombo({ slideId: slideNum, monthlyTotals, entityMonthlyData: residentsUnitsEntityMonthlyData, quarter, quarterCombined, quarterEntities });
             pushSlide(sid, r);
             break;
           }
@@ -5167,6 +5493,8 @@ export default api({
                 rolling_peer_median: Object.keys(rollingPeerMedianMap).length > 0 ? rollingPeerMedianMap : {},
                 locked_peers_criteria: lockedPeersCriteria,
               } : null,
+              entityMonthlyData,
+              quarter, quarterCombined, quarterEntities,
             });
             pushSlide(sid, r);
             break;
@@ -5287,6 +5615,22 @@ export default api({
               slideId: slideNum,
               testimonials: testimonials.map((t) => ({ name: t.name, property: t.propertyName, quote: t.quote, role: "Resident" })),
               trend: { csatByMonth: [], responseByMonth: [] },
+            });
+            pushSlide(sid, r);
+            break;
+          }
+
+          case "portfolio_comparison": {
+            const r = renderPortfolioComparison({
+              slideId: slideNum,
+              entities: portfolioComparisonEntities,
+              combinedMonthlySeries: portfolioComparisonCombinedSeries,
+              // Same month entityBreakdown's latestRows are filtered to (and the Exec Summary
+              // tiles report) - names the window the numeric columns are a snapshot of.
+              asOfMonth: latestCompletedMonth,
+              // Combined all-time totals = the Since Inception subtitle's own figures.
+              lifetimeRent: combinedLifetimeRent,
+              lifetimeBills: combinedLifetimeBills,
             });
             pushSlide(sid, r);
             break;
@@ -5480,17 +5824,6 @@ export default api({
     // 10. QBR Close (always last real slide)
     // 11. Full Property Table (appendix after QBR Close)
 
-    // Build yearlyData from the unbounded yearly query
-    const yearlyData: YearlyData[] = yearlyRentBillsRows.map(r => ({
-      year: r.YEAR,
-      totalRent: r.TOTAL_RENT ?? 0,
-      billsPaid: r.BILLS_PAID ?? 0,
-      monthsActive: r.MONTHS_ACTIVE ?? 0,
-      ytdRent: r.YTD_RENT ?? 0,
-      ytdBills: r.YTD_BILLS ?? 0,
-      ytdMonthsActive: r.YTD_MONTHS_ACTIVE ?? 0,
-    }));
-
     const sinceInceptionResult = renderSinceInception({
       slideId: 3,
       pmcName: pmcDisplayName,
@@ -5498,11 +5831,14 @@ export default api({
       yearlyData,
       monthlyTotals,
       partnerSince,
+      entityYearlyData,
     });
 
     const residentsUnitsResult = renderResidentsUnitsCombo({
       slideId: 4,
       monthlyTotals,
+      entityMonthlyData: residentsUnitsEntityMonthlyData,
+      quarter, quarterCombined, quarterEntities,
     });
 
     // Adoption Trend = slide 5
@@ -5530,7 +5866,7 @@ export default api({
       // cohort, so their descriptions must agree instead of one being a generic hardcoded string.
       locked_peers_criteria: lockedPeersCriteria,
     };
-    const adoptionTrendResult = renderAdoptionTrend({ slideId: 5, monthly: monthlyTotals, kpis: adoptionTrendKpis });
+    const adoptionTrendResult = renderAdoptionTrend({ slideId: 5, monthly: monthlyTotals, kpis: adoptionTrendKpis, entityMonthlyData, quarter, quarterCombined, quarterEntities });
     const adoptionTrendHtml = adoptionTrendResult.html;
 
     const narPerc = segmentPercentiles.find((s) => s.metric === "NAR");
@@ -5908,6 +6244,23 @@ export default api({
     const propTableSlideId = allocSlideId();
     const propertyTableHtml = renderFullPropertyTable(propertySnapshot, propTableSlideId);
 
+    // New (Task 13) - right after Since Inception, before Residents/Units. No Flask reference
+    // slide id (this is TS-only, net new) - uses the dynamic allocator like every other
+    // post-retention slide below. Only produces html for 2+ combined entities (see
+    // renderPortfolioComparison's own gate) - a single-PMC report's slidesOrdered/.filter(Boolean)
+    // drops it exactly like every other conditionally-empty slide in this array.
+    const portfolioComparisonResult = renderPortfolioComparison({
+      slideId: allocSlideId(),
+      entities: portfolioComparisonEntities,
+      combinedMonthlySeries: portfolioComparisonCombinedSeries,
+      // Same month entityBreakdown's latestRows are filtered to (and the Exec Summary tiles
+      // report) - names the window the numeric columns are a snapshot of.
+      asOfMonth: latestCompletedMonth,
+      // Combined all-time totals = the Since Inception subtitle's own figures.
+      lifetimeRent: combinedLifetimeRent,
+      lifetimeBills: combinedLifetimeBills,
+    });
+
     // Flask SLIDE_ORDER: [3, 54, 6, 21, 14, 49, 12, 39, 15, 26, 50, 44, 23, 58, 34, 45, 53, 57, 59]
     // Mapped to TS slides (skipping IDs we don't implement: 3, 49, 23, 45, 53, 59):
     //   Cover(1) → Exec(13) → Since Inception(56) → Residents/Units(54)
@@ -5921,6 +6274,10 @@ export default api({
       sinceInceptionResult.html,                // Flask slide 56 - Bills & Rent Since Inception
       residentsUnitsResult.html,                // Flask slide 54 - Residents + Units + Rent
       adoptionTrendHtml,                        // Flask slide 6  - Adoption Trend
+      // New (Task 13) - Portfolio Comparison (2+ entities only). Kevin's placement: after
+      // Residents Paying + Adoption Trend, before Geographic Breakdown - the table reads as the
+      // per-entity breakdown of the two combined trend charts it follows.
+      portfolioComparisonResult.html,
       projResult.html,                          // Flask slide 21 - Portfolio Projection
       cohortHtml,                               // Flask slide 14 - Cohort Analysis
       stateResult.html,                         // Flask slide 12 - Geographic Breakdown
@@ -5961,7 +6318,7 @@ export default api({
 
     // Collect extra JS from slide renderers and apply same renumbering
     let extraJs = [
-      execResult.js, sinceInceptionResult.js, residentsUnitsResult.js,
+      execResult.js, sinceInceptionResult.js, portfolioComparisonResult.js, residentsUnitsResult.js,
       adoptionTrendResult.js, projResult.js, stateResult.js,
       peerBenchResult.js,
       flexForEveryoneResult.js,

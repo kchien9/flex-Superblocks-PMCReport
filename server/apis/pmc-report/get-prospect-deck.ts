@@ -1703,7 +1703,7 @@ export default api({
     // size. Flask's fixed version (app.py) drops the division and uses the real per-unit rent.
     const prent = benchmarks.median_avg_rent;
     const moTotal = units * pnar * prent;
-    const moStr = moTotal >= 1e6 ? `$${(moTotal / 1e6).toFixed(1)}M` : `$${(moTotal / 1e3).toFixed(0)}K`;
+    const moStr = moTotal >= 1e9 ? `$${(moTotal / 1e9).toFixed(2)}B` : moTotal >= 1e6 ? `$${(moTotal / 1e6).toFixed(1)}M` : `$${(moTotal / 1e3).toFixed(0)}K`;
     const peerLine = `Comparable PMCs average ${(pnar * 100).toFixed(1)}% adoption — at that rate on ${units.toLocaleString()} units, that's ${moStr}/mo in guaranteed rent.`;
     const emailDraft = `Hi [First Name],\n\nAttaching a data-driven overview of what Flex looks like at ${prospect_name}'s scale — built from ${ppool} comparable PMCs on the platform today.\n\n• ${peerLine}\n• Median PMC has been on Flex 65 months — this isn't new or unproven.\n• Retention: 94% of residents who used Flex one month paid through it again the next.\n\nHappy to walk through it — takes 20 minutes. Let me know.\n\n[Your name]`;
 

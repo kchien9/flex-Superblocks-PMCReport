@@ -38,6 +38,7 @@ function _fmt(v: number, decimals = 0): string {
 }
 
 function _fmtHero(v: number): string {
+  if (v >= 1_000_000_000) return `$${(v / 1_000_000_000).toFixed(2)}B`;
   if (v >= 1_000_000) return `$${(v / 1_000_000).toFixed(1)}M`;
   if (v >= 1_000) {
     const scaled = (v / 1_000).toFixed(0);
@@ -1049,6 +1050,7 @@ window['initSlide${slideId}'] = (function() {
     if (done) return; done = true;
     const fmtRent${slideId} = v => {
       if (!v) return '$0';
+      if (v >= 1e9) return '$' + (v / 1e9).toFixed(2) + 'B';
       return v < 1e6 ? '$' + Math.round(v / 1e3) + 'K' : '$' + (v / 1e6).toFixed(1) + 'M';
     };
     new Chart(document.getElementById('phrchart${slideId}'), {

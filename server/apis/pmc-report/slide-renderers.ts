@@ -9,11 +9,90 @@ const PURPLE = "#6A3DB8";
 const NAVY = "#2C194D"; // deck's one standard navy (was #1e1145 — a darker, off-brand shade)
 const GRAY = "#6b7280";
 
+// Testimonial-quote avatar colors ONLY (renderCustomerExperience). This used to double as the
+// per-entity palette for the combined-PMC slides, which is how the 8-entity Asset Living deck
+// ended up with "a few purple colors" (Kevin): 7 entries, two of them violets (#6A3DB8 and
+// #7c3aed), so entity 7 wrapped back onto entity 0's purple and entity 6 sat next to it in a
+// near-identical shade. Entity coloring now lives in ENTITY_PALETTE/entityColor below.
+const AVATAR_PALETTE = ["#6A3DB8", "#1a9e6a", "#d97706", "#2563eb", "#0891b2", "#9d174d", "#7c3aed"];
+
+// The one "N combined entities, N distinct colors" palette. Index 0 is Flex purple so the
+// primary entity stays on-brand; the rest are deliberately spread across the hue wheel with no
+// second violet, so 8 entities get 8 unmistakably different colors (2 spares before any wrap).
+// Every entity-colored element on every combined slide - Since Inception stacked segments +
+// legend swatches, Adoption Trend entity lines + legend chips, Portfolio Comparison sparklines -
+// goes through entityColor(i) with i = the entity's position in the shared allPmcNames order
+// (groupRowsByPmc in get-pmc-monthly-report.ts normalizes entityBreakdown / entityYearlyData /
+// entityMonthlyData to that one order), so the SAME entity is the SAME color on every slide.
+const ENTITY_PALETTE = [
+  "#6A3DB8", // 0 Flex purple (primary entity)
+  "#d97706", // 1 amber
+  "#0891b2", // 2 teal
+  "#1a9e6a", // 3 green
+  "#db2777", // 4 pink
+  "#2563eb", // 5 blue
+  "#ea580c", // 6 orange-red
+  "#64748b", // 7 slate
+  "#92400e", // 8 brown (spare)
+  "#65a30d", // 9 lime (spare)
+];
+function entityColor(i: number): string {
+  return ENTITY_PALETTE[i % ENTITY_PALETTE.length];
+}
+
+/**
+ * DISPLAY-ONLY shortening of combined-report entity names (switcher buttons, legend chips,
+ * tooltip rows, table name cells) - never applied to data or to anything that keys a lookup
+ * (payload arrays, data-sort, atEntity indices all stay on the full pmcName). Strips ONE
+ * trailing parenthetical, e.g. "FPI (An Asset Living Company)" -> "FPI"; "Asset Living -
+ * Student" is untouched. Falls back to the untouched names for ALL entities if stripping would
+ * make any two read the same (e.g. "Acme" + "Acme (Student)"), so a shortened label can never
+ * be ambiguous about which entity it refers to. Same regex + fallback as Flask's
+ * `_display_entity_names` (generator/slides.py) - Kevin: "remove the (an asset living company)
+ * etc. lets standardize across all 3 places".
+ */
+export function displayEntityNames(names: string[]): string[] {
+  const short = names.map((n) => n.replace(/\s*\([^()]*\)\s*$/, "").trim() || n);
+  if (new Set(short).size < new Set(names).size) return names;
+  return short;
+}
+
+/**
+ * ONE per-entity selector button, shared by every entity switcher (Exec Summary, Residents/
+ * Units & Rent, Adoption Trend) so the three can't drift apart in look (Kevin: "match the
+ * formats of the pmc selectors ... standardize across all 3 places"). Standard = the Adoption
+ * Trend style: a .spark-ctrl-btn pill with a 3px left border in the entity's ENTITY_PALETTE
+ * color for `idx` - the SAME index that colors this entity's line/segment/sparkline on the
+ * chart slides, so button and chart agree (the inline border-left survives .is-active's
+ * border-color, so the accent stays visible on the selected pill). `labelHtml` is the
+ * already-escaped, display-shortened name (see displayEntityNames); `extraAttrs` is spliced
+ * verbatim after class= (leading space included), e.g. Adoption's ` id="atEntBtnN-i"`.
+ * Non-entity buttons ("Combined", "Show all", quarter adds) deliberately do NOT go through
+ * here - they stay un-accented. Mirrors Flask's `_entity_switch_button`.
+ */
+export function entitySwitchButton(idx: number, labelHtml: string, onclick: string, extraAttrs = ""): string {
+  return `<button type="button" class="spark-ctrl-btn"${extraAttrs} style="border-left:3px solid ${entityColor(idx)};" onclick="${onclick}">${labelHtml}</button>`;
+}
+
+function hexToRgba(hex: string, alpha: number): string {
+  const h = hex.replace("#", "");
+  const r = parseInt(h.slice(0, 2), 16);
+  const g = parseInt(h.slice(2, 4), 16);
+  const b = parseInt(h.slice(4, 6), 16);
+  return `rgba(${r},${g},${b},${alpha})`;
+}
+
 function _e(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 
+// Every currency formatter in this deck (TS helpers here and in get-pmc-monthly-report.ts /
+// expansion-renderers.ts / speaker-notes.ts, plus the fmtRent/fmtK closures embedded in the
+// Chart.js tick/label/tooltip JS below) rolls to a $X.XXB tier at >= 1e9 - Kevin's catch on the
+// 8-entity Asset Living deck, where combined lifetime rent printed as "$2210.5M". K/M behaviour
+// below 1e9 is unchanged everywhere.
 function fmtCurrency(n: number): string {
+  if (n >= 1_000_000_000) return `$${(n / 1_000_000_000).toFixed(2)}B`;
   if (n >= 1_000_000) return `$${(n / 1_000_000).toFixed(1)}M`;
   if (n >= 1_000) return `$${(n / 1_000).toFixed(0)}K`;
   return `$${Math.round(n).toLocaleString()}`;
@@ -30,6 +109,30 @@ export function monthLabel(ym: string): string {
   const [y, m] = ym.split("-");
   const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
   return `${months[parseInt(m, 10) - 1]} ${y}`;
+}
+
+// Tiny inline-SVG line-plus-dot sparkline - was local-only to get-pmc-monthly-report.ts (built
+// for the Exec Summary tiles' trend sparklines), hoisted here and exported (Task 13) so the new
+// Portfolio Comparison table's per-row trend cell reuses this exact mechanism instead of a
+// second one - get-pmc-monthly-report.ts now imports this instead of defining its own copy.
+export function sparklineSvg(values: (number | null)[], color = "#6A3DB8", w = 64, h = 20): string {
+  const vals = values.filter((v): v is number => v !== null);
+  if (vals.length < 2) return "";
+  const mn = Math.min(...vals);
+  const mx = Math.max(...vals);
+  const rng = mx > mn ? mx - mn : 0.001;
+  const n = vals.length;
+  const pts = vals
+    .map((v, i) => `${(i * w / (n - 1)).toFixed(1)},${(h - 2 - ((v - mn) / rng) * (h - 4)).toFixed(1)}`)
+    .join(" ");
+  const lx = w;
+  const ly = (h - 2 - ((vals[vals.length - 1] - mn) / rng) * (h - 4)).toFixed(1);
+  return (
+    `<svg width="${w}" height="${h}" style="overflow:visible;display:block;">` +
+    `<polyline points="${pts}" fill="none" stroke="${color}" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>` +
+    `<circle cx="${lx}" cy="${ly}" r="2.5" fill="${color}"/>` +
+    `</svg>`
+  );
 }
 
 const _TREND_BASIS_LABEL: Record<string, string> = {
@@ -91,6 +194,108 @@ export interface AdoptionTrendMonthly {
   propertyCount?: number;
 }
 
+// ─── Quarter-adds cohort (Kevin's ask 2026-09-09, spec: docs/superpowers/specs/
+// 2026-09-09-quarter-adds-toggle-design.md) ─────────────────────────────────────────────────
+// "Q<N> <YYYY> adds" toggle on Adoption Trend + Residents/Units & Rent: re-cuts each chart to
+// the in-network properties whose ROLLOUT_MONTH falls inside the last completed CALENDAR quarter
+// as of the deck's latest completed BP month. No new queries - the call site filters the same
+// inNetwork rows both charts already aggregate and passes the cohort's own monthly series here.
+
+export interface CalendarQuarter {
+  /** First-of-month YYYY-MM-DD for the quarter's first month (e.g. "2026-04-01"). */
+  start: string;
+  /** First-of-month YYYY-MM-DD for the quarter's LAST month (e.g. "2026-06-01") - rollout months
+   * are first-of-month strings too, so `ROLLOUT_MONTH <= end` is the right inclusive bound. */
+  end: string;
+  /** "Q2 2026" */
+  label: string;
+  /** "Apr–Jun 2026" */
+  monthsLabel: string;
+}
+
+/** Most recent calendar quarter whose last month is <= `latestMonth` (YYYY-MM or YYYY-MM-DD).
+ * Aug 2026 -> Q2 2026 (Apr–Jun); Sep 2026 -> Q3 2026; Jan 2026 -> Q4 2025. */
+export function previousCalendarQuarter(latestMonth: string): CalendarQuarter {
+  const [y, m] = latestMonth.split("-").map(Number);
+  let qEndMonth = Math.floor(m / 3) * 3; // 1,2 -> 0 (prior year's Q4); 3..5 -> 3; 6..8 -> 6; 9..11 -> 9; 12 -> 12
+  let qy = y;
+  if (qEndMonth === 0) { qEndMonth = 12; qy = y - 1; }
+  const qStartMonth = qEndMonth - 2;
+  const MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return {
+    start: `${qy}-${pad(qStartMonth)}-01`,
+    end: `${qy}-${pad(qEndMonth)}-01`,
+    label: `Q${qEndMonth / 3} ${qy}`,
+    monthsLabel: `${MON[qStartMonth - 1]}–${MON[qEndMonth - 1]} ${qy}`,
+  };
+}
+
+/** The cohort's own monthly series (same per-month sums the two charts already use:
+ * residents = billsPaid, units, rentPaid; adoption = billsPaid/units, recomputed per month). */
+export interface QuarterAddsSeries {
+  propertyCount: number;
+  /** Cohort units as of its latest month - the "X units" in the header text. */
+  unitCount: number;
+  monthly: ResidentsUnitsMonth[];
+}
+
+export interface QuarterAddsEntity {
+  pmcName: string;
+  series: QuarterAddsSeries;
+}
+
+/** Minimal row shape buildQuarterAddsSeries needs - get-pmc-monthly-report.ts's inNetwork rows
+ * satisfy it structurally. Month strings are YYYY-MM-DD first-of-month. */
+export interface QuarterAddsRow {
+  BP_MONTH: string;
+  ROLLOUT_MONTH: string | null;
+  PROPERTY_NAME: string;
+  PROPERTY_UNIT_COUNT: number;
+  BILLS_PAID: number;
+  RENT_PAID: number;
+}
+
+/** Cohort = rows whose ROLLOUT_MONTH is inside `quarter` (inclusive, first-of-month bounds),
+ * from rollout onward. Same per-month sums the two charts already aggregate (BILLS_PAID,
+ * PROPERTY_UNIT_COUNT, RENT_PAID). null when no rows qualify - the "no cohort" signal both
+ * renderers key off to render no toggle at all. */
+export function buildQuarterAddsSeries(rows: QuarterAddsRow[], quarter: CalendarQuarter): QuarterAddsSeries | null {
+  const cohortRows = rows.filter((r) =>
+    r.ROLLOUT_MONTH != null && r.ROLLOUT_MONTH >= quarter.start && r.ROLLOUT_MONTH <= quarter.end && r.BP_MONTH >= r.ROLLOUT_MONTH,
+  );
+  if (cohortRows.length === 0) return null;
+  const qMap = new Map<string, { billsPaid: number; units: number; rentPaid: number }>();
+  const propertyNames = new Set<string>();
+  for (const row of cohortRows) {
+    const existing = qMap.get(row.BP_MONTH) || { billsPaid: 0, units: 0, rentPaid: 0 };
+    existing.billsPaid += row.BILLS_PAID;
+    existing.units += row.PROPERTY_UNIT_COUNT;
+    existing.rentPaid += row.RENT_PAID;
+    qMap.set(row.BP_MONTH, existing);
+    propertyNames.add(row.PROPERTY_NAME);
+  }
+  const monthly = Array.from(qMap.entries())
+    .map(([month, { billsPaid, units, rentPaid }]) => ({ month, billsPaid, units, rentPaid }))
+    .sort((a, b) => a.month.localeCompare(b.month));
+  return { propertyCount: propertyNames.size, unitCount: monthly[monthly.length - 1].units, monthly };
+}
+
+/** Shared optional inputs for both quarter-toggle renderers. quarterCombined null/absent =
+ * no cohort = no toggle rendered, output byte-identical to before the toggle existed. */
+export interface QuarterAddsInput {
+  quarter?: CalendarQuarter | null;
+  quarterCombined?: QuarterAddsSeries | null;
+  quarterEntities?: QuarterAddsEntity[];
+}
+
+function quarterAddsHeader(quarter: CalendarQuarter, s: QuarterAddsSeries): string {
+  // "(BP months Jul–Sep)" names the quarter's months as Flex bill-pay months (Kevin's ask) -
+  // monthsLabel minus its year, which "Q3 2026" already carries.
+  const bpMonths = quarter.monthsLabel.replace(/\s\d{4}$/, "");
+  return `Properties added in ${quarter.label} (BP months ${bpMonths}) — ${s.propertyCount.toLocaleString()} ${s.propertyCount === 1 ? "property" : "properties"}, ${s.unitCount.toLocaleString()} units`;
+}
+
 // ─── render_metrosight_evidence (Slide 50 - "Rethinking Rent") ──────────────
 
 export interface MetrosightInput {
@@ -108,6 +313,7 @@ export function renderMetrosightEvidence(input: MetrosightInput): SlideResult {
 
   // Local currency formatter matching slides_prospect.py _fmt_dollars (lowercase k, 1 decimal)
   const fmtDollars = (n: number): string => {
+    if (n >= 1_000_000_000) return `$${(n / 1_000_000_000).toFixed(2)}B`;
     if (n >= 1_000_000) return `$${(n / 1_000_000).toFixed(1)}M`;
     if (n >= 1_000) return `$${(n / 1_000).toFixed(1)}k`;
     return `$${Math.round(n).toLocaleString()}`;
@@ -1597,7 +1803,7 @@ window['initSlide${slideId}'] = (function() {
   let done = false;
   return function() {
     if (done) return; done = true;
-    var fmtK = function(v) { return v >= 1e6 ? '$'+(v/1e6).toFixed(1)+'M' : v >= 1000 ? '$'+(v/1000).toFixed(1)+'K' : '$'+v; };
+    var fmtK = function(v) { return v >= 1e9 ? '$'+(v/1e9).toFixed(2)+'B' : v >= 1e6 ? '$'+(v/1e6).toFixed(1)+'M' : v >= 1000 ? '$'+(v/1000).toFixed(1)+'K' : '$'+v; };
     new Chart(document.getElementById('dqchart${slideId}'), {
       type: 'bar',
       data: {
@@ -1858,13 +2064,58 @@ export interface MonthlySplitEntry {
   monthly?: AdoptionTrendMonthly[];
 }
 
+// One entry per combined entity's own monthly adoption rate (Task 11: per-entity lines on the
+// Adoption Trend chart). Built by the call site via groupRowsByPmc(inNetwork) - the exact same
+// row set the combined `monthly` series above is built from - grouped one dimension finer.
+// Deliberately sparse: an entity's `monthly` array only has entries for months IT actually has
+// rows in, so a second entity that joined later naturally produces a shorter series instead of
+// a misleading 0% before it existed - this function aligns each entity's data against `monthly`'s
+// own month axis below and leaves a real gap (null), not a fabricated zero, for months an entity
+// has no entry for. Unrelated to the pre-existing `monthlySplit` above (that field is a 2-color,
+// never-wired-up legacy input with no active caller) - this is the net-new mechanism, following
+// the same AVATAR_PALETTE-per-entity convention Task 10 established for Since Inception.
+export interface AdoptionTrendEntityMonthly {
+  pmcName: string;
+  monthly: AdoptionTrendMonthly[];
+}
+
 export function renderAdoptionTrend(input: {
   slideId: number;
   monthly: AdoptionTrendMonthly[];
   kpis?: AdoptionTrendKpis | null;
   monthlySplit?: MonthlySplitEntry[] | null;
-}): SlideResult {
+  entityMonthlyData?: AdoptionTrendEntityMonthly[];
+} & QuarterAddsInput): SlideResult {
   const { slideId, monthly, kpis, monthlySplit } = input;
+
+  // ─── Per-entity lines (Task 11, reworked into additive toggles) ───────────
+  // Only built when there's more than 1 combined entity - a single-PMC report (or a combined
+  // report whose entityMonthlyData wasn't passed) gets entities = [] and showEntityLines =
+  // false, which keeps every branch below byte-identical to before this existed.
+  // Task 11 originally drew all N entity lines at once next to the bold combined line + peer
+  // median. Kevin's verdict on the 8-entity Asset Living deck: "very busy", then: "can we do
+  // multi select? like if we want to chart several (or all) adoptions against each other? but
+  // not defaulting to showing all of them". So: the chart renders exactly as a single-PMC deck
+  // (combined line + peer median + established, all always on - the combined line is the
+  // baseline, not a button), plus one ADDITIVE toggle per entity, all OFF by default, and a
+  // Show all / Hide all control. Any number of entity lines can be on at once; each carries
+  // datalabels only while it's toggled on (see the datasets block below) - legend chips +
+  // tooltip identify them too. See entityToggleJs below.
+  const entityMonthlyEntries = input.entityMonthlyData ?? [];
+  const showEntityLines = entityMonthlyEntries.length > 1;
+  // Aligned against `monthly`'s own month keys (not assumed to already be in the same order/
+  // length as the caller's array) so a gap in one entity's sparse series can't silently shift
+  // every later point out of position. Missing months come back null - see the interface
+  // comment above for why that's a real gap, not a 0% dip.
+  const entityLineVals: (number | null)[][] = showEntityLines
+    ? entityMonthlyEntries.map((e) => {
+        const byMonth = new Map(e.monthly.map((m) => [m.month, m.adoptionRate]));
+        return monthly.map((r) => {
+          const v = byMonth.get(r.month);
+          return v != null && !isNaN(v) ? Math.round(v * 1000) / 10 : null;
+        });
+      })
+    : [];
 
   const months = monthly.map((r) => monthLabel(r.month));
   const allVals = monthly.map((r) => Math.round(r.adoptionRate * 1000) / 10);
@@ -2014,6 +2265,10 @@ export function renderAdoptionTrend(input: {
     ...allVals.filter((v) => v != null),
     ...(showEstablished ? estValsList.filter((v): v is number => v != null) : []),
     ...(showBenchmark ? benchmarkVals.filter((v): v is number => v != null) : []),
+    // Entity values are deliberately NOT in here: with every entity toggle off (the initial
+    // render) the axis must be exactly a single-PMC deck's. The toggle JS below re-applies this
+    // same formula on every click over allPts + whichever entity lines are currently visible,
+    // so a subsidiary above the combined range is never clipped once it's toggled on.
   ];
   // Flask's REAL formula (generator/slides.py:1331-1332 — verified directly against live
   // source, not this repo's CLAUDE.md, which documents "+1" and is stale on this specific
@@ -2023,6 +2278,143 @@ export function renderAdoptionTrend(input: {
   // nowhere near it), without landing on Flask's actual number.
   const yMin = allPts.length > 0 ? Math.max(0, Math.floor(Math.min(...allPts)) - 1) : 0;
   const yMax = allPts.length > 0 ? Math.floor(Math.max(...allPts)) + 2 : 15;
+
+  // ─── "Q<N> <YYYY> adds" toggle (quarter-adds cohort view) ───────────────
+  // One .spark-ctrl-btn (absent when there's no cohort - every string below stays "" and the
+  // output is byte-identical to before this existed). Click = the combined line becomes the
+  // cohort's own adoption series (cohort residents / cohort units per month, recomputed), the
+  // peer median becomes the STAGE ramp (peer p50 at 1, 2, 3... months since the cohort's first
+  // month, from the same stage_benchmarks the full-portfolio line reads - apples-to-apples for a
+  // 3-5-month-old cohort), the established line hides, entity toggles keep working only for
+  // entities with >=1 add in the quarter (others hidden + forced off), header text swaps. Click
+  // again = everything restored from the saved arrays. See spec: docs/superpowers/specs/
+  // 2026-09-09-quarter-adds-toggle-design.md.
+  const quarter = input.quarter ?? null;
+  const quarterCombined = input.quarterCombined ?? null;
+  const hasQuarter = !!(quarter && quarterCombined && quarterCombined.monthly.length > 0);
+  const QTR_PEER_LABEL = "Peer Median · same stage";
+  let quarterBtnHtml = "";
+  let quarterJs = "";
+  // Guards spliced into the shared entity-toggle JS only when a cohort exists: an entity absent
+  // from the quarter is tagged `atQtrHidden` while quarter mode is on, and Show all / Hide all
+  // and the sync pass must skip it (it has no button to reflect, and must not be turned on).
+  const qtrSkip = hasQuarter ? "if(ds[j].atQtrHidden)continue;" : "";
+  const qtrNotHidden = hasQuarter ? "&&!ds[j].atQtrHidden" : "";
+  if (hasQuarter && quarter && quarterCombined) {
+    const alignAdoption = (s: QuarterAddsSeries): (number | null)[] => {
+      const byMonth = new Map(s.monthly.map((m) => [m.month, m]));
+      return monthly.map((r) => {
+        const m = byMonth.get(r.month);
+        return m && m.units > 0 ? Math.round((m.billsPaid / m.units) * 1000) / 10 : null;
+      });
+    };
+    const qCombinedVals = alignAdoption(quarterCombined);
+    // Keyed by the entity's atEntity index (its position in entityMonthlyEntries) so the toggle
+    // JS can match datasets by tag. An entity with no adds in the quarter simply has no key.
+    const qEntityVals: Record<number, (number | null)[]> = {};
+    if (showEntityLines) {
+      const byName = new Map((input.quarterEntities ?? []).map((e) => [e.pmcName, e.series]));
+      entityMonthlyEntries.forEach((e, i) => {
+        const s = byName.get(e.pmcName);
+        if (s && s.monthly.length > 0) qEntityVals[i] = alignAdoption(s);
+      });
+    }
+    // Stage-ramp peer median: bucket n = calendar months since the cohort's first month
+    // (1-based), read off the same stage_benchmarks map; null (a gap, never 0) before the cohort
+    // starts or where a bucket is missing. kpis null (Expansion below peer median) -> all null
+    // -> the peer line hides in quarter mode, same as it's absent in the full view.
+    const cohortFirst = quarterCombined.monthly[0].month;
+    const [cfy, cfm] = cohortFirst.split("-").map(Number);
+    const sbmQ = kpis?.stage_benchmarks ?? {};
+    const qPeerVals: (number | null)[] = monthly.map((r) => {
+      const [ry, rm] = r.month.split("-").map(Number);
+      const n = (ry - cfy) * 12 + (rm - cfm) + 1;
+      if (n < 1) return null;
+      const p50 = sbmQ[n]?.p50;
+      return p50 ? Math.round(p50 * 1000) / 10 : null;
+    });
+    quarterBtnHtml = `<button class="spark-ctrl-btn" id="atQtrBtn${slideId}" onclick="flexToggleAdoptionQuarter(${slideId},this)">${_e(quarter.label)} adds</button>`;
+    const payload = {
+      on: false,
+      combined: qCombinedVals,
+      entities: qEntityVals,
+      peer: qPeerVals,
+      header: quarterAddsHeader(quarter, quarterCombined),
+      peerLabel: benchmarkLabel,
+      peerLabelQ: QTR_PEER_LABEL,
+    };
+    const jsonPayload = JSON.stringify(payload).replace(/</g, "\\u003c");
+    // Datasets are found by tag/label at click time (never by position - the datasets array's
+    // layout depends on which optional series exist). ds[0] is always the combined line.
+    // Rescale: same Flask y-axis formula as render time, over the combined line + whichever of
+    // peer/established/entity lines are visible; when the entity machinery exists its basePts
+    // is swapped too so later entity toggles rescale against the quarter series, and restored
+    // on exit.
+    quarterJs = `
+window.atQuarterData=window.atQuarterData||{};window.atQuarterData[${slideId}]=${jsonPayload};
+if(!window.flexToggleAdoptionQuarter){
+window.flexToggleAdoptionQuarter=function(slideId,btn){
+  var q=window.atQuarterData[slideId];if(!q)return;
+  var chart=Chart.getChart('chart'+slideId);if(!chart)return;
+  var ds=chart.data.datasets,j,i,b,s,estIdx=-1,bmIdx=-1;
+  for(j=0;j<ds.length;j++){if(ds[j].label==='Established Properties')estIdx=j;else if(ds[j].label===q.peerLabel||ds[j].label===q.peerLabelQ)bmIdx=j;}
+  var slide=document.getElementById('slide-'+slideId);
+  var title=slide?slide.querySelector('.slide-title'):null;
+  var note=document.getElementById('peerOutlierNote'+slideId);
+  var bmLeg=document.getElementById('bmLegend'+slideId),bmLbl=bmLeg?bmLeg.children[1]:null;
+  var bmBtn=slide?slide.querySelector('button[onclick^="toggleBenchmark"]'):null;
+  var estLeg=document.getElementById('estLegend'+slideId),estFoot=document.getElementById('estFootnote'+slideId);
+  var estBtn=slide?slide.querySelector('button[onclick^="toggleEstablished"]'):null;
+  var ent=window.atEntityData?window.atEntityData[slideId]:null;
+  if(!q.on){
+    q.on=true;
+    s=q.saved={all:ds[0].data,ents:{},entVis:{},basePts:ent?ent.basePts:null,title:title?title.textContent:''};
+    ds[0].data=q.combined;
+    if(estIdx>=0){s.estVis=chart.isDatasetVisible(estIdx);chart.setDatasetVisibility(estIdx,false);if(estLeg)estLeg.style.display='none';if(estFoot)estFoot.style.display='none';if(estBtn)estBtn.style.display='none';}
+    if(bmIdx>=0){
+      s.bm=ds[bmIdx].data;s.bmVis=chart.isDatasetVisible(bmIdx);
+      var hasRamp=false;for(i=0;i<q.peer.length;i++){if(q.peer[i]!=null){hasRamp=true;break;}}
+      if(hasRamp){ds[bmIdx].data=q.peer;ds[bmIdx].label=q.peerLabelQ;if(bmLbl)bmLbl.textContent=q.peerLabelQ;}
+      else{chart.setDatasetVisibility(bmIdx,false);if(bmLeg)bmLeg.style.display='none';if(bmBtn)bmBtn.style.display='none';}
+    }
+    if(note)note.style.display='none';
+    for(j=0;j<ds.length;j++){
+      if(ds[j].atEntity==null)continue;
+      i=ds[j].atEntity;s.ents[i]=ds[j].data;s.entVis[i]=chart.isDatasetVisible(j);
+      b=document.getElementById('atEntBtn'+slideId+'-'+i);
+      if(q.entities[i]){ds[j].data=q.entities[i];}
+      else{ds[j].atQtrHidden=true;chart.setDatasetVisibility(j,false);if(b)b.style.display='none';}
+    }
+    if(title)title.textContent=q.header;
+    btn.classList.add('is-active');
+  }else{
+    s=q.saved;q.on=false;
+    ds[0].data=s.all;
+    if(estIdx>=0){chart.setDatasetVisibility(estIdx,s.estVis);if(estLeg)estLeg.style.display=s.estVis?'flex':'none';if(estFoot)estFoot.style.display=s.estVis?'block':'none';if(estBtn)estBtn.style.display='';}
+    if(bmIdx>=0){ds[bmIdx].data=s.bm;ds[bmIdx].label=q.peerLabel;if(bmLbl)bmLbl.textContent=q.peerLabel;chart.setDatasetVisibility(bmIdx,s.bmVis);if(bmLeg)bmLeg.style.display=s.bmVis?'flex':'none';if(bmBtn)bmBtn.style.display='';}
+    if(note)note.style.display=(bmIdx>=0&&s.bmVis)?'block':'none';
+    for(j=0;j<ds.length;j++){
+      if(ds[j].atEntity==null)continue;
+      i=ds[j].atEntity;ds[j].data=s.ents[i];delete ds[j].atQtrHidden;chart.setDatasetVisibility(j,s.entVis[i]);
+      b=document.getElementById('atEntBtn'+slideId+'-'+i);if(b)b.style.display='';
+    }
+    if(title)title.textContent=s.title;
+    btn.classList.remove('is-active');
+  }
+  var pts=[];
+  var pushPts=function(arr){for(var k=0;k<arr.length;k++){if(arr[k]!=null)pts.push(arr[k]);}};
+  pushPts(ds[0].data);
+  if(bmIdx>=0&&chart.isDatasetVisible(bmIdx))pushPts(ds[bmIdx].data);
+  if(estIdx>=0&&chart.isDatasetVisible(estIdx))pushPts(ds[estIdx].data);
+  if(ent&&window.flexSyncAdoptionEntities){ent.basePts=q.on?pts.slice():(s.basePts||pts.slice());window.flexSyncAdoptionEntities(slideId,chart);}
+  else{
+    chart.options.scales.y.suggestedMin=pts.length?Math.max(0,Math.floor(Math.min.apply(null,pts))-1):0;
+    chart.options.scales.y.suggestedMax=pts.length?Math.floor(Math.max.apply(null,pts))+2:15;
+    chart.update();
+  }
+};
+}`;
+  }
 
   // ─── Expansion note ─────────────────────────────────────────────────────
   let expansionNote = "";
@@ -2087,6 +2479,130 @@ export function renderAdoptionTrend(input: {
     });
   }
 
+  // ─── Per-entity datasets + additive toggles (Task 11, reworked) ──────────
+  // One Chart.js dataset per entity, every one `hidden: true` at render (all toggles off is
+  // the default - Kevin: "not defaulting to showing all of them bc its super busy") and tagged
+  // `atEntity: i` so the toggle JS finds them by tag rather than by position (the datasets
+  // array's layout depends on which optional series exist). Colors reuse the module-level
+  // ENTITY_PALETTE Task 10 hoisted for Since Inception - same entity, same color across every
+  // combined slide. Entity lines DO carry datalabels, but only while toggled ON: `display` is a
+  // function reading chart.isDatasetVisible(datasetIndex), so the labels follow the toggle with
+  // no extra state (Kevin: "can we show the adoption labels when we select them?" - the first
+  // cut had them hard-off to avoid clutter; with all-off-by-default the clutter only appears
+  // when the presenter opts into it, and overlap with several lines on is accepted). Same font/
+  // size as the combined line's labels, entity color, no background pill.
+  //
+  // The combined line, peer median and established series are untouched by all of this: they
+  // render and toggle exactly as in a single-PMC deck. Entity lines are purely additive on top.
+  let entityLinesJs = "";
+  let entityLegendItems = "";
+  let entityToggleHtml = "";
+  let entityToggleJs = "";
+  if (showEntityLines) {
+    // Display-shortened names (displayEntityNames) for the dataset label (= the tooltip row),
+    // the legend chip and the toggle button. Data arrays and the atEntity index tag are
+    // untouched, and nothing in the toggle/quarter JS keys on an entity dataset's label (it
+    // finds them by atEntity; only the fixed 'Established Properties' / peer labels are matched
+    // by name), so this is display-only.
+    const entityLabels = displayEntityNames(entityMonthlyEntries.map((e) => e.pmcName));
+    entityMonthlyEntries.forEach((_, i) => {
+      const col = entityColor(i);
+      const label = _e(entityLabels[i]);
+      entityLinesJs += `
+    datasets.push({
+      label: ${JSON.stringify(entityLabels[i])},
+      atEntity: ${i},
+      hidden: true,
+      data: ${JSON.stringify(entityLineVals[i])},
+      borderColor: '${col}',
+      backgroundColor: 'transparent',
+      fill: false,
+      tension: 0.35,
+      pointRadius: 3,
+      pointBackgroundColor: '${col}',
+      pointBorderColor: '#fff',
+      pointBorderWidth: 1.5,
+      borderWidth: 2,
+      datalabels: {
+        display: ctx => ctx.chart.isDatasetVisible(ctx.datasetIndex),
+        color: '${col}',
+        font: { size: 13, weight: '700', family: 'ABCDiatype' },
+        anchor: 'end',
+        align: 'top',
+        offset: 4,
+        formatter: v => v != null ? v + '%' : ''
+      }
+    });`;
+      entityLegendItems +=
+        `<span id="atEntLegend${slideId}-${i}" style="display:none;align-items:center;gap:6px;">` +
+        `<span style="display:inline-block;width:22px;height:3px;background:${col};border-radius:2px;"></span>` +
+        `<span style="font-size:13px;color:#524e5b;">${label}</span>` +
+        `</span>`;
+    });
+
+    // Same UI shape as flexSwitchEntity / flexSwitchResUnitsView (.spark-ctrl row of
+    // .spark-ctrl-btn buttons, index-based onclick so arbitrary PMC names never need escaping
+    // into a JS literal, state embedded as JSON keyed by slideId, guard-once shared functions) -
+    // but ADDITIVE, not single-select: every button starts un-.is-active and flips its own
+    // entity independently; .is-active mirrors each line's on-state. "Show all" flips to "Hide
+    // all" once every entity is on. Leading "\n    " baked into the string so the single-PMC
+    // template whitespace is untouched when this stays "". Entity pills go through the shared
+    // entitySwitchButton (short name + entity-color left accent) - the standard the Exec
+    // Summary and Residents/Units switchers now follow too.
+    const btns = entityLabels.map((lbl, i) =>
+      entitySwitchButton(i, _e(lbl), `flexToggleAdoptionEntity(${slideId},${i})`, ` id="atEntBtn${slideId}-${i}"`)
+    ).join("");
+    const showAllBtn = `<button class="spark-ctrl-btn" id="atShowAll${slideId}" onclick="flexToggleAllAdoptionEntities(${slideId})" style="border-style:dashed;">Show all</button>`;
+    entityToggleHtml = `\n    <div class="spark-ctrl presenter-control" style="flex-wrap:wrap;margin:-4px 0 8px;">${showAllBtn}${btns}${quarterBtnHtml}</div>`;
+    // basePts = the exact point set yMin/yMax above were computed from (combined + established +
+    // peer median, as rendered). The sync function re-runs the same Flask formula over basePts +
+    // every VISIBLE entity line on each click, so (a) with nothing toggled the axis is exactly
+    // the single-PMC deck's, and (b) an entity above/below the combined range is never clipped
+    // once it's on. Decision: rescale-on-toggle rather than a fixed range covering all series -
+    // a fixed range would flatten the combined line against an axis sized for an outlier
+    // subsidiary that isn't even showing.
+    const payload = { basePts: allPts };
+    const jsonPayload = JSON.stringify(payload).replace(/</g, "\\u003c");
+    entityToggleJs = `
+window.atEntityData=window.atEntityData||{};window.atEntityData[${slideId}]=${jsonPayload};
+if(!window.flexToggleAdoptionEntity){
+window.flexSyncAdoptionEntities=function(slideId,chart){
+  var d=window.atEntityData[slideId]||{basePts:[]};
+  var ds=chart.data.datasets, pts=d.basePts.slice(), on=0, total=0;
+  for(var j=0;j<ds.length;j++){
+    if(ds[j].atEntity==null)continue;${qtrSkip}
+    total++;
+    var vis=chart.isDatasetVisible(j);
+    var b=document.getElementById('atEntBtn'+slideId+'-'+ds[j].atEntity);if(b)b.classList.toggle('is-active',vis);
+    var lg=document.getElementById('atEntLegend'+slideId+'-'+ds[j].atEntity);if(lg)lg.style.display=vis?'flex':'none';
+    if(vis){on++;for(var k=0;k<ds[j].data.length;k++){if(ds[j].data[k]!=null)pts.push(ds[j].data[k]);}}
+  }
+  var all=document.getElementById('atShowAll'+slideId);if(all){all.textContent=(total>0&&on===total)?'Hide all':'Show all';all.classList.toggle('is-active',total>0&&on===total);}
+  chart.options.scales.y.suggestedMin=pts.length?Math.max(0,Math.floor(Math.min.apply(null,pts))-1):0;
+  chart.options.scales.y.suggestedMax=pts.length?Math.floor(Math.max.apply(null,pts))+2:15;
+  chart.update();
+};
+window.flexToggleAdoptionEntity=function(slideId,i){
+  var chart=Chart.getChart('chart'+slideId);if(!chart)return;
+  var ds=chart.data.datasets;
+  for(var j=0;j<ds.length;j++){if(ds[j].atEntity===i){chart.setDatasetVisibility(j,!chart.isDatasetVisible(j));break;}}
+  window.flexSyncAdoptionEntities(slideId,chart);
+};
+window.flexToggleAllAdoptionEntities=function(slideId){
+  var chart=Chart.getChart('chart'+slideId);if(!chart)return;
+  var ds=chart.data.datasets, allOn=true, j;
+  for(j=0;j<ds.length;j++){if(ds[j].atEntity!=null${qtrNotHidden}&&!chart.isDatasetVisible(j)){allOn=false;break;}}
+  for(j=0;j<ds.length;j++){if(ds[j].atEntity!=null${qtrNotHidden})chart.setDatasetVisibility(j,!allOn);}
+  window.flexSyncAdoptionEntities(slideId,chart);
+};
+}`;
+  }
+  // Single-PMC deck (no entity row) with a cohort: the quarter button gets its own row in the
+  // same slot, same styling. Stays "" when there's no cohort.
+  if (hasQuarter && !showEntityLines) {
+    entityToggleHtml = `\n    <div class="spark-ctrl presenter-control" style="flex-wrap:wrap;margin:-4px 0 8px;">${quarterBtnHtml}</div>`;
+  }
+
   // ─── Legend overlay ─────────────────────────────────────────────────────
   let bmLegend = "";
   if (showBenchmark) {
@@ -2138,6 +2654,7 @@ export function renderAdoptionTrend(input: {
     `<span style="font-size:13px;color:#524e5b;">${primaryLabel}</span>` +
     `</span>` +
     splitLegendItems +
+    entityLegendItems +
     estLegend +
     estToggle +
     bmLegend +
@@ -2160,8 +2677,8 @@ export function renderAdoptionTrend(input: {
       <div class="slide-label">Adoption Rate</div>
       <div class="slide-title">Adoption Rate by Month</div>
       ${peerOutlierNote}
-    </div>
-    <div class="chart-wrap" style="position:relative;height:460px;padding:12px;">${legendOverlay}<canvas id="chart${slideId}"></canvas></div>
+    </div>${entityToggleHtml}
+    <div class="chart-wrap" style="position:relative;height:${(showEntityLines || hasQuarter) ? 400 : 460}px;padding:12px;">${legendOverlay}<canvas id="chart${slideId}"></canvas></div>
     ${expansionNote}
     ${estFootnote}
   </div>`;
@@ -2218,7 +2735,7 @@ window['initSlide${slideId}'] = (function() {
         }
       }
     ];
-    ${splitSeriesJs}
+    ${splitSeriesJs}${entityLinesJs}
     if (${showEstablished} && estData.length > 0 && estData.some(v => v != null)) {
       datasets.push({
         label: 'Established Properties',
@@ -2304,7 +2821,7 @@ window['toggleEstablished${slideId}'] = function(btn) {
 window['toggleBenchmark${slideId}'] = function(btn) {
   const chart = Chart.getChart('chart${slideId}');
   if (!chart) return;
-  const idx = chart.data.datasets.findIndex(d => d.label === ${JSON.stringify(benchmarkLabel)});
+  const idx = chart.data.datasets.findIndex(d => d.label === ${JSON.stringify(benchmarkLabel)}${hasQuarter ? ` || d.label === ${JSON.stringify(QTR_PEER_LABEL)}` : ""});
   if (idx < 0) return;
   const nowVisible = !chart.isDatasetVisible(idx);
   chart.setDatasetVisibility(idx, nowVisible);
@@ -2314,7 +2831,7 @@ window['toggleBenchmark${slideId}'] = function(btn) {
   if (legend) legend.style.display = nowVisible ? 'flex' : 'none';
   const note = document.getElementById('peerOutlierNote${slideId}');
   if (note) note.style.display = nowVisible ? 'block' : 'none';
-};`;
+};${entityToggleJs}${quarterJs}`;
 
   return { html, js };
 }
@@ -2506,7 +3023,7 @@ window['initSlide${slideId}'] = (function() {
   let done = false;
   return function() {
     if (done) return; done = true;
-    var fmtRent = function(v) { if (!v) return '$0'; return v < 1e6 ? '$' + Math.round(v / 1e3) + 'K' : '$' + (v / 1e6).toFixed(1) + 'M'; };
+    var fmtRent = function(v) { if (!v) return '$0'; if (v >= 1e9) return '$' + (v / 1e9).toFixed(2) + 'B'; return v < 1e6 ? '$' + Math.round(v / 1e3) + 'K' : '$' + (v / 1e6).toFixed(1) + 'M'; };
     window['hrChart${slideId}'] = new Chart(document.getElementById('hrchart${slideId}'), {
       type: 'bar',
       data: {
@@ -2658,13 +3175,41 @@ function flexRentBucket(sid, period) {
 
 // ─── render_residents_units_combo (Slide 54) ────────────────────────────────
 
+// One entry per combined entity's own monthly residents/units/rent (Task 12: Combined-or-one-
+// entity view switcher). Built by the call site via groupRowsByPmc(inNetwork) - the exact same
+// row set the combined `monthlyTotals` above is built from, one dimension finer. Deliberately
+// its own minimal shape (not MonthlyTotal) - mirrors the AdoptionTrendMonthly/
+// AdoptionTrendEntityMonthly precedent from Task 11, one dedicated shape per renderer rather
+// than reusing the wider MonthlyTotal fields this chart doesn't need (newSignups, adoptionRate,
+// propertyCount).
+export interface ResidentsUnitsMonth {
+  month: string;
+  billsPaid: number;
+  units: number;
+  rentPaid: number;
+}
+
+export interface ResidentsUnitsEntityMonthly {
+  pmcName: string;
+  monthly: ResidentsUnitsMonth[];
+}
+
 export interface ResidentsUnitsInput {
   slideId: number;
   monthlyTotals: MonthlyTotal[];
+  // Only rendered as a switcher when this has 2+ entries - a single-PMC report passes [] or a
+  // 1-entry array and the chart renders exactly as before this field existed (same "byte-
+  // identical when <=1 entity" contract as Tasks 9-11's entityBreakdown/entityYearlyData/
+  // entityMonthlyData). Unlike Task 11's per-entity Adoption Trend lines (deliberately sparse,
+  // real gaps left as null), this is a SINGLE-select switcher - only one dataset is ever drawn
+  // at a time, so each entity's series is aligned onto monthlyTotals' own month axis with
+  // missing months filled as 0 rather than left sparse, keeping the x-axis stable across
+  // switches (see the alignment loop below).
+  entityMonthlyData?: ResidentsUnitsEntityMonthly[];
 }
 
-export function renderResidentsUnitsCombo(input: ResidentsUnitsInput): SlideResult {
-  const { slideId, monthlyTotals } = input;
+export function renderResidentsUnitsCombo(input: ResidentsUnitsInput & QuarterAddsInput): SlideResult {
+  const { slideId, monthlyTotals, entityMonthlyData } = input;
 
   if (monthlyTotals.length < 2) {
     const val = monthlyTotals.length > 0 ? monthlyTotals[monthlyTotals.length - 1].billsPaid : 0;
@@ -2702,12 +3247,176 @@ export function renderResidentsUnitsCombo(input: ResidentsUnitsInput): SlideResu
   const y2Min = Math.max(0, rentMin - rentPad);
   const y2Max = rentMax + rentPad;
 
+  // ── View switcher: Combined or one entity, always exactly 3 lines (Task 12) ───────────────
+  // Same established switcher pattern as Task 9's Exec Summary (.spark-ctrl/.spark-ctrl-btn/
+  // .is-active CSS, index-based onclick, all states embedded as JSON keyed by slideId at
+  // generation time, no re-fetch) - deliberately NOT literally window.flexSwitchEntity, since
+  // that shared function swaps DOM textContent for a tile grid and has no way to touch a
+  // Chart.js instance. This chart needs its own swap function (mirrors the existing
+  // flexRentBucket precedent a few hundred lines up, which already rebuilds a Chart.js
+  // dataset + rescales an axis on a button click) - same UI/data-embedding conventions, the
+  // minimum adaptation the chart-vs-tile-grid difference requires. Explicitly NOT additive
+  // toggles - Kevin picked the single-select switcher specifically for this chart (compared
+  // both live) because 3 metrics x several toggled-on entities gets noisy fast; every view,
+  // Combined or one entity, draws exactly the same 3 lines this chart always has.
+  const entities = entityMonthlyData ?? [];
+  const showEntitySwitcher = entities.length > 1;
+
+  // ── "Q<N> <YYYY> adds" toggle (quarter-adds cohort view) ─────────────────────────────────
+  // Same contract as renderAdoptionTrend's: absent (every string "") when there's no cohort, so
+  // the no-cohort output is byte-identical to before. In quarter mode the SAME 3 lines (+ the
+  // invisible baseline fill) simply take the cohort's residents/units/rent arrays - no dataset
+  // is ever hidden or added, so every state draws exactly 3 visible lines. Arrays are aligned to
+  // monthlyTotals' month axis with null (a gap, not a 0) before the cohort's first month; the
+  // datalabel formatters below are emitted null-safe only when a cohort exists, for the same
+  // byte-identity reason. The entity switcher keeps working inside quarter mode (reads the
+  // quarter arrays), with buttons for entities that had no adds hidden and the view forced to
+  // Combined if the active one disappears.
+  const quarter = input.quarter ?? null;
+  const quarterCombined = input.quarterCombined ?? null;
+  const hasQuarter = !!(quarter && quarterCombined && quarterCombined.monthly.length > 0);
+  let quarterBtnHtml = "";
+  let quarterJs = "";
+  const numFmtJs = hasQuarter ? "v => v == null ? '' : v.toLocaleString()" : "v => v.toLocaleString()";
+  const rentFmtJs = hasQuarter ? "v => v == null ? '' : fmtRent(v)" : "v => fmtRent(v)";
+  if (hasQuarter && quarter && quarterCombined) {
+    const alignQ = (s: QuarterAddsSeries) => {
+      const byMonth = new Map(s.monthly.map((m) => [m.month, m]));
+      return {
+        residents: monthlyTotals.map((m) => byMonth.get(m.month)?.billsPaid ?? null),
+        units: monthlyTotals.map((m) => byMonth.get(m.month)?.units ?? null),
+        rent: monthlyTotals.map((m) => { const r = byMonth.get(m.month); return r ? Math.round(r.rentPaid * 100) / 100 : null; }),
+      };
+    };
+    // Keyed by the switcher's view index (0 = Combined, i+1 = entities[i]) so the toggle JS
+    // addresses the same buttons flexSwitchResUnitsView does. No key = no adds this quarter.
+    const qEntities: Record<number, ReturnType<typeof alignQ>> = {};
+    if (showEntitySwitcher) {
+      const byName = new Map((input.quarterEntities ?? []).map((e) => [e.pmcName, e.series]));
+      entities.forEach((e, i) => {
+        const s = byName.get(e.pmcName);
+        if (s && s.monthly.length > 0) qEntities[i + 1] = alignQ(s);
+      });
+    }
+    quarterBtnHtml = `<button class="spark-ctrl-btn" id="ruQtrBtn${slideId}" onclick="flexToggleRucQuarter(${slideId},this)">${_e(quarter.label)} adds</button>`;
+    const payload = { on: false, view: 0, combined: alignQ(quarterCombined), entities: qEntities, header: quarterAddsHeader(quarter, quarterCombined) };
+    const jsonPayload = JSON.stringify(payload).replace(/</g, "\\u003c");
+    // flexRucApply = the exact swap + y2 rescale flexSwitchResUnitsView does, factored so the
+    // quarter toggle and the in-quarter view switch share one code path (null-tolerant on the
+    // rent axis bounds). Chart.getChart (not window.comboChart) so single-PMC decks - which
+    // never expose comboChart - work too. Toggle off restores the currently selected view's
+    // full-portfolio arrays (from ruEntityData when the switcher exists, else the arrays saved
+    // at toggle-on).
+    quarterJs = `
+window.ruQuarterData=window.ruQuarterData||{};window.ruQuarterData[${slideId}]=${jsonPayload};
+if(!window.flexToggleRucQuarter){
+window.flexRucApply=function(chart,d){
+  var ds=chart.data.datasets;ds[0].data=d.residents;ds[1].data=d.units;ds[2].data=d.residents;ds[3].data=d.rent;
+  var rv=[];for(var k=0;k<d.rent.length;k++){if(d.rent[k]!=null)rv.push(d.rent[k]);}
+  var rMin=rv.length?Math.min.apply(null,rv):0,rMax=rv.length?Math.max.apply(null,rv):0;
+  var rSpan=rMax-rMin;var rPad=rSpan>0?rSpan*0.6:Math.max(rMax*0.15,1);
+  chart.options.scales.y2.min=Math.max(0,rMin-rPad);chart.options.scales.y2.max=rMax+rPad;
+  chart.update();
+};
+window.flexToggleRucQuarter=function(slideId,btn){
+  var q=window.ruQuarterData[slideId];if(!q)return;
+  var chart=Chart.getChart('chart'+slideId);if(!chart)return;
+  var ds=chart.data.datasets,v;
+  var slide=document.getElementById('slide-'+slideId);var title=slide?slide.querySelector('.slide-title'):null;
+  var row=btn.parentElement;var views=row?row.querySelectorAll('button[onclick^="flexSwitchResUnitsView"]'):[];
+  if(!q.on){
+    q.on=true;
+    var cur=0;for(v=0;v<views.length;v++){if(views[v].classList.contains('is-active'))cur=v;}
+    q.saved={residents:ds[2].data,units:ds[1].data,rent:ds[3].data,y2min:chart.options.scales.y2.min,y2max:chart.options.scales.y2.max,title:title?title.textContent:''};
+    if(cur>0&&!q.entities[cur])cur=0;
+    for(v=0;v<views.length;v++){views[v].style.display=(v===0||q.entities[v])?'':'none';views[v].classList.toggle('is-active',v===cur);}
+    q.view=cur;
+    window.flexRucApply(chart,cur===0?q.combined:q.entities[cur]);
+    if(title)title.textContent=q.header;
+    btn.classList.add('is-active');
+  }else{
+    var s=q.saved;q.on=false;
+    for(v=0;v<views.length;v++){views[v].style.display='';views[v].classList.toggle('is-active',v===q.view);}
+    var ed=window.ruEntityData?window.ruEntityData[slideId]:null;var full=ed?ed[q.view]:null;
+    if(full){window.flexRucApply(chart,full);}
+    else{ds[0].data=s.residents;ds[1].data=s.units;ds[2].data=s.residents;ds[3].data=s.rent;chart.options.scales.y2.min=s.y2min;chart.options.scales.y2.max=s.y2max;chart.update();}
+    if(title)title.textContent=s.title;
+    btn.classList.remove('is-active');
+  }
+};
+}`;
+  }
+
+  let entitySwitcherHtml = "";
+  let entitySwitcherJs = "";
+  let comboChartExposeJs = "";
+  if (showEntitySwitcher) {
+    // Labels are display-shortened (displayEntityNames); the per-entity series are looked up
+    // by position, never by label, so this is display-only.
+    const entityLabels = displayEntityNames(entities.map((e) => e.pmcName));
+    const payload = [
+      { label: "Combined", residents, units, rent },
+      ...entities.map((e, i) => {
+        const byMonth = new Map(e.monthly.map((m) => [m.month, m]));
+        const eResidents = monthlyTotals.map((m) => byMonth.get(m.month)?.billsPaid ?? 0);
+        const eUnits = monthlyTotals.map((m) => byMonth.get(m.month)?.units ?? 0);
+        const eRent = monthlyTotals.map((m) => Math.round((byMonth.get(m.month)?.rentPaid ?? 0) * 100) / 100);
+        return { label: entityLabels[i], residents: eResidents, units: eUnits, rent: eRent };
+      }),
+    ];
+    // Index-based onclick (not the entity name) - same reason Task 9 used it: sidesteps
+    // escaping arbitrary PMC names (apostrophes, quotes) into a JS string literal. "Combined"
+    // (payload index 0) stays a plain un-accented pill; entity pills (payload index i = entity
+    // i-1) go through the shared entitySwitchButton so they carry the same short name + entity
+    // color accent as the Exec Summary and Adoption Trend switchers.
+    const btns = payload.map((p, i) =>
+      i === 0
+        ? `<button class="spark-ctrl-btn is-active" onclick="flexSwitchResUnitsView(${slideId},0,this)">${_e(p.label)}</button>`
+        : entitySwitchButton(i - 1, _e(p.label), `flexSwitchResUnitsView(${slideId},${i},this)`)
+    ).join("");
+    // Leading newline+indent baked into the string itself (not the surrounding template) so
+    // the single-PMC/<=1-entity case - where this stays "" - leaves the html template's own
+    // whitespace between slide-header and the legend row completely untouched (byte-identical
+    // to pre-Task-12 HEAD).
+    entitySwitcherHtml = `\n    <div class="spark-ctrl presenter-control" style="flex-wrap:wrap;max-width:620px;margin:-4px 0 8px;">${btns}${quarterBtnHtml}</div>`;
+    // Escape "<" so a PMC name containing "</script>" can't break out of the inline script tag -
+    // same convention as Task 9's jsonPayload.
+    const jsonPayload = JSON.stringify(payload).replace(/</g, "\\u003c");
+    comboChartExposeJs = `window['comboChart${slideId}'] = _comboChart;\n    `;
+    // With a cohort present, the switcher reads the quarter arrays while quarter mode is on and
+    // leaves the quarter button's own .is-active alone (it shares the row). Without one, this is
+    // the pre-existing string verbatim.
+    entitySwitcherJs = `window.ruEntityData=window.ruEntityData||{};window.ruEntityData[${slideId}]=${jsonPayload};`
+      + `if(!window.flexSwitchResUnitsView){window.flexSwitchResUnitsView=function(slideId,idx,btn){`
+      + (hasQuarter
+        ? `var q=window.ruQuarterData?window.ruQuarterData[slideId]:null;var d=(q&&q.on)?(idx===0?q.combined:q.entities[idx]):(window.ruEntityData[slideId]||[])[idx];if(!d)return;if(q)q.view=idx;`
+        : `var d=(window.ruEntityData[slideId]||[])[idx];if(!d)return;`)
+      + `var chart=window['comboChart'+slideId];if(!chart)return;`
+      + (hasQuarter
+        ? `window.flexRucApply(chart,d);`
+        : `chart.data.datasets[0].data=d.residents;chart.data.datasets[1].data=d.units;`
+          + `chart.data.datasets[2].data=d.residents;chart.data.datasets[3].data=d.rent;`
+          + `var rMin=Math.min.apply(null,d.rent),rMax=Math.max.apply(null,d.rent);`
+          + `var rSpan=rMax-rMin;var rPad=rSpan>0?rSpan*0.6:Math.max(rMax*0.15,1);`
+          + `chart.options.scales.y2.min=Math.max(0,rMin-rPad);chart.options.scales.y2.max=rMax+rPad;`
+          + `chart.update();`)
+      + (hasQuarter
+        ? `var row=btn.parentElement;if(row){Array.prototype.forEach.call(row.children,function(b){if(b.id!=='ruQtrBtn'+slideId)b.classList.toggle('is-active',b===btn);});}`
+        : `var row=btn.parentElement;if(row){Array.prototype.forEach.call(row.children,function(b){b.classList.toggle('is-active',b===btn);});}`)
+      + `};}`;
+  }
+  // Single-PMC deck (no switcher) with a cohort: the quarter button gets its own row in the
+  // same slot. Stays "" when there's no cohort.
+  if (hasQuarter && !showEntitySwitcher) {
+    entitySwitcherHtml = `\n    <div class="spark-ctrl presenter-control" style="flex-wrap:wrap;max-width:620px;margin:-4px 0 8px;">${quarterBtnHtml}</div>`;
+  }
+
   const html = `
   <div class="slide" id="slide-${slideId}" style="background:#fff;">
     <div class="slide-header">
       <div class="slide-label">Portfolio</div>
       <div class="slide-title">Residents paying against your unit base, plus the rent behind it.</div>
-    </div>
+    </div>${entitySwitcherHtml}
     <div style="display:flex;gap:16px;font-size:11px;color:#524e5b;margin:-6px 0 6px;">
       <span><span style="display:inline-block;width:14px;height:3px;background:#6A3DB8;border-radius:2px;margin-right:5px;vertical-align:middle;"></span>Residents Paying</span>
       <span><span style="display:inline-block;width:14px;height:3px;background:#2563EB;border-radius:2px;margin-right:5px;vertical-align:middle;"></span>Units in Network</span>
@@ -2721,7 +3430,7 @@ window['initSlide${slideId}'] = (function() {
   let done = false;
   return function() {
     if (done) return; done = true;
-    const fmtRent = v => '$' + (v >= 1000000 ? (v/1000000).toFixed(2)+'M' : (v/1000).toFixed(0)+'K');
+    const fmtRent = v => '$' + (v >= 1e9 ? (v/1e9).toFixed(2)+'B' : v >= 1000000 ? (v/1000000).toFixed(2)+'M' : (v/1000).toFixed(0)+'K');
     const lineY = (chart, label, idx) => {
       const dsIdx = chart.data.datasets.findIndex(d => d.label === label);
       const meta = dsIdx >= 0 ? chart.getDatasetMeta(dsIdx) : null;
@@ -2793,7 +3502,7 @@ window['initSlide${slideId}'] = (function() {
             pointRadius: 4, fill: 0, tension: 0.4, yAxisID: 'y',
             datalabels: { align: ctx => unitsRentAlign(ctx.chart, ctx.dataIndex, 'Units in Network'), anchor: 'end', color: '#2563EB',
               font: { size: 10, weight: '600', family: 'Lexend' },
-              formatter: v => v.toLocaleString(), offset: 6,
+              formatter: ${numFmtJs}, offset: 6,
               display: true }
           },
           {
@@ -2804,7 +3513,7 @@ window['initSlide${slideId}'] = (function() {
             pointRadius: 7, fill: false, tension: 0.4, yAxisID: 'y',
             datalabels: { align: ctx => residentsAlign(ctx.chart, ctx.dataIndex), anchor: 'end', color: '#6A3DB8',
               font: { size: 10, weight: '600', family: 'Lexend' },
-              formatter: v => v.toLocaleString(), offset: 12,
+              formatter: ${numFmtJs}, offset: 12,
               display: true }
           },
           {
@@ -2816,7 +3525,7 @@ window['initSlide${slideId}'] = (function() {
             datalabels: {
               align: ctx => rentAlign(ctx.chart, ctx.dataIndex), anchor: 'end', color: '#1a9e6a',
               font: { size: 10, weight: '600', family: 'Lexend' },
-              formatter: v => fmtRent(v),
+              formatter: ${rentFmtJs},
               offset: ctx => rentOffset(ctx.chart, ctx.dataIndex),
               display: true }
           }
@@ -2858,10 +3567,10 @@ window['initSlide${slideId}'] = (function() {
         }
       }
     });
-    requestAnimationFrame(() => { _comboChart.resize(); });
+    ${comboChartExposeJs}requestAnimationFrame(() => { _comboChart.resize(); });
   };
 })();
-`;
+${entitySwitcherJs}${quarterJs}`;
 
   return { html, js };
 }
@@ -2878,6 +3587,20 @@ export interface YearlyData {
   ytdMonthsActive: number;
 }
 
+// One entry per combined entity's own yearly rent totals (Task 10: Since Inception stacked
+// bar). Built by the call site via groupRowsByPmc(entityYearlyRentRows) - only fetched (and
+// only non-empty) when there's more than 1 combined entity, same "byte-identical when there's
+// only 1" contract as Task 9's ExecSummaryInput.entityBreakdown. Deliberately carries only
+// totalRent/ytdRent per year, not billsPaid/monthsActive - the green "bills paid" dots/line and
+// the incomplete-current-year projection both stay driven off the existing COMBINED yearlyData
+// below, never re-derived per entity (see the Step 2 "Projected bar" decision in the function
+// body for why).
+export interface SinceInceptionEntityYearly {
+  pmcName: string;
+  totalRentByYear: Record<number, number>;
+  ytdRentByYear: Record<number, number>;
+}
+
 export interface SinceInceptionInput {
   slideId: number;
   pmcName: string;
@@ -2888,11 +3611,23 @@ export interface SinceInceptionInput {
    * rollout, or a manual override) — see the firstYear comment below for why this must be
    * threaded through rather than re-derived from yearlyData. */
   partnerSince?: string | null;
+  entityYearlyData?: SinceInceptionEntityYearly[];
 }
 
 export function renderSinceInception(input: SinceInceptionInput): SlideResult {
   const { slideId, pmcName, reportingMonth, yearlyData, monthlyTotals, partnerSince } = input;
   if (yearlyData.length === 0) return { html: "", js: "" };
+
+  // ── Stacked-by-entity (Task 10) ────────────────────────────────────────────
+  // Only stacks when there's more than 1 combined entity - a single-PMC report (or a combined
+  // report whose entityYearlyData wasn't passed) gets entities = [] and isStacked = false, which
+  // keeps every branch below on the exact same single-dataset code path as before this existed.
+  const entities = input.entityYearlyData ?? [];
+  const isStacked = entities.length > 1;
+  const entityColors = entities.map((_, i) => entityColor(i));
+  // Display-shortened names for the legend swatches and the dataset labels (= tooltip rows);
+  // the per-entity rent arrays are positional, so nothing keys on the label.
+  const entityLabels = displayEntityNames(entities.map((e) => e.pmcName));
 
   const years = yearlyData.map(y => y.year);
   const rentRaw = yearlyData.map(y => y.totalRent);
@@ -2912,7 +3647,7 @@ export function renderSinceInception(input: SinceInceptionInput): SlideResult {
   const totalBillsAll = billsPaid.reduce((s, v) => s + v, 0);
   const currentYear = parseInt(reportingMonth.slice(0, 4), 10);
 
-  const subtitle = `<strong>${fmtCurrency(totalRentAll)} guaranteed</strong> and <strong>${totalBillsAll.toLocaleString()} bills paid</strong> since ${_e(pmcName)} joined Flex in ${firstYear}.`;
+  const subtitle = `<strong>${fmtCurrency(totalRentAll)} guaranteed</strong> and <strong>${totalBillsAll.toLocaleString("en-US")} bills paid</strong> since ${_e(pmcName)} joined Flex in ${firstYear}.`;
 
   // Projection for incomplete current year
   const lastMonthsActive = monthsActive[monthsActive.length - 1];
@@ -2955,6 +3690,16 @@ export function renderSinceInception(input: SinceInceptionInput): SlideResult {
   const projBillsJs = projBillsVal !== null ? JSON.stringify(projBillsVal) : "null";
   const ghostPctJs = JSON.stringify(ghostPctText);
 
+  // Per-entity rent-by-year, aligned to `years` then padded with the same trailing `null`
+  // ghost column as rentSolidChart (Task 10). The ghost/projected column is deliberately left
+  // null (not 0) for every entity - the projected bar stays a single COMBINED dashed overlay
+  // (see the drawing-plugin comment below for why), never a per-entity projection, so no entity
+  // dataset has a real bar to draw in that column.
+  const entityRentArrays: (number | null)[][] = entities.map(e => {
+    const real = years.map(y => e.totalRentByYear[y] ?? 0);
+    return hasProjection ? [...real, null] : real;
+  });
+
   // ── YTD data: use pre-computed ytd values from yearly query ────
   const reportMonth = parseInt(reportingMonth.slice(5, 7), 10);
   const monthLbl = new Date(reportingMonth + "T00:00:00Z").toLocaleDateString("en-US", { month: "short", timeZone: "UTC" });
@@ -2970,6 +3715,19 @@ export function renderSinceInception(input: SinceInceptionInput): SlideResult {
   const ytdYMaxVal = ytdRent.length > 0 ? Math.max(...ytdRent) : 1;
   const ytdYMax = ytdYMaxVal > 0 ? ytdYMaxVal * 1.22 : 1;
 
+  // Per-entity YTD rent, aligned to ytdYears (Task 10) - no ghost column here since the YTD
+  // view never shows a projection (hasFootnote/projRent are already hardcoded null below).
+  const entityYtdRentArrays: number[][] = entities.map(e => ytdYears.map(y => e.ytdRentByYear[y] ?? 0));
+
+  // One dataset-array per Chart.js dataset, for both the initial render and the Full/YTD
+  // toggle: non-stacked mode keeps a single flat array wrapped in a 1-length outer array
+  // (so the toggle's dataset-index loop below runs exactly once, same as before this existed);
+  // stacked mode has one inner array per entity, same order as entityColors/AVATAR_PALETTE.
+  const fullRentDatasets = isStacked ? entityRentArrays : [rentSolidChart];
+  const ytdRentDatasetsArr = isStacked ? entityYtdRentArrays : [ytdRent];
+  const fullRentDatasetsJs = JSON.stringify(fullRentDatasets);
+  const ytdRentDatasetsJs = JSON.stringify(ytdRentDatasetsArr);
+
   const toggleHtml = hasYtdToggle
     ? `<div class="pdf-export-hide" style="margin-left:12px;flex-shrink:0;">
         <button class="spark-ctrl-btn is-active" id="si-btn-full-${slideId}" onclick="flexToggleSIView('${slideId}','full')" style="padding:3px 9px;border-radius:5px;border:1px solid #e5e7eb;background:#8D70EE;color:#fff;font-size:10px;font-weight:600;cursor:pointer;margin-right:4px;">Full Year</button>
@@ -2980,6 +3738,22 @@ export function renderSinceInception(input: SinceInceptionInput): SlideResult {
   const projLegend = hasProjection
     ? `<span id="si-proj-legend-${slideId}"><span style="display:inline-block;width:10px;height:10px;background:rgba(106,61,184,0.22);border:1px dashed #6A3DB8;border-radius:2px;margin-right:4px;vertical-align:middle;"></span>Projected (full ${currentYear})</span>`
     : `<span id="si-proj-legend-${slideId}" style="display:none;"></span>`;
+
+  // Stacked mode replaces the single "Rent paid / year" swatch with one swatch per entity
+  // (color-coded via AVATAR_PALETTE) so the stacked segments are identifiable - without this,
+  // N colors on the bar with no key would just look like an unexplained rendering change.
+  // The per-entity key lives in its OWN wrapping row BELOW the canvas, not in the header row
+  // beside the eyebrow (Kevin's catch on the 8-entity Asset Living deck: eight full-length
+  // subsidiary names wrapped inside the header's right-aligned flex cell and spilled over the
+  // top of the plot). The header row keeps only the two fixed-width items (Bills paid, Projected)
+  // plus the Full/YTD toggle; the entity swatches get a full-width flex-wrap block of their own
+  // that the column-flex container sizes around, so it can never overlap the canvas.
+  const rentLegendHtml = isStacked
+    ? ""
+    : `<span><span style="display:inline-block;width:10px;height:10px;background:rgba(106,61,184,0.6);border-radius:2px;margin-right:4px;vertical-align:middle;"></span>Rent paid / year</span>`;
+  const stackedLegendHtml = isStacked
+    ? `\n      <div style="display:flex;flex-wrap:wrap;gap:4px 14px;font-size:10px;color:#524e5b;margin-top:8px;flex-shrink:0;">${entities.map((_, i) => `<span style="white-space:nowrap;"><span style="display:inline-block;width:10px;height:10px;background:${hexToRgba(entityColors[i], 0.6)};border-radius:2px;margin-right:4px;vertical-align:middle;"></span>${_e(entityLabels[i])}</span>`).join("")}</div>`
+    : "";
 
   const html = `
   <div class="slide" id="slide-${slideId}" style="background:#fff;">
@@ -2993,7 +3767,7 @@ export function renderSinceInception(input: SinceInceptionInput): SlideResult {
         <div style="font-size:9px;font-weight:600;color:#524e5b;text-transform:uppercase;letter-spacing:0.1em;"><span id="si-eyebrow-full-${slideId}">RENT PAID &amp; BILLS PAID BY YEAR</span><span id="si-eyebrow-ytd-${slideId}" style="display:none;">RENT PAID &amp; BILLS PAID, YTD THROUGH ${_e(monthLbl).toUpperCase()}</span> - ${_e(pmcName)}</div>
         <div style="display:flex;align-items:center;flex-shrink:0;margin-left:16px;">
           <div style="display:flex;gap:14px;font-size:10px;color:#524e5b;">
-            <span><span style="display:inline-block;width:10px;height:10px;background:rgba(106,61,184,0.6);border-radius:2px;margin-right:4px;vertical-align:middle;"></span>Rent paid / year</span>
+            ${rentLegendHtml}
             <span><span style="display:inline-block;width:8px;height:8px;background:#1a9e6a;border-radius:50%;margin-right:4px;vertical-align:middle;"></span>Bills paid / year</span>
             ${projLegend}
           </div>
@@ -3002,10 +3776,168 @@ export function renderSinceInception(input: SinceInceptionInput): SlideResult {
       </div>
       <div style="flex:1;min-height:0;position:relative;overflow:hidden;">
         <canvas id="sichart${slideId}"></canvas>
-      </div>
+      </div>${stackedLegendHtml}
     </div>
     <div id="si-footnote-${slideId}" style="font-size:10px;color:#a09cb0;margin-top:6px;flex-shrink:0;font-style:italic;${hasProjection ? '' : 'display:none;'}">Projected figures extrapolate from year-to-date performance (trailing 3-month run-rate); actual results will vary.</div>
   </div>`;
+
+  // ── Chart.js dataset(s) (Task 10) ───────────────────────────────────────────
+  // Non-stacked branch is the exact original single-dataset object, untouched, so a single-PMC
+  // report's generated JS is byte-identical to before this task. Stacked branch gives each
+  // entity its own bar dataset sharing stack id 'rent' (Chart.js's built-in stacked-bar sum) -
+  // only the LAST entity's dataset carries a datalabel, formatted off the combined stack totals
+  // so the printed total above each bar is the real stack height, not just that one entity's
+  // segment (no separate "total" dataset needed - Chart.js already sums the stack visually).
+  // The totals are read LIVE from siState.stackTotals (which flexToggleSIView swaps between the
+  // Full-Year and YTD arrays), not baked in from rentSolidJs - baking them in meant the YTD view
+  // kept printing the Full-Year totals over YTD-height bars (and mis-indexed whenever the YTD
+  // view has fewer year columns than the Full-Year one). Every other entity's dataset has
+  // datalabels explicitly OFF - the per-entity breakdown is hover-only (see tooltipCallbacksJs
+  // below), never printed on the segments.
+  const datasetsJs = isStacked
+    ? entities.map((_, i) => {
+        const isLast = i === entities.length - 1;
+        const datalabelsJs = isLast
+          ? `{ anchor: 'end', align: 'end', offset: 10, formatter: (v, ctx) => { const t = ((window['siState${slideId}'] || {}).stackTotals || [])[ctx.dataIndex]; return t == null ? '' : fmtRent(t); }, color: '#2C194D', font: { size: 12, weight: '700' } }`
+          : `{ display: false }`;
+        return `{
+          type: 'bar', label: ${JSON.stringify(entityLabels[i])},
+          data: ${JSON.stringify(entityRentArrays[i])},
+          backgroundColor: '${hexToRgba(entityColors[i], 0.55)}',
+          borderColor: '${entityColors[i]}', borderWidth: 1.5, borderRadius: 4,
+          stack: 'rent', yAxisID: 'y',
+          datalabels: ${datalabelsJs}
+        }`;
+      }).join(",")
+    : `{
+          type: 'bar', label: 'Rent paid / year',
+          data: ${rentSolidJs},
+          backgroundColor: 'rgba(106,61,184,0.55)',
+          borderColor: '#6A3DB8', borderWidth: 1.5, borderRadius: 4,
+          yAxisID: 'y',
+          datalabels: { anchor: 'end', align: 'end', offset: 10, formatter: v => v == null ? '' : fmtRent(v), color: '#2C194D', font: { size: 12, weight: '700' } }
+        }`;
+
+  // Tooltip: stacked mode is the ONLY place the per-entity breakdown is readable (Kevin's ask -
+  // no per-segment datalabels, they collided into an unreadable smear at 8 entities; the bar
+  // carries exactly one printed label, the stack total, see datasetsJs above). So the hover has
+  // to do the whole job: `interaction: { mode: 'index', intersect: false }` (stackedInteractionJs
+  // below) lists EVERY entity's segment for the hovered year in one tooltip instead of only the
+  // segment under the cursor, largest first, with the stack total in the footer. Entities at $0
+  // that year (not yet on Flex) are filtered out rather than listed as "$0" noise. It also drops
+  // the "% vs prior year" afterLabel (that clause reads dataset[0]'s own data as if it were the
+  // combined total, which in stacked mode it isn't). The footer also carries the incomplete
+  // current year's "Projected (combined)" figure when hovering that year in Full-Year view
+  // (Kevin: "where's the projection?" - the dashed overlay is drawn by the plugin, but the
+  // hover listed only actuals). Reads siState.projRent/nReal live, so it disappears in the YTD
+  // view (projRent null there) exactly like the overlay does. Non-stacked branch is the exact
+  // original filter + callbacks object, untouched.
+  const tooltipFilterJs = isStacked
+    ? `item => item.parsed.y != null && item.parsed.y !== 0`
+    : `item => item.parsed.y != null`;
+  const stackedInteractionJs = isStacked ? `\n        interaction: { mode: 'index', intersect: false },` : "";
+  const tooltipCallbacksJs = isStacked
+    ? `label: ctx => ctx.dataset.label + ': ' + fmtRent(ctx.parsed.y),
+              footer: items => {
+                const lines = [];
+                if (items.length > 1) lines.push('Total: ' + fmtRent(items.reduce((s, it) => s + (it.parsed.y || 0), 0)));
+                const st = window['siState${slideId}'];
+                if (items.length && st && st.projRent != null && items[0].dataIndex === st.nReal - 1) lines.push('Projected (combined): ' + fmtRent(st.projRent));
+                return lines;
+              }`
+    : `label: ctx => ctx.dataset.label + ': ' + fmtRent(ctx.parsed.y),
+              afterLabel: ctx => {
+                const i = ctx.dataIndex;
+                const solidData = ctx.chart.data.datasets[0].data;
+                if (i === 0) return '';
+                const prev = solidData[i - 1];
+                if (prev == null) return '';
+                const pct = (ctx.parsed.y - prev) / prev * 100;
+                return (pct >= 0 ? '+' : '') + pct.toFixed(1) + '% vs ' + ctx.chart.data.labels[i - 1];
+              }`;
+
+  const stackedScaleJs = isStacked ? "stacked: true, " : "";
+
+  // Every one of these collapses to the empty string when !isStacked, so the generated JS
+  // below is byte-identical to the pre-Task-10 text for a single-entity report - same
+  // discipline as Task 9's showEntitySwitcher-gated additions to renderExecSummary.
+  const stackedStateJs = isStacked ? `\n      isStacked: true, stackTotals: ${rentSolidJs},` : "";
+  const stackedVarsJs = isStacked ? `\n        const stackTotals = st.stackTotals;` : "";
+  const dotsYCalcJs = isStacked
+    ? `const topY = (stackTotals && stackTotals[i] != null) ? chart.scales.y.getPixelForValue(stackTotals[i]) : el.y;
+          pts.push({ x: el.x, y: (topY + el.base) / 2, val, projected: false, base: el.base });`
+    : `pts.push({ x: el.x, y: (el.y + el.base) / 2, val, projected: false, base: el.base });`;
+  const fullRentDatasetsFieldJs = isStacked ? ` rentDatasets: ${fullRentDatasetsJs},` : "";
+  const ytdRentDatasetsFieldJs = isStacked ? ` rentDatasets: ${ytdRentDatasetsJs},` : "";
+  // flexToggleSIView is a shared, guard-once global (`if (!window.flexToggleSIView)`) whose
+  // full text is still re-emitted by every slide render, so it needs the same all-or-nothing
+  // gating as everything else here: the non-stacked branch is character-for-character the
+  // pre-Task-10 function body. The stacked branch generalizes the single hardcoded
+  // `chart.data.datasets[0].data = active.rent` assignment into a loop over
+  // active.rentDatasets (one entry per entity dataset) and keeps st.stackTotals in sync with
+  // whichever view (Full/YTD) is active, for the dots-position calc above.
+  const toggleFnJs = isStacked
+    ? `if (!window.flexToggleSIView) {
+  window.flexToggleSIView = function(sid, which) {
+    const chart = window['siChart' + sid];
+    const st = window['siState' + sid];
+    if (!chart || !st) return;
+    const showYtd = which === 'ytd';
+    const full = window['siFull' + sid], ytd = window['siYtd' + sid];
+    const active = showYtd ? ytd : full;
+    if (!active) return;
+    chart.data.labels = active.labels;
+    (active.rentDatasets || [active.rent]).forEach(function(data, i) { if (chart.data.datasets[i]) chart.data.datasets[i].data = data; });
+    chart.options.scales.y.suggestedMax = active.yMax;
+    st.billsActual = active.bills;
+    st.projRent = active.projRent;
+    st.projBills = active.projBills;
+    st.ghostPctText = active.ghostPctText;
+    st.nReal = active.nReal;
+    st.stackTotals = active.rent;
+    chart.update();
+    var bFull = document.getElementById('si-btn-full-' + sid), bYtd = document.getElementById('si-btn-ytd-' + sid);
+    if (bFull) { bFull.style.background = showYtd ? '#fff' : '#8D70EE'; bFull.style.color = showYtd ? '#524e5b' : '#fff'; }
+    if (bYtd) { bYtd.style.background = showYtd ? '#8D70EE' : '#fff'; bYtd.style.color = showYtd ? '#fff' : '#524e5b'; }
+    var projLegend = document.getElementById('si-proj-legend-' + sid);
+    if (projLegend) projLegend.style.display = showYtd ? 'none' : '';
+    var eFull = document.getElementById('si-eyebrow-full-' + sid), eYtd = document.getElementById('si-eyebrow-ytd-' + sid);
+    if (eFull) eFull.style.display = showYtd ? 'none' : 'inline';
+    if (eYtd) eYtd.style.display = showYtd ? 'inline' : 'none';
+    var footnote = document.getElementById('si-footnote-' + sid);
+    if (footnote) footnote.style.display = (showYtd || !active.hasFootnote) ? 'none' : '';
+  };
+}`
+    : `if (!window.flexToggleSIView) {
+  window.flexToggleSIView = function(sid, which) {
+    const chart = window['siChart' + sid];
+    const st = window['siState' + sid];
+    if (!chart || !st) return;
+    const showYtd = which === 'ytd';
+    const full = window['siFull' + sid], ytd = window['siYtd' + sid];
+    const active = showYtd ? ytd : full;
+    if (!active) return;
+    chart.data.labels = active.labels;
+    chart.data.datasets[0].data = active.rent;
+    chart.options.scales.y.suggestedMax = active.yMax;
+    st.billsActual = active.bills;
+    st.projRent = active.projRent;
+    st.projBills = active.projBills;
+    st.ghostPctText = active.ghostPctText;
+    st.nReal = active.nReal;
+    chart.update();
+    var bFull = document.getElementById('si-btn-full-' + sid), bYtd = document.getElementById('si-btn-ytd-' + sid);
+    if (bFull) { bFull.style.background = showYtd ? '#fff' : '#8D70EE'; bFull.style.color = showYtd ? '#524e5b' : '#fff'; }
+    if (bYtd) { bYtd.style.background = showYtd ? '#8D70EE' : '#fff'; bYtd.style.color = showYtd ? '#fff' : '#524e5b'; }
+    var projLegend = document.getElementById('si-proj-legend-' + sid);
+    if (projLegend) projLegend.style.display = showYtd ? 'none' : '';
+    var eFull = document.getElementById('si-eyebrow-full-' + sid), eYtd = document.getElementById('si-eyebrow-ytd-' + sid);
+    if (eFull) eFull.style.display = showYtd ? 'none' : 'inline';
+    if (eYtd) eYtd.style.display = showYtd ? 'inline' : 'none';
+    var footnote = document.getElementById('si-footnote-' + sid);
+    if (footnote) footnote.style.display = (showYtd || !active.hasFootnote) ? 'none' : '';
+  };
+}`;
 
   const js = `
 window['initSlide${slideId}'] = (function() {
@@ -3014,12 +3946,13 @@ window['initSlide${slideId}'] = (function() {
     if (done) return; done = true;
     const fmtRent = v => {
       if (!v) return '$0';
+      if (v >= 1e9) return '$' + (v / 1e9).toFixed(2) + 'B';
       return v < 1e6 ? '$' + Math.round(v / 1e3) + 'K' : '$' + (v / 1e6).toFixed(1) + 'M';
     };
     // Mutable state the drawing plugin reads every redraw
     window['siState${slideId}'] = {
       billsActual: ${billsActualJs}, projBills: ${projBillsJs}, projRent: ${projRentJs},
-      ghostPctText: ${ghostPctJs}, nReal: ${nReal},
+      ghostPctText: ${ghostPctJs}, nReal: ${nReal},${stackedStateJs}
     };
     const centerDots = {
       id: 'centerDots${slideId}',
@@ -3031,7 +3964,7 @@ window['initSlide${slideId}'] = (function() {
         const projBills = st.projBills;
         const projRent = st.projRent;
         const ghostPctText = st.ghostPctText;
-        const nReal = st.nReal;
+        const nReal = st.nReal;${stackedVarsJs}
         let ghostRect = null;
         if (projRent != null) {
           const el = barMeta.data[nReal];
@@ -3066,7 +3999,7 @@ window['initSlide${slideId}'] = (function() {
           if (val == null) return;
           const el = barMeta.data[i];
           if (!el) return;
-          pts.push({ x: el.x, y: (el.y + el.base) / 2, val, projected: false, base: el.base });
+          ${dotsYCalcJs}
         });
         if (projBills != null && ghostRect) {
           pts.push({ x: ghostRect.cx, y: (ghostRect.top + ghostRect.base) / 2, val: projBills, projected: true, base: ghostRect.base });
@@ -3107,39 +4040,23 @@ window['initSlide${slideId}'] = (function() {
       plugins: [centerDots],
       data: {
         labels: ${labelsJs},
-        datasets: [{
-          type: 'bar', label: 'Rent paid / year',
-          data: ${rentSolidJs},
-          backgroundColor: 'rgba(106,61,184,0.55)',
-          borderColor: '#6A3DB8', borderWidth: 1.5, borderRadius: 4,
-          yAxisID: 'y',
-          datalabels: { anchor: 'end', align: 'end', offset: 10, formatter: v => v == null ? '' : fmtRent(v), color: '#2C194D', font: { size: 12, weight: '700' } }
-        }]
+        datasets: [${datasetsJs}]
       },
       options: {
-        responsive: true, maintainAspectRatio: false,
+        responsive: true, maintainAspectRatio: false,${stackedInteractionJs}
         layout: { padding: { top: 34, right: 8, bottom: 4 } },
         plugins: {
           legend: { display: false },
           tooltip: {
-            filter: item => item.parsed.y != null,
+            filter: ${tooltipFilterJs},${isStacked ? `\n            itemSort: (a, b) => b.parsed.y - a.parsed.y,` : ""}
             callbacks: {
-              label: ctx => ctx.dataset.label + ': ' + fmtRent(ctx.parsed.y),
-              afterLabel: ctx => {
-                const i = ctx.dataIndex;
-                const solidData = ctx.chart.data.datasets[0].data;
-                if (i === 0) return '';
-                const prev = solidData[i - 1];
-                if (prev == null) return '';
-                const pct = (ctx.parsed.y - prev) / prev * 100;
-                return (pct >= 0 ? '+' : '') + pct.toFixed(1) + '% vs ' + ctx.chart.data.labels[i - 1];
-              }
+              ${tooltipCallbacksJs}
             }
           }
         },
         scales: {
-          x: { grid: { display: false }, border: { display: false }, ticks: { color: '#524e5b', font: { size: 12, weight: '600' } } },
-          y: { position: 'left', min: 0, suggestedMax: ${yMax}, grid: { color: '#f3f4f6' }, border: { display: false },
+          x: { ${stackedScaleJs}grid: { display: false }, border: { display: false }, ticks: { color: '#524e5b', font: { size: 12, weight: '600' } } },
+          y: { ${stackedScaleJs}position: 'left', min: 0, suggestedMax: ${yMax}, grid: { color: '#f3f4f6' }, border: { display: false },
               ticks: { color: '#9ca3af', font: { size: 10 }, callback: v => fmtRent(v) },
               title: { display: true, text: 'Rent paid / year', color: '#9ca3af', font: { size: 9 } } }
         }
@@ -3147,49 +4064,245 @@ window['initSlide${slideId}'] = (function() {
     });
   };
 })();
-if (!window.flexToggleSIView) {
-  window.flexToggleSIView = function(sid, which) {
-    const chart = window['siChart' + sid];
-    const st = window['siState' + sid];
-    if (!chart || !st) return;
-    const showYtd = which === 'ytd';
-    const full = window['siFull' + sid], ytd = window['siYtd' + sid];
-    const active = showYtd ? ytd : full;
-    if (!active) return;
-    chart.data.labels = active.labels;
-    chart.data.datasets[0].data = active.rent;
-    chart.options.scales.y.suggestedMax = active.yMax;
-    st.billsActual = active.bills;
-    st.projRent = active.projRent;
-    st.projBills = active.projBills;
-    st.ghostPctText = active.ghostPctText;
-    st.nReal = active.nReal;
-    chart.update();
-    var bFull = document.getElementById('si-btn-full-' + sid), bYtd = document.getElementById('si-btn-ytd-' + sid);
-    if (bFull) { bFull.style.background = showYtd ? '#fff' : '#8D70EE'; bFull.style.color = showYtd ? '#524e5b' : '#fff'; }
-    if (bYtd) { bYtd.style.background = showYtd ? '#8D70EE' : '#fff'; bYtd.style.color = showYtd ? '#fff' : '#524e5b'; }
-    var projLegend = document.getElementById('si-proj-legend-' + sid);
-    if (projLegend) projLegend.style.display = showYtd ? 'none' : '';
-    var eFull = document.getElementById('si-eyebrow-full-' + sid), eYtd = document.getElementById('si-eyebrow-ytd-' + sid);
-    if (eFull) eFull.style.display = showYtd ? 'none' : 'inline';
-    if (eYtd) eYtd.style.display = showYtd ? 'inline' : 'none';
-    var footnote = document.getElementById('si-footnote-' + sid);
-    if (footnote) footnote.style.display = (showYtd || !active.hasFootnote) ? 'none' : '';
-  };
-}
+${toggleFnJs}
 window['siFull${slideId}'] = {
-  labels: ${labelsJs}, rent: ${rentSolidJs}, bills: ${billsActualJs},
+  labels: ${labelsJs}, rent: ${rentSolidJs},${fullRentDatasetsFieldJs} bills: ${billsActualJs},
   projRent: ${projRentJs}, projBills: ${projBillsJs}, ghostPctText: ${ghostPctJs},
   nReal: ${nReal}, yMax: ${yMax}, hasFootnote: ${hasProjection},
 };
 window['siYtd${slideId}'] = {
-  labels: ${ytdLabelsJs}, rent: ${ytdRentJs}, bills: ${ytdBillsJs},
+  labels: ${ytdLabelsJs}, rent: ${ytdRentJs},${ytdRentDatasetsFieldJs} bills: ${ytdBillsJs},
   projRent: null, projBills: null, ghostPctText: '',
   nReal: ${ytdNReal}, yMax: ${ytdYMax}, hasFootnote: false,
 };
 `;
 
   return { html, js };
+}
+
+// ─── render_portfolio_comparison (new - Task 13) ───────────────────────────
+// Every combined entity, side by side, plus a Combined row - unlike every other Task 9-12
+// mechanism (a single-select switcher or a stacked bar, both meant to declutter an N-entity
+// view down to something readable), this slide's whole reason to exist IS the side-by-side
+// comparison, so it's a plain sortable table instead. Column order is a hard requirement -
+// Kevin's explicit fix, revised twice during this project: Entity, Units on Flex, Paying
+// Residents, Adoption Rate (<month>), Rent Paid (<month>), Total Rent Paid, Total Bills Paid,
+// Trend. Only renders (non-empty html) when
+// there's more than 1 combined entity - a single-PMC report has nothing to compare, so this
+// slide should not appear at all, same "byte-identical when <=1 entity" contract every other
+// entity-breakdown consumer in this plan already follows.
+export interface PortfolioComparisonEntity {
+  pmcName: string;
+  unitsOnFlex: number;
+  payingResidents: number;
+  adoptionRate: number;
+  /** Rent paid IN the as-of month only (entityBreakdown.currentRent) - a single month, never a
+   * cumulative figure. The header says so explicitly ("Rent Paid (Sep 2026 BP)"). */
+  rentPaid: number;
+  /** ALL-TIME rent / bills since this entity joined Flex (Kevin's ask for "total rent paid" and
+   * "bills paid" columns) - summed by the call site over the per-entity yearly rows Task 10's
+   * Since Inception stacked bar draws (the unbounded, unfiltered "true history" query), NOT
+   * entityBreakdown.currentRent summed over the lookback window (that would be a T12/period
+   * figure, not lifetime). Optional only so a caller without the yearly rows degrades to a "—"
+   * cell, never a wrong number. */
+  lifetimeRent?: number;
+  lifetimeBills?: number;
+  /** This entity's own adoption-rate-by-month series (fraction, 0-1) - the exact same per-
+   * entity data Adoption Trend's thin per-entity lines draw (Task 11's
+   * AdoptionTrendEntityMonthly), condensed into a tiny sparkline instead of a full chart line.
+   * Chronological order; sparse is fine (sparklineSvg only needs 2+ points to draw anything). */
+  monthlySeries: number[];
+}
+
+export interface PortfolioComparisonInput {
+  slideId: number;
+  entities: PortfolioComparisonEntity[];
+  /** The Combined row's own trend sparkline - the SAME combined adoption-rate-by-month series
+   * Adoption Trend's bold combined line draws (monthlyTotals' own adoptionRate series), NOT
+   * derived by summing or averaging the entity rows' own monthlySeries above. A time series of
+   * percentages has the identical "can't average percentages" problem the Combined row's own
+   * numeric Adoption Rate column has to avoid, at every point along the series - so this rides
+   * in as its own field rather than being computed in here from the entities array. Optional
+   * only so a caller without it yet degrades to a blank Combined sparkline cell, never a wrong
+   * one. */
+  combinedMonthlySeries?: number[];
+  /** The month (YYYY-MM-DD, the same latestCompletedMonth the Exec Summary tiles use) that
+   * every numeric column is a snapshot of - Units on Flex, Paying Residents, Adoption Rate and
+   * Rent Paid all come from entityBreakdown's latestRows, i.e. ONE completed month, not YTD/
+   * T12/lifetime. Kevin's catch on the Asset Living deck: "is this total rent paid? over last 12
+   * months? or ytd? or lifetime?" - a bare "Rent Paid" header can't answer that, so the slide
+   * states the month in the Rent Paid header (the $ column is the one whose window is genuinely
+   * ambiguous) and in an "as of" note under the title (covering the other three). Optional only
+   * so a caller without it degrades to the old unlabelled headers, never a wrong label. */
+  asOfMonth?: string | null;
+  /** The Combined row's all-time totals - MUST be the same figures the Since Inception subtitle
+   * prints ("$X guaranteed and N bills paid since <year>"), i.e. the combined yearly query's
+   * sums, threaded in by the call site rather than re-summed here from the entity rows (the
+   * two agree by construction since both queries share a WHERE clause, but the subtitle is the
+   * source of truth the AE will be reading a slide earlier). Optional for the same "degrade to a
+   * blank cell" reason as the per-entity fields. */
+  lifetimeRent?: number;
+  lifetimeBills?: number;
+}
+
+export function renderPortfolioComparison(input: PortfolioComparisonInput): SlideResult {
+  const { slideId, entities, combinedMonthlySeries, asOfMonth } = input;
+  if (entities.length <= 1) return { html: "", js: "" };
+  const asOfLabel = asOfMonth ? monthLabel(asOfMonth) : "";
+  const EM_DASH = "—";
+  const fmtLifetimeRent = (v: number | undefined) => (v == null ? EM_DASH : fmtCurrency(v));
+  const fmtLifetimeBills = (v: number | undefined) => (v == null ? EM_DASH : Math.round(v).toLocaleString("en-US"));
+
+  // Combined row: sum units/residents/rent; Adoption Rate RECOMPUTED from the summed
+  // residents/units, never averaged across the entity rows' own percentages - averaging is
+  // wrong the moment entities have different unit counts (the classic weighted-average bug
+  // this slide exists partly to get right).
+  const combinedUnits = entities.reduce((s, e) => s + e.unitsOnFlex, 0);
+  const combinedResidents = entities.reduce((s, e) => s + e.payingResidents, 0);
+  const combinedRent = entities.reduce((s, e) => s + e.rentPaid, 0);
+  const combinedAdoptionRate = combinedUnits > 0 ? combinedResidents / combinedUnits : 0;
+
+  // One color per entity - the shared module-level ENTITY_PALETTE (same index = same entity =
+  // same color as Since Inception's segments and Adoption Trend's lines), not a second palette.
+  const entityColors = entities.map((_, i) => entityColor(i));
+  const narColor = (r: number) => (r >= 0.15 ? "#1a9e6a" : r >= 0.08 ? "#d97706" : "#dc5050");
+  // Entity cell shows the display-shortened name (same displayEntityNames call as every
+  // switcher/legend - Kevin: "remove the (an asset living company) from the entity name in this
+  // comparison table"); data-sort keeps the FULL name, and a title tooltip carries it whenever
+  // the shortening actually removed something, so nothing is lost.
+  const entityLabels = displayEntityNames(entities.map((e) => e.pmcName));
+
+  const bodyRows = entities
+    .map((e, i) => {
+      const sparkHtml = sparklineSvg(e.monthlySeries, entityColors[i]);
+      const nameFull = _e(e.pmcName);
+      const nameDisp = _e(entityLabels[i]);
+      const nameTitle = nameDisp !== nameFull ? ` title="${nameFull}"` : "";
+      // Entity names WRAP (white-space:normal, no ellipsis/max-width) - Kevin's catch on the
+      // 8-entity Asset Living deck: "don't truncate the names ... just wrap the text". Rows grow
+      // to fit; the table below is sized to fill the slide's height anyway (see the container).
+      return `
+        <tr>
+          <td data-sort="${nameFull}"${nameTitle} style="padding:8px 10px;font-size:12px;font-weight:600;color:${NAVY};white-space:normal;overflow-wrap:anywhere;line-height:1.3;">${nameDisp}</td>
+          <td data-sort="${e.unitsOnFlex}" style="padding:8px 10px;font-size:12px;text-align:right;">${e.unitsOnFlex.toLocaleString("en-US")}</td>
+          <td data-sort="${e.payingResidents}" style="padding:8px 10px;font-size:12px;text-align:right;">${e.payingResidents.toLocaleString("en-US")}</td>
+          <td data-sort="${e.adoptionRate}" style="padding:8px 10px;font-size:12px;text-align:right;font-weight:700;color:${narColor(e.adoptionRate)};">${fmtPct(e.adoptionRate)}</td>
+          <td data-sort="${e.rentPaid}" style="padding:8px 10px;font-size:12px;text-align:right;">${fmtCurrency(e.rentPaid)}</td>
+          <td data-sort="${e.lifetimeRent ?? 0}" style="padding:8px 10px;font-size:12px;text-align:right;color:${PURPLE};font-weight:600;">${fmtLifetimeRent(e.lifetimeRent)}</td>
+          <td data-sort="${e.lifetimeBills ?? 0}" style="padding:8px 10px;font-size:12px;text-align:right;">${fmtLifetimeBills(e.lifetimeBills)}</td>
+          <td style="padding:6px 10px;text-align:center;">${sparkHtml}</td>
+        </tr>`;
+    })
+    .join("");
+
+  // Combined row lives in its own <tfoot>, deliberately OUTSIDE the sortable <tbody> - a
+  // "Total" row that reorders itself along with the rest of the table on every column-header
+  // click would be confusing (which end it lands on flips with asc/desc). Pinning it in a
+  // <tfoot> below the sortable body keeps it always-last regardless of sort state, standard
+  // HTML semantics for a totals row, with zero extra JS.
+  const combinedSparkHtml = combinedMonthlySeries ? sparklineSvg(combinedMonthlySeries, "#fff") : "";
+  const combinedRow = `
+        <tr>
+          <td style="padding:9px 10px;font-size:12px;font-weight:800;color:#fff;">Combined</td>
+          <td style="padding:9px 10px;font-size:12px;text-align:right;font-weight:800;color:#fff;">${combinedUnits.toLocaleString("en-US")}</td>
+          <td style="padding:9px 10px;font-size:12px;text-align:right;font-weight:800;color:#fff;">${combinedResidents.toLocaleString("en-US")}</td>
+          <td style="padding:9px 10px;font-size:12px;text-align:right;font-weight:800;color:#fff;">${fmtPct(combinedAdoptionRate)}</td>
+          <td style="padding:9px 10px;font-size:12px;text-align:right;font-weight:800;color:#fff;">${fmtCurrency(combinedRent)}</td>
+          <td style="padding:9px 10px;font-size:12px;text-align:right;font-weight:800;color:#fff;">${fmtLifetimeRent(input.lifetimeRent)}</td>
+          <td style="padding:9px 10px;font-size:12px;text-align:right;font-weight:800;color:#fff;">${fmtLifetimeBills(input.lifetimeBills)}</td>
+          <td style="padding:6px 10px;text-align:center;">${combinedSparkHtml}</td>
+        </tr>`;
+
+  // Column order is a hard requirement (Kevin, revised twice): Entity · Units on Flex · Paying
+  // Residents · Adoption Rate (<month>) · Rent Paid (<month>) · Total Rent Paid · Total Bills
+  // Paid · Adoption Trend. The two "(<month>)" headers name the single month the snapshot
+  // columns are for; the two "Total" columns are all-time since each entity joined Flex. The
+  // sparkline column is each entity's monthly adoption-rate series over the report's lookback
+  // window (Combined row = the combined adoption series) - labeled as such, not a bare "Trend"
+  // (Kevin: "is this adoption trend? if so label it as such").
+  const TREND_COL = "Adoption Trend";
+  const cols = [
+    "Entity", "Units on Flex", "Paying Residents",
+    asOfLabel ? `Adoption Rate (${asOfLabel} BP)` : "Adoption Rate",
+    asOfLabel ? `Rent Paid (${asOfLabel} BP)` : "Rent Paid",
+    "Total Rent Paid", "Total Bills Paid", TREND_COL,
+  ];
+  const colWidths = ["21%", "10%", "11%", "12%", "12%", "12%", "12%", "10%"];
+  const thHtml = cols
+    .map((c, i) => {
+      // Adoption Trend has no single scalar to sort by (it's a sparkline, not a number) - left
+      // unclickable, matching the Full Property Table appendix's convention of only wiring
+      // onclick to columns that have a real data-sort value on every row.
+      const sortable = c !== TREND_COL;
+      const onclick = sortable ? ` onclick="flexSortTable(${slideId},${i})"` : "";
+      const arrow = sortable ? `<span id="arrow${slideId}-${i}" style="display:inline-block;width:12px;"></span>` : "";
+      return (
+        `<th${onclick} id="th${slideId}-${i}" style="padding:8px 10px;text-align:${i === 0 ? "left" : "center"};` +
+        `font-size:10px;color:${GRAY};text-transform:uppercase;letter-spacing:0.06em;white-space:normal;` +
+        `${sortable ? "cursor:pointer;" : ""}user-select:none;width:${colWidths[i]};">${c}${arrow}</th>`
+      );
+    })
+    .join("");
+
+  // Subtitle states both windows in plain words (Kevin: "rent paid sep 26 still doesn't answer
+  // my question - is it all time rent, ytd rent, or what?"): the four snapshot columns are ONE
+  // month; the two Total columns are all-time. Falls back to "the latest completed month" when
+  // the call site didn't pass asOfMonth.
+  const monthWords = asOfLabel ? `for the ${_e(asOfLabel)} BP month (latest completed)` : "for the latest completed BP month";
+  // The sparkline's window is the report's own lookback - the combined series has one point per
+  // month of it, so its length IS the window (falls back to generic wording if it wasn't passed).
+  const trendMonths = combinedMonthlySeries?.length ?? 0;
+  const trendWords = trendMonths >= 2 ? `Adoption Trend is the last ${trendMonths} months` : "Adoption Trend is monthly adoption over the report window";
+  const subtitle = `Units, Residents, Adoption and Rent Paid are ${monthWords}; Total Rent Paid / Total Bills Paid are all-time since joining Flex; ${trendWords}. Click a column header to sort.`;
+
+  // The table fills the slide's remaining height (container flex:1 + table height:100% - the
+  // browser distributes the extra height across the rows) instead of a short table over a big
+  // blank bottom (Kevin: "there's a lot of whitespace at bottom we can fill"). With more
+  // entities than fit, the container scrolls exactly as before; the <tfoot> Combined row stays
+  // pinned outside the sortable <tbody> either way.
+  const html = `
+  <div class="slide" id="slide-${slideId}" style="background:#fff;">
+    <div class="slide-header">
+      <div class="slide-label">Portfolio</div>
+      <div class="slide-title">Portfolio Comparison</div>
+      <div style="font-size:11px;color:#a09cb0;margin-top:4px;">${subtitle}</div>
+    </div>
+    <div style="overflow-y:auto;flex:1;min-height:0;display:flex;flex-direction:column;">
+      <table style="width:100%;height:100%;border-collapse:collapse;table-layout:fixed;">
+        <thead><tr id="thead${slideId}" style="border-bottom:2px solid #eceaf2;position:sticky;top:0;background:#fff;z-index:1;">${thHtml}</tr></thead>
+        <tbody id="tbody${slideId}">${bodyRows}</tbody>
+        <tfoot style="background:${PURPLE};">${combinedRow}</tfoot>
+      </table>
+    </div>
+  </div>
+  <script>if(!window.flexSortTable){window.flexSortTable=function(sid,col){
+    var tbody=document.getElementById('tbody'+sid); if(!tbody) return;
+    var rows=Array.prototype.slice.call(tbody.querySelectorAll('tr'));
+    var thead=document.getElementById('thead'+sid);
+    var prevCol=thead.getAttribute('data-sort-col'), prevDir=thead.getAttribute('data-sort-dir');
+    var asc = !(String(col)===prevCol && prevDir==='asc');
+    rows.sort(function(a,b){
+      var av=a.children[col].getAttribute('data-sort'), bv=b.children[col].getAttribute('data-sort');
+      var an=parseFloat(av), bn=parseFloat(bv);
+      var cmp = (!isNaN(an) && !isNaN(bn)) ? (an-bn) : String(av).localeCompare(String(bv));
+      return asc ? cmp : -cmp;
+    });
+    rows.forEach(function(r){ tbody.appendChild(r); });
+    thead.setAttribute('data-sort-col', col);
+    thead.setAttribute('data-sort-dir', asc?'asc':'desc');
+    // Loop bound reads the real thead's own column count rather than a hardcoded literal -
+    // this shared window.flexSortTable is a page-wide singleton (guarded by the surrounding
+    // if(!window.flexSortTable) check above), and this deck can now have two different tables
+    // using it with different column counts (this one, and the pre-existing Full Property
+    // Table appendix) - a literal baked in by whichever table's script happens to define it
+    // first would silently stop updating the other table's arrow past its own column count.
+    for(var i=0;i<thead.children.length;i++){
+      var el=document.getElementById('arrow'+sid+'-'+i);
+      if(el) el.textContent = (i===col) ? (asc?'\\u25B2':'\\u25BC') : '';
+    }
+  };}</script>`;
+
+  return { html, js: "" };
 }
 
 // ─── render_qbr_close (Slide 47 - always last) ─────────────────────────────
@@ -3613,7 +4726,8 @@ export function renderCustomerExperience(input: {
   // ── Quote cards (only when testimonials exist) ──
   let quotesHtml = "";
   if (nQuotes > 0) {
-    const AVATAR_PALETTE = ["#6A3DB8", "#1a9e6a", "#d97706", "#2563eb", "#0891b2", "#9d174d", "#7c3aed"];
+    // AVATAR_PALETTE is module-level (see top of file); avatars are its only remaining consumer -
+    // per-entity coloring on the combined slides uses ENTITY_PALETTE/entityColor instead.
     const roleColors: Record<string, string> = {
       Resident: "#1a9e6a",
       "Property Manager": "#6A3DB8",
