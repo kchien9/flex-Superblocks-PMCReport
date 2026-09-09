@@ -256,7 +256,10 @@ export interface QuarterAddsInput {
 }
 
 function quarterAddsHeader(quarter: CalendarQuarter, s: QuarterAddsSeries): string {
-  return `Properties added in ${quarter.label} — ${s.propertyCount.toLocaleString()} ${s.propertyCount === 1 ? "property" : "properties"}, ${s.unitCount.toLocaleString()} units`;
+  // "(BP months Jul–Sep)" names the quarter's months as Flex bill-pay months (Kevin's ask) -
+  // monthsLabel minus its year, which "Q3 2026" already carries.
+  const bpMonths = quarter.monthsLabel.replace(/\s\d{4}$/, "");
+  return `Properties added in ${quarter.label} (BP months ${bpMonths}) — ${s.propertyCount.toLocaleString()} ${s.propertyCount === 1 ? "property" : "properties"}, ${s.unitCount.toLocaleString()} units`;
 }
 
 // ─── render_metrosight_evidence (Slide 50 - "Rethinking Rent") ──────────────
@@ -4041,7 +4044,7 @@ export interface PortfolioComparisonEntity {
   payingResidents: number;
   adoptionRate: number;
   /** Rent paid IN the as-of month only (entityBreakdown.currentRent) - a single month, never a
-   * cumulative figure. The header says so explicitly ("Rent Paid (Sep 2026)"). */
+   * cumulative figure. The header says so explicitly ("Rent Paid (Sep 2026 BP)"). */
   rentPaid: number;
   /** ALL-TIME rent / bills since this entity joined Flex (Kevin's ask for "total rent paid" and
    * "bills paid" columns) - summed by the call site over the per-entity yearly rows Task 10's
@@ -4159,8 +4162,8 @@ export function renderPortfolioComparison(input: PortfolioComparisonInput): Slid
   const TREND_COL = "Adoption Trend";
   const cols = [
     "Entity", "Units on Flex", "Paying Residents",
-    asOfLabel ? `Adoption Rate (${asOfLabel})` : "Adoption Rate",
-    asOfLabel ? `Rent Paid (${asOfLabel})` : "Rent Paid",
+    asOfLabel ? `Adoption Rate (${asOfLabel} BP)` : "Adoption Rate",
+    asOfLabel ? `Rent Paid (${asOfLabel} BP)` : "Rent Paid",
     "Total Rent Paid", "Total Bills Paid", TREND_COL,
   ];
   const colWidths = ["21%", "10%", "11%", "12%", "12%", "12%", "12%", "10%"];
@@ -4184,7 +4187,7 @@ export function renderPortfolioComparison(input: PortfolioComparisonInput): Slid
   // my question - is it all time rent, ytd rent, or what?"): the four snapshot columns are ONE
   // month; the two Total columns are all-time. Falls back to "the latest completed month" when
   // the call site didn't pass asOfMonth.
-  const monthWords = asOfLabel ? `for ${_e(asOfLabel)} (latest completed month)` : "for the latest completed month";
+  const monthWords = asOfLabel ? `for the ${_e(asOfLabel)} BP month (latest completed)` : "for the latest completed BP month";
   // The sparkline's window is the report's own lookback - the combined series has one point per
   // month of it, so its length IS the window (falls back to generic wording if it wasn't passed).
   const trendMonths = combinedMonthlySeries?.length ?? 0;

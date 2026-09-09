@@ -227,6 +227,18 @@ function monthOnly(dateStr: string): string {
   return d.toLocaleDateString("en-US", { month: "long", timeZone: "UTC" });
 }
 
+// One-line definition of what a "BP month" is, printed once on the Exec Summary (Kevin's ask:
+// "can we be clear that we're showing September BP month (which is technically like August
+// cal) - just don't want to invite questions of 'we're only 9 days into September'"). Every
+// other place the deck prints the reporting month just carries the "BP month" / "BP" suffix
+// and leans on this sentence for the definition.
+function bpMonthExplainer(reportingMonth: string): string {
+  const d = new Date(reportingMonth + "T00:00:00Z");
+  const short = d.toLocaleDateString("en-US", { month: "short", year: "numeric", timeZone: "UTC" });
+  const long = monthOnly(reportingMonth);
+  return `Months are Flex bill-pay (BP) months. The ${short} BP month covers ${long} rent — activity that closed at the start of ${long}.`;
+}
+
 // Snowflake's PMC_NAME sometimes carries a "(FKA <old name>)" suffix for continuity after a
 // rename/acquisition (e.g. "AG Living (FKA Ashland Greene Capital Partners)"). Useful in a
 // system-of-record, but reads as clutter on every slide title across QBR/Expansion/New Logo —
@@ -318,9 +330,11 @@ function renderCover(kpis: { pmcName: string; reportingMonth: string; partnerSin
   // Expansion (Kevin's ask - tried relabeling it "Track Record" first, didn't like that either;
   // this isn't a review, so nothing needs to fill that slot). QBR keeps its own third tile
   // exactly as before - Flask's render_cover, generator/slides.py:91-92.
+  // "BP month(s)" suffix (Kevin's ask) so the period reads as Flex bill-pay months, not calendar
+  // months - the Exec Summary carries the one-line definition (bpMonthExplainer).
   const periodRange = kpis.firstMonth
-    ? `${monthLabel(kpis.firstMonth)} – ${monthLabel(kpis.reportingMonth)}`
-    : monthLabel(kpis.reportingMonth);
+    ? `${monthLabel(kpis.firstMonth)} – ${monthLabel(kpis.reportingMonth)} BP months`
+    : `${monthLabel(kpis.reportingMonth)} BP month`;
   const periodTileHtml = kpis.isExpansion ? "" : `
       <div><div style="font-size:10px;letter-spacing:0.14em;text-transform:uppercase;color:rgba(255,255,255,0.28);margin-bottom:6px;font-family:'ABCDiatype',sans-serif;">Reporting Period</div>
            <div style="font-size:16px;font-weight:600;color:rgba(255,255,255,0.85);font-family:'ABCDiatype',sans-serif;">${periodRange}</div></div>`;
@@ -328,7 +342,7 @@ function renderCover(kpis: { pmcName: string; reportingMonth: string; partnerSin
   <div class="slide active" id="slide-1" style="background:#2C194D;justify-content:center;align-items:flex-start;">
     <div style="font-size:11px;letter-spacing:0.18em;text-transform:uppercase;color:#DDC6F9;margin-bottom:20px;font-weight:600;font-family:'ABCDiatype',sans-serif;">${deckLabel}</div>
     <div style="font-size:76px;font-weight:500;line-height:1.0;color:#fff;margin-bottom:12px;letter-spacing:-0.02em;font-family:'ABCDiatype',sans-serif;">${kpis.pmcName}</div>
-    <div style="font-size:22px;font-weight:400;color:rgba(255,255,255,0.45);margin-bottom:72px;font-family:'ABCDiatype',sans-serif;">${monthLabel(kpis.reportingMonth)}</div>
+    <div style="font-size:22px;font-weight:400;color:rgba(255,255,255,0.45);margin-bottom:72px;font-family:'ABCDiatype',sans-serif;">${monthLabel(kpis.reportingMonth)} BP month</div>
     <div style="display:flex;gap:52px;">
       <div><div style="font-size:10px;letter-spacing:0.14em;text-transform:uppercase;color:rgba(255,255,255,0.28);margin-bottom:6px;font-family:'ABCDiatype',sans-serif;">Partner Since</div>
            <div style="font-size:16px;font-weight:600;color:rgba(255,255,255,0.85);font-family:'ABCDiatype',sans-serif;">${monthLabel(kpis.partnerSince)}</div></div>
@@ -713,7 +727,8 @@ function renderExecSummary(d: ExecSummaryInput): { html: string; js: string } {
         <div style="display:flex;align-items:center;gap:8px;">${entitySwitcherHtml}${sparkCtrlHtml}${deltaToggle}</div>
       </div>
       <div class="slide-title" style="margin-bottom:6px;">What we've built together.</div>
-      <div style="font-size:12px;color:#6b7280;">${pmc} &middot; ${reportingMonth} &nbsp;&middot;&nbsp; Partner since ${_e(sinceLbl)}</div>
+      <div style="font-size:12px;color:#6b7280;">${pmc} &middot; ${reportingMonth} BP month &nbsp;&middot;&nbsp; Partner since ${_e(sinceLbl)}</div>
+      <div style="font-size:11px;color:#a09cb0;margin-top:4px;">${bpMonthExplainer(d.reportingMonth)}</div>
     </div>
     <div style="flex:1;display:grid;grid-template-columns:minmax(0,5fr) minmax(0,7fr);gap:16px;min-height:0;">
       <!-- Hero: Rent Guaranteed -->
@@ -1629,7 +1644,7 @@ function buildDeckHtml(params: {
   </div>
 </div>
 <div class="footer-left">
-  Flexible Finance, Inc. &copy; ${report_year} | Confidential &nbsp;&middot;&nbsp; ${pmc_name} &middot; ${report_month}
+  Flexible Finance, Inc. &copy; ${report_year} | Confidential &nbsp;&middot;&nbsp; ${pmc_name} &middot; ${report_month} ${report_year} BP month
 </div>
 <div class="footer-right">
   <div class="deck-actions">
@@ -3846,12 +3861,14 @@ export default api({
     // comparison_months: look back N months for delta (Flask: _cmp_idx = max(1, min(comparison_months, len-1)))
     const cmpIdx = Math.max(1, Math.min(comparison_months ?? 1, latestIdx));
     const prevMonth = latestIdx >= cmpIdx ? monthlyTotals[latestIdx - cmpIdx] : null;
-    // Build "vs ..." label: show actual month name when comparison_months > 1
-    let vsLabel = "vs last month";
+    // Build "vs ..." label: show actual month name when comparison_months > 1. Suffixed "BP" so
+    // the pill reads as a bill-pay-month comparison (Kevin: "just don't want to invite questions
+    // of 'we're only 9 days into September'") - see bpMonthExplainer.
+    let vsLabel = "vs last BP month";
     if (prevMonth) {
       const prevDate = new Date(prevMonth.month + "T00:00:00");
       const monthNames = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-      vsLabel = `vs ${monthNames[prevDate.getMonth()]} ${prevDate.getFullYear()}`;
+      vsLabel = `vs ${monthNames[prevDate.getMonth()]} ${prevDate.getFullYear()} BP`;
     }
     const lifetimeRent = monthlyTotals.reduce((sum, m) => sum + m.rentPaid, 0);
 
