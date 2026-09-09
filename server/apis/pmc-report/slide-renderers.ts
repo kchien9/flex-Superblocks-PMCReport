@@ -1962,9 +1962,9 @@ export function renderAdoptionTrend(input: {
   // not defaulting to showing all of them". So: the chart renders exactly as a single-PMC deck
   // (combined line + peer median + established, all always on - the combined line is the
   // baseline, not a button), plus one ADDITIVE toggle per entity, all OFF by default, and a
-  // Show all / Hide all control. Any number of entity lines can be on at once; they carry no
-  // datalabels (several labelled lines is what made it busy) - legend chips + tooltip identify
-  // them. See entityToggleJs below.
+  // Show all / Hide all control. Any number of entity lines can be on at once; each carries
+  // datalabels only while it's toggled on (see the datasets block below) - legend chips +
+  // tooltip identify them too. See entityToggleJs below.
   const entityMonthlyEntries = input.entityMonthlyData ?? [];
   const showEntityLines = entityMonthlyEntries.length > 1;
   // Aligned against `monthly`'s own month keys (not assumed to already be in the same order/
@@ -2211,10 +2211,13 @@ export function renderAdoptionTrend(input: {
   // the default - Kevin: "not defaulting to showing all of them bc its super busy") and tagged
   // `atEntity: i` so the toggle JS finds them by tag rather than by position (the datasets
   // array's layout depends on which optional series exist). Colors reuse the module-level
-  // AVATAR_PALETTE Task 10 hoisted for Since Inception - same entity, same color across every
-  // combined slide. NO datalabels on entity lines - several labelled lines stacked on top of the
-  // combined line's own labels is exactly the clutter this rework exists to remove; the legend
-  // chip (revealed while the line is on) and the hover tooltip identify each line instead.
+  // ENTITY_PALETTE Task 10 hoisted for Since Inception - same entity, same color across every
+  // combined slide. Entity lines DO carry datalabels, but only while toggled ON: `display` is a
+  // function reading chart.isDatasetVisible(datasetIndex), so the labels follow the toggle with
+  // no extra state (Kevin: "can we show the adoption labels when we select them?" - the first
+  // cut had them hard-off to avoid clutter; with all-off-by-default the clutter only appears
+  // when the presenter opts into it, and overlap with several lines on is accepted). Same font/
+  // size as the combined line's labels, entity color, no background pill.
   //
   // The combined line, peer median and established series are untouched by all of this: they
   // render and toggle exactly as in a single-PMC deck. Entity lines are purely additive on top.
@@ -2241,7 +2244,15 @@ export function renderAdoptionTrend(input: {
       pointBorderColor: '#fff',
       pointBorderWidth: 1.5,
       borderWidth: 2,
-      datalabels: { display: false }
+      datalabels: {
+        display: ctx => ctx.chart.isDatasetVisible(ctx.datasetIndex),
+        color: '${col}',
+        font: { size: 13, weight: '700', family: 'ABCDiatype' },
+        anchor: 'end',
+        align: 'top',
+        offset: 4,
+        formatter: v => v != null ? v + '%' : ''
+      }
     });`;
       entityLegendItems +=
         `<span id="atEntLegend${slideId}-${i}" style="display:none;align-items:center;gap:6px;">` +
