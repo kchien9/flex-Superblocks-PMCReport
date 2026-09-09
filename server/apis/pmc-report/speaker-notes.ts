@@ -817,6 +817,163 @@ export function buildExpansionSpeakerNotesHtml(
 </html>`;
 }
 
+// ── Platinum deck ("The Case for Marketing") - 3-line script per slide ───────
+// Clark mirror of Flask generator/speaker_notes.py _notes_platinum_* (0de2310). Slides 2/3 are
+// Adoption Trend / Residents, Units & Rent re-used with the "With direct marketing" toggle -
+// their review-deck scripts (peer median, established line) would be wrong there, so this deck
+// has its own string-keyed dispatch (same reason the Expansion deck does).
+
+export const PLATINUM_SLIDE_TITLES: Record<string, string> = {
+  cover: "The Case for Marketing",
+  adoption_trend: "Adoption Rate Trend",
+  residents_units: "Residents, Units & Rent",
+  platinum_close: "What Direct Marketing Would Have Meant",
+};
+
+export interface PlatinumNotesKpis {
+  pmcName: string;
+  reportingMonth: string | null;
+  monthsSinceLaunch: number;
+  /** platinumHeadline(cf, false) - the plain-text sentence. */
+  headline: string;
+  /** cf.sourceLabel - "Your platinum properties" / "Platinum peers · ...". */
+  sourceLabel: string | null;
+}
+
+function notesPlatinumCover(k: PlatinumNotesKpis): string[] {
+  const source = k.sourceLabel || "the counterfactual";
+  return [
+    `Open with the one sentence, verbatim: ${k.headline}`,
+    "Frame it: same properties, same residents, same integration - the only difference is whether Flex is allowed to tell residents it exists. Silver = integrated with no marketing opt-in; Platinum = opted in.",
+    `Name the yardstick before anyone argues with it: the counterfactual rate is ${source}.`,
+  ];
+}
+
+function notesPlatinumAdoption(k: PlatinumNotesKpis, monthly: SpeakerNotesMonthlyRow[]): string[] {
+  const source = k.sourceLabel || "the counterfactual";
+  const notes = [
+    `Solid purple is your silver properties' adoption rate; the grey dashed line is the counterfactual rate (${source}) in the same BP months.`,
+    "Click 'With direct marketing': the green line is your silver units converting at that rate, and the headline becomes the residents and rent that gap represents.",
+  ];
+  if (monthly.length > 0) {
+    const last = monthly[monthly.length - 1];
+    const nar = (last.billsPaid || 0) / Math.max(last.units || 0, 1);
+    notes.push(`Current silver adoption: ${pctStr(nar)}. Ask: 'What's different at the properties where residents actually hear from Flex?'`);
+  }
+  return notes;
+}
+
+function notesPlatinumRuc(monthly: SpeakerNotesMonthlyRow[]): string[] {
+  const notes = [
+    "Same three lines as the review deck, silver properties only: residents paying, units in network, rent collected.",
+    "Toggle 'With direct marketing': residents and rent lift to the counterfactual; the faint lines stay as today's actuals so the gap reads month by month.",
+  ];
+  if (monthly.length > 0) {
+    const last = monthly[monthly.length - 1];
+    notes.push(`This month: ${kStr(last.billsPaid || 0)} residents paying against ${kStr(last.units || 0)} silver units, $${kStr(last.rentPaid || 0)} in rent collected.`);
+  }
+  return notes;
+}
+
+function notesPlatinumClose(): string[] {
+  return [
+    "Walk the table left to right: what your silver properties did, what the counterfactual says they could have done, and the gap. The last row is the window total from the cover.",
+    "Land the ask: opting in is a settings change, not a rollout - no new integration, no resident-facing change until you say so.",
+    "Suggested next step: pick 3-5 silver properties to opt in first and review the lift in one quarter.",
+  ];
+}
+
+export function getNotesForPlatinumSlide(key: string, k: PlatinumNotesKpis, monthly: SpeakerNotesMonthlyRow[]): string[] {
+  try {
+    switch (key) {
+      case "cover": return notesPlatinumCover(k);
+      case "adoption_trend": return notesPlatinumAdoption(k, monthly);
+      case "residents_units": return notesPlatinumRuc(monthly);
+      case "platinum_close": return notesPlatinumClose();
+      default: return [];
+    }
+  } catch {
+    return [];
+  }
+}
+
+/** Same page shell as buildSpeakerNotesHtml (Flask's Platinum branch calls the ordinary
+ * build_speaker_notes_html), string-keyed like the Expansion builder. `monthly` is the SILVER
+ * tier's series; `propertySnapshot` the silver properties. */
+export function buildPlatinumSpeakerNotesHtml(
+  slideKeysInOrder: string[],
+  k: PlatinumNotesKpis,
+  monthly: SpeakerNotesMonthlyRow[],
+  propertySnapshot?: PropertyReferenceRow[],
+): string {
+  const pmc = _e(k.pmcName);
+  const reportMonth = monthStr(k.reportingMonth);
+  const stage = stageOf(k.monthsSinceLaunch);
+  const stageLabel = { new: "New Partner", growing: "Growing Partner", established: "Established Partner" }[stage];
+  const stageColor = { new: "#1a9e6a", growing: "#d97706", established: "#6A3DB8" }[stage];
+
+  const sections: string[] = [];
+  let slideCounter = 0;
+  for (const key of slideKeysInOrder) {
+    const title = PLATINUM_SLIDE_TITLES[key] ?? key.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+    const notes = getNotesForPlatinumSlide(key, k, monthly);
+    if (notes.length === 0) continue;
+    slideCounter++;
+    const bullets = notes.map((n) => `<li style="margin-bottom:10px;line-height:1.55;">${_e(n)}</li>`).join("");
+    sections.push(`
+    <div class="section" style="page-break-inside:avoid;margin-bottom:32px;padding-bottom:28px;border-bottom:1px solid #eceaf2;">
+      <div style="display:flex;align-items:baseline;gap:12px;margin-bottom:12px;">
+        <span style="font-size:11px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;
+                     color:#8d70ee;background:#f0edff;border-radius:99px;padding:3px 10px;flex-shrink:0;">
+          Slide ${slideCounter}
+        </span>
+        <span style="font-size:16px;font-weight:600;color:#1d1d1d;">${_e(title)}</span>
+      </div>
+      <ul style="margin:0;padding-left:20px;color:#2C194D;font-size:14px;">
+        ${bullets}
+      </ul>
+    </div>`);
+  }
+
+  const talkTrackHtml = sections.join("\n");
+  const propertyReferenceHtml = buildPropertyReferenceTable(propertySnapshot);
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>${pmc} — Speaker Notes — ${reportMonth}</title>
+<style>
+  @page { size: letter; margin: 0.75in; }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'Helvetica Neue', Arial, sans-serif; color: #1d1d1d; font-size: 13px; line-height: 1.5; }
+  .header { border-bottom: 2px solid #8d70ee; padding-bottom: 16px; margin-bottom: 32px; }
+  .callout {
+    display: inline-block; padding: 3px 10px; border-radius: 99px; font-size: 11px; font-weight: 700;
+    letter-spacing: 0.08em; text-transform: uppercase; color: ${stageColor}; border: 1px solid ${stageColor};
+    margin-top: 6px;
+  }
+  @media print { .section { page-break-inside: avoid; } }
+  ${NOTES_TAB_STYLE}
+</style>
+</head>
+<body>
+  <div class="header">
+    <div style="font-size:11px;font-weight:600;letter-spacing:0.15em;text-transform:uppercase;color:#8d70ee;margin-bottom:4px;">
+      Flex &middot; Speaker Notes
+    </div>
+    <div style="font-size:24px;font-weight:700;letter-spacing:-0.02em;color:#1d1d1d;">${pmc}</div>
+    <div style="font-size:14px;color:#524e5b;margin-top:4px;">${reportMonth} Business Review</div>
+    <div class="callout">${stageLabel} &middot; ${k.monthsSinceLaunch} months on Flex</div>
+    <div style="margin-top:12px;font-size:12px;color:#a09cb0;font-style:italic;">
+      Confidential &mdash; for internal use only. Print before the meeting or keep open on a second screen.
+    </div>
+  </div>
+  ${wrapWithPropertyReferenceTabs(talkTrackHtml, propertyReferenceHtml)}
+</body>
+</html>`;
+}
+
 // ── HTML builder ─────────────────────────────────────────────────────────────
 
 export function buildSpeakerNotesHtml(

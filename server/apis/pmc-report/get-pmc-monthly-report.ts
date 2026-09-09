@@ -21,9 +21,12 @@ import {
   sparklineSvg,
   previousCalendarQuarter,
   buildQuarterAddsSeries,
+  renderPlatinumCover,
+  renderPlatinumClose,
+  platinumHeadline,
 } from "./slide-renderers.js";
 import type { BenchmarkMetric, ResidentTrend, Testimonial, TrendFlag, YearlyData, NewRolloutCandidate, DisabledPropertyRow, PortfolioComparisonEntity, QuarterAddsSeries } from "./slide-renderers.js";
-import { buildSpeakerNotesHtml, buildExpansionSpeakerNotesHtml, EXPANSION_SLIDE_TITLES } from "./speaker-notes.js";
+import { buildSpeakerNotesHtml, buildExpansionSpeakerNotesHtml, EXPANSION_SLIDE_TITLES, buildPlatinumSpeakerNotesHtml } from "./speaker-notes.js";
 import type { SpeakerNotesKpis, SpeakerNotesBenchmark, SpeakerNotesMonthlyRow } from "./speaker-notes.js";
 import {
   renderExpansionMetrosight,
@@ -40,7 +43,8 @@ import {
   rollingPeerMedianSql,
   stageBenchmarkSql,
 } from "./peer-matching.js";
-import { peerCriteriaLabel } from "./platinum.js";
+import { peerCriteriaLabel, splitTierRows, platinumCounterfactual, PLATINUM_MIN_PROPERTIES } from "./platinum.js";
+import type { PeerRateByMonth } from "./platinum.js";
 
 const SNOWFLAKE_SSO = "d38ee94a-4e93-46f5-ab44-c65a99b3aea5";
 
@@ -1980,8 +1984,15 @@ function buildDeckHtml(params: {
         el.style.position = 'relative';
         void el.offsetHeight;
         if (window['initSlide' + n]) { try { window['initSlide' + n](); } catch(e) {} }
+        // Optional per-slide export hook (mirrors Flask deck_base.html): a slide whose PDF page
+        // should show a specific toggle state (the Platinum deck's "With direct marketing"
+        // charts - the toggled-ON view IS the deck's point) defines flexPdfPrep<N>; 'before'
+        // sets that state for the capture, 'after' puts the slide back the way the viewer had
+        // it. Slides without one are captured as-is, exactly as before.
+        if (window['flexPdfPrep' + n]) { try { window['flexPdfPrep' + n]('before'); } catch(e) {} }
         await new Promise(r => setTimeout(r, 300));
         const canvas = await captureSlideCanvas(el);
+        if (window['flexPdfPrep' + n]) { try { window['flexPdfPrep' + n]('after'); } catch(e) {} }
         el.style.position = 'absolute';
         if (pageAdded) pdf.addPage([1280, 720], 'landscape');
         pdf.addImage(canvas.toDataURL('image/jpeg', 0.92), 'JPEG', 0, 0, 1280, 720);
@@ -2060,7 +2071,9 @@ export default api({
     additional_pmc_names: z.array(z.string()).optional(),
     report_name: z.string().optional().default(""),
     lookback_months: z.number().int().default(12),
-    deck_mode: z.enum(["qbr", "new_logo", "expansion"]).default("qbr"),
+    // "platinum" = "The Case for Marketing" (Flask report_type "platinum", 0de2310) - one PMC per
+    // deck, fixed 4-slide order, its own early-return branch below.
+    deck_mode: z.enum(["qbr", "new_logo", "expansion", "platinum"]).default("qbr"),
     adoption_target: z.number().default(15), // percent, e.g. 15 = 15%
     testimonials: z.array(z.object({
       name: z.string(),
@@ -2130,6 +2143,12 @@ export default api({
   output: z.object({
     html: z.string(),
     empty: z.boolean(),
+    // Platinum only: Flask answers its self-gates ("No Platinum deck for {PMC}: fewer than 3
+    // silver properties." etc.) and the one-PMC-per-deck rule with a 400/422 + error body. A
+    // Superblocks API has no status code to set, so the same string rides here on an
+    // otherwise-empty payload (the shape GetProspectDeck already uses for its own `error`) and
+    // the client shows it in the standard error box.
+    error: z.string().optional(),
     notes_html: z.string().optional(),
     // Expansion only for now (Kevin's ask) - slides the AE selected that got auto-hidden for
     // not having enough real data to make a credible chart, so the UI can tell them what
@@ -2173,6 +2192,19 @@ export default api({
     // (the "primary" entity), then whatever else is being combined in. Replaces the old
     // old `hasSecondPmc ? [pmc_name, secondPmcName] : [pmc_name]` ternary pattern repeated at 4 call sites below.
     const allPmcNames = [pmc_name, ...(additional_pmc_names ?? [])];
+
+    // Platinum deck ("The Case for Marketing") is one PMC per deck by design - the silver /
+    // platinum split and the peer ladder are both about ONE portfolio (spec: multi-PMC combining
+    // is out of scope for v1). Reject rather than silently dropping the extras - Flask's exact
+    // wording, before any query fires.
+    if (deck_mode === "platinum") {
+      if (!pmc_name.trim()) {
+        return { html: "", empty: false, error: "The Platinum deck needs a PMC name." };
+      }
+      if ((additional_pmc_names ?? []).some((n) => n.trim())) {
+        return { html: "", empty: false, error: "The Platinum deck is one PMC per deck - remove the additional PMCs / property list and try again." };
+      }
+    }
 
     // Compute bp_safe_cutoff
     const today = new Date();
@@ -3475,59 +3507,64 @@ export default api({
       return map;
     }
 
-    // Monthly totals
-    const monthMap = new Map<string, { billsPaid: number; units: number; rentPaid: number; newSignups: number; chargedUsers: number; propertyNames: Set<string> }>();
-    for (const row of inNetwork) {
-      const existing = monthMap.get(row.BP_MONTH) || { billsPaid: 0, units: 0, rentPaid: 0, newSignups: 0, chargedUsers: 0, propertyNames: new Set<string>() };
-      existing.billsPaid += row.BILLS_PAID;
-      existing.units += row.PROPERTY_UNIT_COUNT;
-      existing.rentPaid += row.RENT_PAID;
-      existing.newSignups += row.NEW_SIGNUPS ?? 0;
-      existing.chargedUsers += row.CHARGED_USERS ?? 0;
-      existing.propertyNames.add(row.PROPERTY_NAME);
-      monthMap.set(row.BP_MONTH, existing);
-    }
+    // Monthly totals. Factored into a closure (same logic, unchanged) so the Platinum deck can run
+    // the exact same per-month aggregation on each tier's rows (Flask: transform_monthly_totals
+    // on silver_df / platinum_df) instead of a second, drift-prone copy.
+    const buildMonthlyTotals = (rows: typeof inNetwork) => {
+      const monthMap = new Map<string, { billsPaid: number; units: number; rentPaid: number; newSignups: number; chargedUsers: number; propertyNames: Set<string> }>();
+      for (const row of rows) {
+        const existing = monthMap.get(row.BP_MONTH) || { billsPaid: 0, units: 0, rentPaid: 0, newSignups: 0, chargedUsers: 0, propertyNames: new Set<string>() };
+        existing.billsPaid += row.BILLS_PAID;
+        existing.units += row.PROPERTY_UNIT_COUNT;
+        existing.rentPaid += row.RENT_PAID;
+        existing.newSignups += row.NEW_SIGNUPS ?? 0;
+        existing.chargedUsers += row.CHARGED_USERS ?? 0;
+        existing.propertyNames.add(row.PROPERTY_NAME);
+        monthMap.set(row.BP_MONTH, existing);
+      }
 
-    // Pre-index inNetwork by BP_MONTH for O(1) lookups in established NAR calc
-    const byMonth = new Map<string, typeof inNetwork>();
-    for (const r of inNetwork) {
-      const arr = byMonth.get(r.BP_MONTH);
-      if (arr) arr.push(r);
-      else byMonth.set(r.BP_MONTH, [r]);
-    }
+      // Pre-index rows by BP_MONTH for O(1) lookups in established NAR calc
+      const byMonth = new Map<string, typeof inNetwork>();
+      for (const r of rows) {
+        const arr = byMonth.get(r.BP_MONTH);
+        if (arr) arr.push(r);
+        else byMonth.set(r.BP_MONTH, [r]);
+      }
 
-    const monthlyTotals = Array.from(monthMap.entries())
-      .map(([month, { billsPaid, units, rentPaid, newSignups, chargedUsers, propertyNames }]) => {
-        // Established NAR: properties where rollout_month < (month - 2 calendar months).
-        // DateOffset(months=2) gives a 3-full-month floor, aligned with Loyalty Rate's
-        // months_available >= 3 and the trend legend "(excl. first 3 months)".
-        const mDate = new Date(month + "T00:00:00");
-        const estCutoff = new Date(mDate.getFullYear(), mDate.getMonth() - 2, 1)
-          .toISOString().slice(0, 10);
-        const monthRows = byMonth.get(month) ?? [];
-        let estUnits = 0;
-        let estBills = 0;
-        for (const r of monthRows) {
-          if (r.ROLLOUT_MONTH != null && r.ROLLOUT_MONTH < estCutoff) {
-            estUnits += r.PROPERTY_UNIT_COUNT;
-            estBills += r.BILLS_PAID;
+      return Array.from(monthMap.entries())
+        .map(([month, { billsPaid, units, rentPaid, newSignups, chargedUsers, propertyNames }]) => {
+          // Established NAR: properties where rollout_month < (month - 2 calendar months).
+          // DateOffset(months=2) gives a 3-full-month floor, aligned with Loyalty Rate's
+          // months_available >= 3 and the trend legend "(excl. first 3 months)".
+          const mDate = new Date(month + "T00:00:00");
+          const estCutoff = new Date(mDate.getFullYear(), mDate.getMonth() - 2, 1)
+            .toISOString().slice(0, 10);
+          const monthRows = byMonth.get(month) ?? [];
+          let estUnits = 0;
+          let estBills = 0;
+          for (const r of monthRows) {
+            if (r.ROLLOUT_MONTH != null && r.ROLLOUT_MONTH < estCutoff) {
+              estUnits += r.PROPERTY_UNIT_COUNT;
+              estBills += r.BILLS_PAID;
+            }
           }
-        }
-        const establishedNar = estUnits > 0 ? estBills / estUnits : undefined;
+          const establishedNar = estUnits > 0 ? estBills / estUnits : undefined;
 
-        return {
-          month,
-          billsPaid,
-          units,
-          rentPaid,
-          newSignups,
-          chargedUsers,
-          adoptionRate: units > 0 ? billsPaid / units : 0,
-          propertyCount: propertyNames.size,
-          establishedNar,
-        };
-      })
-      .sort((a, b) => a.month.localeCompare(b.month));
+          return {
+            month,
+            billsPaid,
+            units,
+            rentPaid,
+            newSignups,
+            chargedUsers,
+            adoptionRate: units > 0 ? billsPaid / units : 0,
+            propertyCount: propertyNames.size,
+            establishedNar,
+          };
+        })
+        .sort((a, b) => a.month.localeCompare(b.month));
+    };
+    const monthlyTotals = buildMonthlyTotals(inNetwork);
 
     // Per-entity monthly adoption rate for the Adoption Trend chart's per-entity lines
     // (Task 11). Grouped from inNetwork - the exact same row set monthlyTotals above is built
@@ -4075,9 +4112,9 @@ export default api({
     // cohort on whole portfolios, but the rolling / tenure-cohort rate queries restrict to the
     // peers' IS_MARKETING_OPT_IN = TRUE properties, the criteria label is prefixed
     // "platinum peers · ", and the network-wide fallback is skipped (spec self-gate: no pool
-    // rather than a network-wide rate). Data-layer seam only for now - Task 5b's
-    // deck_mode "platinum" flips this; false keeps every existing deck byte-identical.
-    const peerOptInOnly = false as boolean;
+    // rather than a network-wide rate). Only the Platinum deck flips this; every other deck
+    // keeps the default pool and renders byte-identically.
+    const peerOptInOnly = deck_mode === "platinum";
     // Peer-candidate profile for GEO-TIER matching - query fired at the very top of this
     // function (right after cutoffStr), not here, so it overlaps with the rows query and the
     // two query batches in between instead of adding its own sequential stage. See that
@@ -4809,7 +4846,8 @@ export default api({
     // --- Compute cohort monthly NAR for sparklines ---
     // For each cohort (by rollout_month), compute NAR per billing period
     const cohortMonthly = new Map<string, (number | null)[]>();
-    const sortedMonthKeys = Array.from(monthMap.keys()).sort();
+    // monthlyTotals is already sorted by month and carries exactly the aggregation's month keys.
+    const sortedMonthKeys = monthlyTotals.map((m) => m.month);
     for (const [cohortRollout] of cohortMap.entries()) {
       const narValues: (number | null)[] = [];
       for (const bpMonth of sortedMonthKeys) {
@@ -5132,6 +5170,154 @@ export default api({
             : `${(pctHigh * 100).toFixed(0)}% used Flex 75%+ of available months.`;
         }
       }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // PLATINUM DECK MODE - "The Case for Marketing" (early return)
+    // Clark mirror of Flask app.py _generate_platinum (0de2310; spec: flex-pmc-reports
+    // docs/superpowers/specs/2026-09-09-platinum-deck-design.md). Its own 4-slide deck built
+    // from the silver / platinum tier split of this one PMC's rows - none of the QBR pipeline
+    // below applies.
+    //
+    // Charts get the SILVER tier's monthly series + kpis (the units being sold - axes, labels,
+    // property / unit counts are the silver properties'), while the peer ladder above was matched
+    // on the WHOLE PMC (latestRows - the same peer definition every other deck uses); only the
+    // RATE comes from peers' opt-in properties (peerOptInOnly). Peer rate source order, as Flask:
+    // rollingPeerMedianMap (calendar-month keyed) first; only if that is empty, stageBenchmarksMap,
+    // whose month_number keys are mapped onto the chart's calendar months via the subject's
+    // months-since-launch (same formula / 1-36 clamp as renderAdoptionTrend). Both empty -> no
+    // peer pool; platinumCounterfactual then decides. Self-gates -> the spec's messages, returned
+    // as `error` (see the output schema for why not a 422).
+    // ─────────────────────────────────────────────────────────────────────────
+    if (deck_mode === "platinum") {
+      const tiers = splitTierRows(inNetwork, latestCompletedMonth);
+      const silverMonthly = tiers.silver.length > 0 ? buildMonthlyTotals(tiers.silver) : [];
+      const platinumMonthly = tiers.platinum.length > 0 ? buildMonthlyTotals(tiers.platinum) : null;
+      if (silverMonthly.length === 0) {
+        return { html: "", empty: false, error: `No Platinum deck for ${pmc_name}: fewer than ${PLATINUM_MIN_PROPERTIES} silver properties.` };
+      }
+      const chartMonths = silverMonthly.map((m) => m.month);
+
+      // Peer rate by calendar month: rolling median first, else the tenure-cohort ladder mapped
+      // month_number -> calendar month. Clark's months-since-launch is `_msl` (earliest rollout
+      // -> reporting month, launch month = 1), the same value every other deck's stage matching
+      // uses here - Flask reads pull_integration_launch_month, which this port has no query for.
+      const peerRates: PeerRateByMonth = {};
+      for (const m of chartMonths) {
+        const row = rollingPeerMedianMap[m];
+        if (row?.p50) peerRates[m] = { p50: row.p50 };
+      }
+      let peerCriteria = Object.keys(peerRates).length > 0 ? lockedPeersCriteria : "";
+      if (Object.keys(peerRates).length === 0 && Object.keys(stageBenchmarksMap).length > 0 && latestCompletedMonth) {
+        const [ly, lm] = latestCompletedMonth.split("-").map(Number);
+        const rptIdx = ly * 12 + lm;
+        for (const m of chartMonths) {
+          const [my, mm] = m.split("-").map(Number);
+          const mn = _msl - (rptIdx - (my * 12 + mm));
+          const row = stageBenchmarksMap[Math.max(1, Math.min(36, mn))];
+          if (row?.p50) {
+            peerRates[m] = { p50: row.p50 };
+            if (!peerCriteria && row.peer_label) peerCriteria = row.peer_label;
+          }
+        }
+      }
+      // "platinum peers · ..." -> "Platinum peers · ..." (Flask's peer_label capitalisation).
+      const peerLabel = peerCriteria ? peerCriteria.charAt(0).toUpperCase() + peerCriteria.slice(1) : null;
+
+      const cf = platinumCounterfactual(silverMonthly, platinumMonthly, peerRates, lookback_months, peerLabel);
+      if (cf.source === null) {
+        return { html: "", empty: false, error: `No Platinum deck for ${pmc_name}: ${cf.reason ?? "no counterfactual"}.` };
+      }
+
+      // SILVER tier kpis drive the charts - property / unit counts are the units being sold.
+      const silverLatestRows = tiers.silver.filter((r) => r.BP_MONTH === latestCompletedMonth);
+      const platKpis = {
+        pmcName: pmcDisplayName,
+        reportingMonth: latestCompletedMonth,
+        firstMonth: silverMonthly[0].month,
+        propertyCount: new Set(silverLatestRows.map((r) => r.PROPERTY_NAME)).size,
+        totalUnits: silverLatestRows.reduce((s, r) => s + r.PROPERTY_UNIT_COUNT, 0),
+      };
+
+      // Fixed 4-slide order, no picker (Flask PLATINUM_SLIDE_ORDER = [61, 6, 54, 62]). Same
+      // pushSlide mechanism as the Expansion deck; every renderer here always produces html, so
+      // slide ids are 1..4 in order and no renumbering pass is needed.
+      const PLATINUM_SLIDE_ORDER = ["cover", "adoption_trend", "residents_units", "platinum_close"];
+      const platSlideHtmls: string[] = [];
+      const platSlideJsList: string[] = [];
+      const platRenderedKeys: string[] = [];
+      const pushPlatSlide = (sid: string, result: { html: string; js: string }) => {
+        if (!result.html) return;
+        platSlideHtmls.push(result.html);
+        platRenderedKeys.push(sid);
+        if (result.js) platSlideJsList.push(result.js);
+      };
+      let platSlideNum = 0;
+      for (const sid of PLATINUM_SLIDE_ORDER) {
+        platSlideNum++;
+        switch (sid) {
+          case "cover":
+            pushPlatSlide(sid, renderPlatinumCover(platSlideNum, platKpis, cf));
+            break;
+          case "adoption_trend":
+            pushPlatSlide(sid, renderAdoptionTrend({ slideId: platSlideNum, monthly: silverMonthly, kpis: { pmc_name: pmcDisplayName }, platinum: cf }));
+            break;
+          case "residents_units":
+            pushPlatSlide(sid, renderResidentsUnitsCombo({ slideId: platSlideNum, monthlyTotals: silverMonthly, platinum: cf }));
+            break;
+          case "platinum_close":
+            pushPlatSlide(sid, renderPlatinumClose(platSlideNum, cf));
+            break;
+        }
+      }
+
+      const reportMonth = monthOnly(latestCompletedMonth);
+      const reportYear = yearOnly(latestCompletedMonth);
+      // Flask base_name: "{PMC}_Platinum_{MonYYYY}" (spaces / slashes -> "_", 30-char cap).
+      const monYyyy = new Date(latestCompletedMonth + "T00:00:00Z").toLocaleDateString("en-US", { month: "short", year: "numeric", timeZone: "UTC" }).replace(" ", "");
+      const safePmc = pmcDisplayName.replace(/ /g, "_").replace(/\//g, "_").slice(0, 30);
+      const html = applyTerminology(buildDeckHtml({
+        slides: platSlideHtmls.join("\n"),
+        pmc_name: pmcDisplayName,
+        report_month: reportMonth,
+        report_year: reportYear,
+        slide_count: platSlideHtmls.length,
+        pdf_filename: `${safePmc}_Platinum_${monYyyy}.pdf`,
+        extra_js: platSlideJsList.filter(Boolean).join("\n"),
+      }), terminology);
+
+      // Speaker notes always - this deck is a pitch (3-line script per slide).
+      let platNotesHtml: string | undefined;
+      try {
+        const platNotesMonthly: SpeakerNotesMonthlyRow[] = silverMonthly.map((m) => ({
+          month: m.month, billsPaid: m.billsPaid, units: m.units, rentPaid: m.rentPaid,
+          newSignups: m.newSignups, propertyCount: m.propertyCount,
+        }));
+        const silverCumRent = new Map<string, number>();
+        for (const r of tiers.silver) silverCumRent.set(r.PROPERTY_NAME, (silverCumRent.get(r.PROPERTY_NAME) ?? 0) + r.RENT_PAID);
+        const platNotesSnapshot = silverLatestRows
+          .map((r) => ({
+            propertyName: r.PROPERTY_NAME, units: r.PROPERTY_UNIT_COUNT, billsPaid: r.BILLS_PAID,
+            newSignups: r.NEW_SIGNUPS ?? 0,
+            adoptionRate: r.PROPERTY_UNIT_COUNT > 0 ? r.BILLS_PAID / r.PROPERTY_UNIT_COUNT : 0,
+            rentPaid: r.RENT_PAID, cumRent: silverCumRent.get(r.PROPERTY_NAME) ?? r.RENT_PAID,
+          }))
+          .sort((a, b) => b.billsPaid - a.billsPaid);
+        platNotesHtml = applyTerminology(
+          buildPlatinumSpeakerNotesHtml(platRenderedKeys, {
+            pmcName: pmcDisplayName,
+            reportingMonth: latestCompletedMonth,
+            monthsSinceLaunch: _msl,
+            headline: platinumHeadline(cf, false),
+            sourceLabel: cf.sourceLabel,
+          }, platNotesMonthly, platNotesSnapshot),
+          terminology,
+        );
+      } catch (e) {
+        console.warn(`[PMC Report] platinum speaker notes generation failed for ${pmc_name}: ${e instanceof Error ? e.message : String(e)}`);
+      }
+
+      return { html, empty: false, notes_html: platNotesHtml };
     }
 
     // ─────────────────────────────────────────────────────────────────────────

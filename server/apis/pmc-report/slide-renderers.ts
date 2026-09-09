@@ -3,6 +3,8 @@
  * Each function returns { html, js } matching the deck assembly pattern.
  */
 
+import type { PlatinumCounterfactual } from "./platinum.js";
+
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
 const PURPLE = "#6A3DB8";
@@ -2079,14 +2081,173 @@ export interface AdoptionTrendEntityMonthly {
   monthly: AdoptionTrendMonthly[];
 }
 
+// ─── Platinum deck ("The Case for Marketing") shared pieces ─────────────────────────────────
+// Clark mirror of Flask generator/slides.py (commit 0de2310; spec: flex-pmc-reports
+// docs/superpowers/specs/2026-09-09-platinum-deck-design.md). User-facing strings are copied
+// from Flask verbatim so the two apps' decks say the same thing.
+export const PLATINUM_DECK_TITLE = "The Case for Marketing";
+export const PLATINUM_CLOSE_TITLE = "What direct marketing would have meant";
+export const PLATINUM_TOGGLE_LABEL = "With direct marketing";
+export const PLATINUM_CLOSING_LINE = "Opting in is a settings change, not a rollout — no new integration, "
+  + "no resident-facing change until you say so.";
+const RUC_DEFAULT_TITLE = "Residents paying against your unit base, plus the rent behind it.";
+const ADT_DEFAULT_TITLE = "Adoption Rate by Month";
+
+/** Flask `_fmt_currency` exactly ($B/$M tiers trim trailing zeros but keep one decimal; the K
+ * tier rounds and rolls to "$1.0M"). This file's own fmtCurrency prints the M tier with one
+ * fixed decimal, so the Platinum slides carry their own copy rather than changing a formatter
+ * every other slide already renders with. */
+function platinumCurrency(v: number): string {
+  const trim = (s: string) => { let t = s.replace(/0+$/, ""); if (t.endsWith(".")) t += "0"; return t; };
+  if (v >= 1_000_000_000) return `$${trim((v / 1_000_000_000).toFixed(2))}B`;
+  if (v >= 1_000_000) {
+    const s = trim((v / 1_000_000).toFixed(2));
+    if (s.startsWith("1000")) return "$1.0B";
+    return `$${s}M`;
+  }
+  if (v >= 1_000) {
+    const k = Math.round(v / 1_000);
+    if (k >= 1000) return "$1.0M";
+    return `$${k}K`;
+  }
+  return `$${Math.round(v).toLocaleString("en-US")}`;
+}
+
+/** "December 2025" - Flask's strftime("%B %Y"). */
+function fullMonthLabel(ym: string): string {
+  return new Date(ym.slice(0, 10) + "T00:00:00Z").toLocaleDateString("en-US", { month: "long", year: "numeric", timeZone: "UTC" });
+}
+
+/** Flask `platinum_headline`: the deck's one sentence (cover subtitle, both toggled chart
+ * headlines, speaker notes). N = months the counterfactual actually covered; X/Y are the
+ * counterfactual's window totals. html=true bolds X and $Y. */
+export function platinumHeadline(cf: PlatinumCounterfactual, html = true): string {
+  const t = cf.totals;
+  const n = t.monthsUsed || cf.months.length;
+  const res = Math.round(t.extraResidents || 0).toLocaleString("en-US");
+  const rent = platinumCurrency(Math.max(t.extraRent || 0, 0));
+  if (html) {
+    return `Over the last ${n} BP months, your silver properties could have converted `
+      + `<strong>${res} more residents</strong> and <strong>${rent} more rent</strong> with direct marketing.`;
+  }
+  return `Over the last ${n} BP months, your silver properties could have converted `
+    + `${res} more residents and ${rent} more rent with direct marketing.`;
+}
+
+/** Flask `_platinum_series`: cf.byMonth[key] aligned to the chart's month axis (null where the
+ * counterfactual has no rate for that month), so a toggle can swap arrays index-for-index. */
+function platinumSeries(cf: PlatinumCounterfactual, months: string[], key: "cfRate" | "cfResidents" | "cfRent", cast: (v: number) => number): (number | null)[] {
+  const rows = new Map(cf.byMonth.map((r) => [r.month.slice(0, 10), r]));
+  return months.map((m) => {
+    const v = rows.get(m.slice(0, 10))?.[key];
+    return v != null ? cast(v) : null;
+  });
+}
+
+// Defined once per deck (guarded), shared by both toggles: PDF export calls flexPdfPrep<N>('before')
+// after initSlide<N> and ('after') once the page is captured (see exportDeckPDF in
+// get-pmc-monthly-report.ts's buildDeckHtml) so the export shows the toggled-ON state and then
+// puts the slide back the way the viewer had it. Copied from Flask's _PLATINUM_PDF_PREP_JS.
+const PLATINUM_PDF_PREP_JS =
+  "if(!window.flexPlatinumPdfPrep){window.flexPlatinumPdfPrep=function(p,phase,toggle){if(!p)return;"
+  + "if(phase==='before'){p._pdfWasOn=!!p._on;if(!p._on)toggle();}"
+  + "else if(!p._pdfWasOn&&p._on){toggle();}};}";
+
+// Residents/Units & Rent toggle (Flask _PLATINUM_RUC_JS, verbatim): lift datasets 0/2 (baseline
+// fill + Residents) to cf residents and dataset 3 (Rent) to cf rent, push faint ghosts of today's
+// two lines (labels start with '_' so the tooltip filter skips them), rescale rent's padded axis
+// over BOTH series, swap the headline. OFF restores the arrays, splices the ghosts out and puts
+// the headline back.
+const PLATINUM_RUC_JS =
+  "if(!window.flexTogglePlatinumRuc){window.flexTogglePlatinumRuc=function(slideId,btn){"
+  + "var data=window['rucEntityData_'+slideId];if(!data||!data.platinum)return;var p=data.platinum;"
+  + "var chart=window['rucChart_'+slideId];if(!chart)return;var ds=chart.data.datasets;"
+  + "btn=btn||document.getElementById('rucPlatBtn'+slideId);"
+  + "var slide=document.getElementById('slide-'+slideId);var title=slide?slide.querySelector('.slide-title'):null;"
+  + "var chip=document.getElementById('rucPlatLegend'+slideId);var full=data.combined;"
+  + "var rescale=function(arrs){var rv=[];arrs.forEach(function(a){a.forEach(function(v){if(v!=null)rv.push(v);});});"
+  + "if(!rv.length)return;var mn=Math.min.apply(null,rv),mx=Math.max.apply(null,rv);"
+  + "var span=mx-mn,pad=span>0?span*0.6:Math.max(mx*0.15,1);"
+  + "chart.options.scales.y2.min=Math.max(0,mn-pad);chart.options.scales.y2.max=mx+pad;};"
+  + "if(!p._on){"
+  + "ds[0].data=p.residents;ds[2].data=p.residents;ds[3].data=p.rent;"
+  + "ds.push({label:'_silverResidents',_flexPlatGhost:true,data:full.residents,borderColor:'rgba(106,61,184,0.35)',"
+  + "backgroundColor:'transparent',borderWidth:1.5,pointRadius:0,pointHoverRadius:0,fill:false,tension:0.4,yAxisID:'y',datalabels:{display:false}});"
+  + "ds.push({label:'_silverRent',_flexPlatGhost:true,data:full.rent,borderColor:'rgba(26,158,106,0.35)',"
+  + "backgroundColor:'transparent',borderWidth:1.5,pointRadius:0,pointHoverRadius:0,fill:false,tension:0.4,yAxisID:'y2',datalabels:{display:false}});"
+  + "rescale([p.rent,full.rent]);"
+  + "if(title){p._title=title.innerHTML;title.innerHTML=p.headline;}"
+  + "if(chip)chip.style.display='';"
+  + "p._on=true;if(btn)btn.classList.add('is-active');"
+  + "}else{"
+  + "ds[0].data=full.residents;ds[2].data=full.residents;ds[3].data=full.rent;"
+  + "for(var i=ds.length-1;i>=0;i--){if(ds[i]._flexPlatGhost)ds.splice(i,1);}"
+  + "rescale([full.rent]);"
+  + "if(title)title.innerHTML=p._title!=null?p._title:p.defaultTitle;"
+  + "if(chip)chip.style.display='none';"
+  + "p._on=false;if(btn)btn.classList.remove('is-active');}"
+  + "chart.update();};}";
+
+// Adoption Trend toggle (Flask _PLATINUM_ADT_JS, verbatim): ON pushes the solid "your silver
+// units at the counterfactual rate" line (same values as the dashed reference, which is hidden
+// while ON so the two don't sit on top of each other), swaps the headline and relabels the legend
+// chip with the source; OFF reverses.
+const PLATINUM_ADT_JS =
+  "if(!window.flexTogglePlatinumAdoption){window.flexTogglePlatinumAdoption=function(slideId,btn){"
+  + "var chart=Chart.getChart('chart'+slideId);var p=window['adtPlatinumData_'+slideId];if(!chart||!p)return;"
+  + "var ds=chart.data.datasets;btn=btn||document.getElementById('adtPlatBtn'+slideId);"
+  + "var slide=document.getElementById('slide-'+slideId);var title=slide?slide.querySelector('.slide-title'):null;"
+  + "var chip=document.getElementById('platLegend'+slideId);"
+  + "var sw=chip?chip.querySelector('.plat-swatch'):null;var tx=chip?chip.querySelector('.plat-text'):null;"
+  + "var refIdx=ds.findIndex(function(d){return d._flexPlatRef===true;});"
+  + "var onIdx=ds.findIndex(function(d){return d._flexPlatOn===true;});"
+  + "if(!p._on){"
+  + "if(onIdx<0){ds.push({label:p.onLabel,_flexPlatOn:true,data:p.cf,borderColor:'#1a9e6a',backgroundColor:'transparent',"
+  + "fill:false,tension:0.35,pointRadius:5,pointBackgroundColor:'#1a9e6a',borderWidth:2.5,"
+  + "datalabels:{color:'#1a9e6a',font:{size:13,weight:'700',family:'ABCDiatype'},anchor:'end',align:'top',offset:4,"
+  + "formatter:function(v){return v!=null?v+'%':'';}}});}"
+  + "if(refIdx>=0)chart.setDatasetVisibility(refIdx,false);"
+  + "if(title){p._title=title.innerHTML;title.innerHTML=p.headline;}"
+  + "if(sw){sw.style.borderTop='none';sw.style.height='3px';sw.style.background='#1a9e6a';}"
+  + "if(tx)tx.textContent=p.onLabel;"
+  + "p._on=true;if(btn)btn.classList.add('is-active');"
+  + "}else{"
+  + "if(onIdx>=0)ds.splice(onIdx,1);"
+  + "if(refIdx>=0)chart.setDatasetVisibility(refIdx,true);"
+  + "if(title)title.innerHTML=p._title!=null?p._title:p.defaultTitle;"
+  + "if(sw){sw.style.background='transparent';sw.style.height='0px';sw.style.borderTop='2px dashed rgba(100,116,139,0.6)';}"
+  + "if(tx)tx.textContent=p.refLabel;"
+  + "p._on=false;if(btn)btn.classList.remove('is-active');}"
+  + "chart.update();};}";
+
 export function renderAdoptionTrend(input: {
   slideId: number;
   monthly: AdoptionTrendMonthly[];
   kpis?: AdoptionTrendKpis | null;
   monthlySplit?: MonthlySplitEntry[] | null;
   entityMonthlyData?: AdoptionTrendEntityMonthly[];
+  /** Platinum deck (Flask `platinum=`): the counterfactual; `monthly` is then the SILVER tier's
+   * series. Draws the silver line as the primary plus the counterfactual rate as a dashed
+   * reference, and a "With direct marketing" toggle (flexTogglePlatinumAdoption) that adds the
+   * solid "your silver units at the counterfactual rate" line and swaps the headline. No peer
+   * median, established line, entity or quarter controls in this mode. Absent -> byte-identical. */
+  platinum?: PlatinumCounterfactual | null;
 } & QuarterAddsInput): SlideResult {
   const { slideId, monthly, kpis, monthlySplit } = input;
+
+  // Platinum deck payload (null for every other deck - every use below is gated on it).
+  const plat = input.platinum
+    ? (() => {
+        const label = input.platinum.sourceLabel ?? "";
+        return {
+          cf: platinumSeries(input.platinum, monthly.map((r) => r.month), "cfRate", (v) => Math.round(v * 1000) / 10),
+          refLabel: label,
+          onLabel: `Your silver units at the counterfactual rate · ${label}`,
+          headline: platinumHeadline(input.platinum, true),
+          defaultTitle: ADT_DEFAULT_TITLE,
+        };
+      })()
+    : null;
 
   // ─── Per-entity lines (Task 11, reworked into additive toggles) ───────────
   // Only built when there's more than 1 combined entity - a single-PMC report (or a combined
@@ -2126,7 +2287,7 @@ export function renderAdoptionTrend(input: {
   let benchmarkLabelTooltip = ""; // set only for the calendar-time rolling variant below
   let _mslIsCapped = false;
 
-  if (kpis) {
+  if (kpis && !plat) {
     const sbm = kpis.stage_benchmarks ?? {};
     const msl = kpis.months_since_launch ?? 0;
     const n = monthly.length;
@@ -2255,7 +2416,7 @@ export function renderAdoptionTrend(input: {
   const avgDivergence = paired.length > 0
     ? paired.reduce((s, [a, e]) => s + Math.abs(a - (e as number)), 0) / paired.length
     : 0;
-  const showEstablished = paired.length > 0 && avgDivergence > DIVERGE_THRESHOLD;
+  const showEstablished = paired.length > 0 && avgDivergence > DIVERGE_THRESHOLD && !plat;
   // Label collision is handled at runtime via pixel positions (Flask approach)
   // The `estLabelPosition` static array is only used for display gating (hide nulls)
   const estLabelDisplay = estValsList.map((ev) => ev != null ? "show" : "hide");
@@ -2270,6 +2431,7 @@ export function renderAdoptionTrend(input: {
     // same formula on every click over allPts + whichever entity lines are currently visible,
     // so a subsidiary above the combined range is never clipped once it's toggled on.
   ];
+  if (plat) allPts.push(...plat.cf.filter((v): v is number => v != null));
   // Flask's REAL formula (generator/slides.py:1331-1332 — verified directly against live
   // source, not this repo's CLAUDE.md, which documents "+1" and is stale on this specific
   // point): y_min = max(0, int(min(all_pts)) - 1), y_max = int(max(all_pts)) + 2. The earlier
@@ -2418,7 +2580,7 @@ window.flexToggleAdoptionQuarter=function(slideId,btn){
 
   // ─── Expansion note ─────────────────────────────────────────────────────
   let expansionNote = "";
-  if (monthly.length >= 2) {
+  if (monthly.length >= 2 && !plat) {
     const last = monthly[monthly.length - 1];
     const prev = monthly[monthly.length - 2];
     const propDelta = (last.propertyCount ?? 0) - (prev.propertyCount ?? 0);
@@ -2603,6 +2765,43 @@ window.flexToggleAllAdoptionEntities=function(slideId){
     entityToggleHtml = `\n    <div class="spark-ctrl presenter-control" style="flex-wrap:wrap;margin:-4px 0 8px;">${quarterBtnHtml}</div>`;
   }
 
+  // ─── Platinum deck: "With direct marketing" toggle ──────────────────────
+  // One button in that same slot (pdf-export-hide only, like Flask - NOT presenter-control, the
+  // presenter clicks it live in fullscreen), the payload + toggle JS, the dashed counterfactual
+  // reference dataset (stable _flexPlatRef tag so the toggle finds it after the legend text
+  // changes) and the legend chip. PDF export shows the toggled-ON state via flexPdfPrep<N>
+  // (buildDeckHtml's exportDeckPDF) - see PLATINUM_PDF_PREP_JS. Every string stays "" otherwise.
+  let platDsJs = "";
+  let platJs = "";
+  let platLegend = "";
+  if (plat) {
+    entityToggleHtml = `\n    <div class="spark-ctrl pdf-export-hide" id="adtSwitchRow${slideId}" style="flex-wrap:wrap;margin:-4px 0 8px;">`
+      + `<button type="button" class="spark-ctrl-btn" id="adtPlatBtn${slideId}" onclick="flexTogglePlatinumAdoption(${slideId},this)">${PLATINUM_TOGGLE_LABEL}</button></div>`;
+    platLegend =
+      `<span id="platLegend${slideId}" style="display:flex;align-items:center;gap:7px;">` +
+      `<span class="plat-swatch" style="display:inline-block;width:28px;height:0;border-top:2px dashed rgba(100,116,139,0.6);"></span>` +
+      `<span class="plat-text" style="font-size:13px;color:#524e5b;">${_e(plat.refLabel)}</span>` +
+      `</span>`;
+    platDsJs = `
+    datasets.push({
+      label: ${JSON.stringify(plat.refLabel)},
+      _flexPlatRef: true,
+      data: ${JSON.stringify(plat.cf)},
+      borderColor: 'rgba(100,116,139,0.55)',
+      backgroundColor: 'transparent',
+      fill: false,
+      tension: 0.3,
+      pointRadius: 0,
+      borderWidth: 1.5,
+      borderDash: [3, 3],
+      datalabels: { display: false }
+    });`;
+    platJs = `\nwindow['adtPlatinumData_${slideId}']=${JSON.stringify(plat).replace(/</g, "\\u003c")};`
+      + "\n" + PLATINUM_PDF_PREP_JS + "\n" + PLATINUM_ADT_JS
+      + `\nwindow['flexPdfPrep${slideId}']=function(phase){window.flexPlatinumPdfPrep(`
+      + `window['adtPlatinumData_${slideId}'],phase,function(){window.flexTogglePlatinumAdoption(${slideId},null);});};`;
+  }
+
   // ─── Legend overlay ─────────────────────────────────────────────────────
   let bmLegend = "";
   if (showBenchmark) {
@@ -2642,9 +2841,13 @@ window.flexToggleAllAdoptionEntities=function(slideId){
   }
 
   const pmcDisplay = kpis?.pmc_name ?? "";
-  const primaryLabel = !monthlySplit
+  let primaryLabel = !monthlySplit
     ? "All Properties"
     : (pmcDisplay ? `${_e(pmcDisplay)} (Total)` : "Combined");
+  // Chart.js dataset label for the primary line - the JS label-position helpers look it up by
+  // name, so the same variable feeds both the dataset and those lookups (Flask _primary_ds_label).
+  let primaryDsLabel = "All Properties";
+  if (plat) primaryLabel = primaryDsLabel = "Your silver properties";
 
   const legendOverlay =
     `<div style="position:absolute;top:10px;left:0;right:0;z-index:5;` +
@@ -2659,6 +2862,7 @@ window.flexToggleAllAdoptionEntities=function(slideId){
     estToggle +
     bmLegend +
     bmToggle +
+    platLegend +
     `</div>`;
 
   // ─── Established footnote ───────────────────────────────────────────────
@@ -2678,7 +2882,7 @@ window.flexToggleAllAdoptionEntities=function(slideId){
       <div class="slide-title">Adoption Rate by Month</div>
       ${peerOutlierNote}
     </div>${entityToggleHtml}
-    <div class="chart-wrap" style="position:relative;height:${(showEntityLines || hasQuarter) ? 400 : 460}px;padding:12px;">${legendOverlay}<canvas id="chart${slideId}"></canvas></div>
+    <div class="chart-wrap" style="position:relative;height:${(showEntityLines || hasQuarter || plat) ? 400 : 460}px;padding:12px;">${legendOverlay}<canvas id="chart${slideId}"></canvas></div>
     ${expansionNote}
     ${estFootnote}
   </div>`;
@@ -2700,13 +2904,13 @@ window['initSlide${slideId}'] = (function() {
       return meta.data[idx].y;
     };
     const isClose = (chart, idx) => {
-      const allY = lineY(chart, 'All Properties', idx);
+      const allY = lineY(chart, '${primaryDsLabel}', idx);
       const estY = lineY(chart, 'Established Properties', idx);
       return allY != null && estY != null && Math.abs(allY - estY) <= 20;
     };
     const estAlign = (chart, idx) => {
       if (isClose(chart, idx)) return 'top';
-      const allY = lineY(chart, 'All Properties', idx);
+      const allY = lineY(chart, '${primaryDsLabel}', idx);
       const estY = lineY(chart, 'Established Properties', idx);
       if (allY == null || estY == null) return 'top';
       return estY > allY ? 'bottom' : 'top';
@@ -2716,7 +2920,7 @@ window['initSlide${slideId}'] = (function() {
     const allOffset = (chart, idx) => allAlign(chart, idx) === 'bottom' ? 10 : 4;
     const datasets = [
       {
-        label: 'All Properties',
+        label: '${primaryDsLabel}',
         data: allData,
         borderColor: '#8D70EE',
         backgroundColor: 'rgba(141,112,238,0.08)',
@@ -2776,7 +2980,7 @@ window['initSlide${slideId}'] = (function() {
           datalabels: { display: false }
         });
       }
-    }
+    }${platDsJs}
     new Chart(document.getElementById('chart${slideId}'), {
       type: 'line',
       data: { labels: ${JSON.stringify(months)}, datasets },
@@ -2831,7 +3035,7 @@ window['toggleBenchmark${slideId}'] = function(btn) {
   if (legend) legend.style.display = nowVisible ? 'flex' : 'none';
   const note = document.getElementById('peerOutlierNote${slideId}');
   if (note) note.style.display = nowVisible ? 'block' : 'none';
-};${entityToggleJs}${quarterJs}`;
+};${entityToggleJs}${quarterJs}${platJs}`;
 
   return { html, js };
 }
@@ -3206,6 +3410,10 @@ export interface ResidentsUnitsInput {
   // missing months filled as 0 rather than left sparse, keeping the x-axis stable across
   // switches (see the alignment loop below).
   entityMonthlyData?: ResidentsUnitsEntityMonthly[];
+  /** Platinum deck (Flask `platinum=`): the counterfactual; `monthlyTotals` is then the SILVER
+   * tier's series. Adds the "With direct marketing" toggle that lifts residents + rent to the
+   * counterfactual (ghost originals stay). Absent (every other deck) -> byte-identical output. */
+  platinum?: PlatinumCounterfactual | null;
 }
 
 export function renderResidentsUnitsCombo(input: ResidentsUnitsInput & QuarterAddsInput): SlideResult {
@@ -3277,8 +3485,13 @@ export function renderResidentsUnitsCombo(input: ResidentsUnitsInput & QuarterAd
   const hasQuarter = !!(quarter && quarterCombined && quarterCombined.monthly.length > 0);
   let quarterBtnHtml = "";
   let quarterJs = "";
-  const numFmtJs = hasQuarter ? "v => v == null ? '' : v.toLocaleString()" : "v => v.toLocaleString()";
-  const rentFmtJs = hasQuarter ? "v => v == null ? '' : fmtRent(v)" : "v => fmtRent(v)";
+  // Platinum deck (Flask: `platinum and not _switch_active and not _q_active`) - the toggle only
+  // exists on a single-entity, no-cohort chart; the call site passes neither in that mode.
+  const plat = input.platinum && !showEntitySwitcher && !hasQuarter ? input.platinum : null;
+  // Null-safe datalabel formatters whenever an array can carry null (quarter cohort gaps, or the
+  // counterfactual's months without a rate); emitted verbatim as before otherwise.
+  const numFmtJs = (hasQuarter || plat) ? "v => v == null ? '' : v.toLocaleString()" : "v => v.toLocaleString()";
+  const rentFmtJs = (hasQuarter || plat) ? "v => v == null ? '' : fmtRent(v)" : "v => fmtRent(v)";
   if (hasQuarter && quarter && quarterCombined) {
     const alignQ = (s: QuarterAddsSeries) => {
       const byMonth = new Map(s.monthly.map((m) => [m.month, m]));
@@ -3411,16 +3624,54 @@ window.flexToggleRucQuarter=function(slideId,btn){
     entitySwitcherHtml = `\n    <div class="spark-ctrl presenter-control" style="flex-wrap:wrap;max-width:620px;margin:-4px 0 8px;">${quarterBtnHtml}</div>`;
   }
 
+  // ── Platinum deck: "With direct marketing" toggle (Flask render_residents_units_combo) ────
+  // `monthlyTotals` is the SILVER tier's series and `plat` the counterfactual. The toggle swaps
+  // the residents + rent arrays for their counterfactual versions, pushes faint "today" ghosts of
+  // the originals so the gap reads month by month, swaps the headline to the counterfactual
+  // sentence and shows the source in the legend - the same embed-JSON / swap-arrays mechanics as
+  // the quarter toggle above. PDF export captures the toggled-ON state (flexPdfPrep hook in
+  // buildDeckHtml's exportDeckPDF) - the point of this deck, deliberately unlike the other
+  // toggles. Everything is gated on `plat`, so every other deck renders byte-identically.
+  let platLegendExtra = "";
+  let legendRes = "Residents Paying", legendUnits = "Units in Network", legendRent = "Rent Collected";
+  if (plat) {
+    const axisMonths = monthlyTotals.map((m) => m.month);
+    const platLabel = plat.sourceLabel ?? "";
+    const payload = {
+      combined: { residents, units, rent },
+      entities: [],
+      platinum: {
+        residents: platinumSeries(plat, axisMonths, "cfResidents", (v) => Math.round(v)),
+        rent: platinumSeries(plat, axisMonths, "cfRent", (v) => Math.round(v * 100) / 100),
+        headline: platinumHeadline(plat, true),
+        defaultTitle: RUC_DEFAULT_TITLE,
+        sourceLabel: platLabel,
+      },
+    };
+    entitySwitcherHtml = `\n    <div class="spark-ctrl pdf-export-hide" style="flex-wrap:wrap;max-width:620px;margin:-4px 0 8px;">`
+      + `<button type="button" class="spark-ctrl-btn" id="rucPlatBtn${slideId}" onclick="flexTogglePlatinumRuc(${slideId},this)">${PLATINUM_TOGGLE_LABEL}</button></div>`;
+    comboChartExposeJs = `window['rucChart_${slideId}'] = _comboChart;\n    `;
+    entitySwitcherJs = `window['rucEntityData_${slideId}']=${JSON.stringify(payload).replace(/</g, "\\u003c")};`
+      + PLATINUM_PDF_PREP_JS + PLATINUM_RUC_JS
+      + `window['flexPdfPrep${slideId}']=function(phase){window.flexPlatinumPdfPrep(`
+      + `window['rucEntityData_${slideId}'].platinum,phase,function(){window.flexTogglePlatinumRuc(${slideId},null);});};`;
+    platLegendExtra =
+      `\n      <span id="rucPlatLegend${slideId}" style="display:none;">`
+      + `<span style="display:inline-block;width:14px;height:0;border-top:2px solid rgba(106,61,184,0.35);margin-right:5px;vertical-align:middle;"></span>`
+      + `Faint lines = today · solid lines = your silver units at the counterfactual rate (${_e(platLabel)})</span>`;
+    legendRes = "Residents Paying (silver)"; legendUnits = "Silver Units in Network"; legendRent = "Rent Collected (silver)";
+  }
+
   const html = `
   <div class="slide" id="slide-${slideId}" style="background:#fff;">
     <div class="slide-header">
       <div class="slide-label">Portfolio</div>
-      <div class="slide-title">Residents paying against your unit base, plus the rent behind it.</div>
+      <div class="slide-title">${RUC_DEFAULT_TITLE}</div>
     </div>${entitySwitcherHtml}
     <div style="display:flex;gap:16px;font-size:11px;color:#524e5b;margin:-6px 0 6px;">
-      <span><span style="display:inline-block;width:14px;height:3px;background:#6A3DB8;border-radius:2px;margin-right:5px;vertical-align:middle;"></span>Residents Paying</span>
-      <span><span style="display:inline-block;width:14px;height:3px;background:#2563EB;border-radius:2px;margin-right:5px;vertical-align:middle;"></span>Units in Network</span>
-      <span><span style="display:inline-block;width:14px;height:3px;background:#1a9e6a;border-radius:2px;margin-right:5px;vertical-align:middle;"></span>Rent Collected</span>
+      <span><span style="display:inline-block;width:14px;height:3px;background:#6A3DB8;border-radius:2px;margin-right:5px;vertical-align:middle;"></span>${legendRes}</span>
+      <span><span style="display:inline-block;width:14px;height:3px;background:#2563EB;border-radius:2px;margin-right:5px;vertical-align:middle;"></span>${legendUnits}</span>
+      <span><span style="display:inline-block;width:14px;height:3px;background:#1a9e6a;border-radius:2px;margin-right:5px;vertical-align:middle;"></span>${legendRent}</span>${platLegendExtra}
     </div>
     <div class="chart-wrap" style="flex:1;min-height:0;"><canvas id="chart${slideId}"></canvas></div>
   </div>`;
@@ -4822,5 +5073,165 @@ export function renderCustomerExperience(input: {
     ${quotesFootnote}
   </div>`;
 
+  return { html, js: "" };
+}
+
+// ─── Platinum deck ("The Case for Marketing") - cover + conclusion ──────────────────────────
+// Clark mirror of Flask render_platinum_cover / render_platinum_close (generator/slides.py,
+// 0de2310). The two chart slides in between are renderAdoptionTrend / renderResidentsUnitsCombo
+// with `platinum`.
+
+export interface PlatinumCoverKpis {
+  pmcName: string;
+  reportingMonth: string;
+  firstMonth: string | null;
+  /** SILVER tier's property / unit counts - the units being sold. */
+  propertyCount: number;
+  totalUnits: number;
+}
+
+/** Flask render_platinum_cover. Subtitle IS the headline sentence; the reporting month is
+ * labelled as a BP month; the deck footer ("{PMC} · {Month YYYY} BP month") comes from
+ * buildDeckHtml. */
+export function renderPlatinumCover(slideId: number, kpis: PlatinumCoverKpis, cf: PlatinumCounterfactual): SlideResult {
+  const rpt = kpis.reportingMonth;
+  const bpLabel = `${fullMonthLabel(rpt)} BP month`;
+  const period = kpis.firstMonth
+    ? `${fullMonthLabel(kpis.firstMonth)} – ${fullMonthLabel(rpt)} BP months`
+    : bpLabel;
+  const silverProps = cf.silverProperties || kpis.propertyCount || 0;
+  const silverUnits = kpis.totalUnits || 0;
+  const source = _e(cf.sourceLabel ?? "");
+  const headline = platinumHeadline(cf, true).replace(/<strong>/g, '<strong style="color:#fff;font-weight:600;">');
+
+  const fact = (label: string, value: string) =>
+    `<div><div style="font-size:10px;letter-spacing:0.14em;text-transform:uppercase;color:rgba(255,255,255,0.28);`
+    + `margin-bottom:6px;font-family:'ABCDiatype',sans-serif;">${label}</div>`
+    + `<div style="font-size:16px;font-weight:600;color:rgba(255,255,255,0.85);font-family:'ABCDiatype',sans-serif;">${value}</div></div>`;
+
+  const html = `
+  <div class="slide${slideId === 1 ? " active" : ""}" id="slide-${slideId}" style="background:#2C194D;justify-content:center;align-items:flex-start;">
+    <div style="font-size:11px;letter-spacing:0.18em;text-transform:uppercase;color:#DDC6F9;margin-bottom:20px;font-weight:600;font-family:'ABCDiatype',sans-serif;">${PLATINUM_DECK_TITLE}</div>
+    <div style="font-size:64px;font-weight:500;line-height:1.0;color:#fff;margin-bottom:18px;letter-spacing:-0.02em;font-family:'ABCDiatype',sans-serif;">${_e(kpis.pmcName)}</div>
+    <div style="font-size:22px;font-weight:400;line-height:1.35;color:rgba(255,255,255,0.7);margin-bottom:52px;max-width:980px;font-family:'ABCDiatype',sans-serif;">${headline}</div>
+    <div style="display:flex;gap:52px;flex-wrap:wrap;">
+      ${fact("Silver properties", silverProps.toLocaleString("en-US"))}
+      ${fact("Silver units", silverUnits.toLocaleString("en-US"))}
+      ${fact("Reporting period", period)}
+      ${fact("Counterfactual", source)}
+    </div>
+    <div style="position:absolute;bottom:60px;left:80px;font-size:11px;color:rgba(255,255,255,0.35);font-family:'ABCDiatype',sans-serif;">${bpLabel} · Silver = direct integration without the marketing opt-in · Platinum = opted in</div>
+    <div style="position:absolute;right:100px;top:50%;transform:translateY(-50%);width:380px;height:380px;border-radius:50%;background:radial-gradient(circle,rgba(106,61,184,0.22) 0%,transparent 68%);"></div>
+    <div style="position:absolute;bottom:60px;right:80px;font-size:28px;font-weight:500;letter-spacing:-0.04em;color:rgba(255,255,255,0.15);font-family:'ABCDiatype',sans-serif;">flex</div>
+  </div>`;
+  return { html, js: "" };
+}
+
+/** Flask render_platinum_close - "What direct marketing would have meant". Table rows: Adoption
+ * rate · Paying residents (latest month) · Rent paid (latest month) · Missed over the window;
+ * columns: You (silver) · Your platinum properties (only if cf.ownPlatinumRate exists) ·
+ * Platinum peers (only if cf.peerRate exists) · Gap (vs the source the charts drew). The source
+ * that was NOT chosen only has a pooled window rate, so its other cells print "—". One closing
+ * line + a one-line methodology footnote (the peer rate counts CHARGED_USERS_COUNT, the
+ * subject's counts bills paid - both "residents paying", said out loud). */
+export function renderPlatinumClose(slideId: number, cf: PlatinumCounterfactual): SlideResult {
+  const t = cf.totals;
+  const latest = cf.latest;
+  const n = t.monthsUsed || cf.months.length;
+  const source = cf.source;
+  const sourceLabel = cf.sourceLabel ?? "";
+  const showOwn = cf.ownPlatinumRate != null;
+  const showPeers = cf.peerRate != null;
+  const silverRate = cf.silverWindowRate ?? 0;
+  const cfRate = cf.cfWindowRate ?? 0;
+  const latestLabel = latest?.month ? monthLabel(latest.month) : "latest";
+
+  const num = (v: number | null | undefined) => Math.round(v ?? 0).toLocaleString("en-US");
+  const signedNum = (v: number | null | undefined) => { const x = v ?? 0; return `${x >= 0 ? "+" : "−"}${Math.round(Math.abs(x)).toLocaleString("en-US")}`; };
+  const money = (v: number | null | undefined) => platinumCurrency(Math.max(v ?? 0, 0));
+  const signedMoney = (v: number | null | undefined) => { const x = v ?? 0; return `${x >= 0 ? "+" : "−"}${platinumCurrency(Math.abs(x))}`; };
+  const pp = (v: number) => `${v >= 0 ? "+" : "−"}${(Math.abs(v) * 100).toFixed(1)}pp`;
+
+  interface Cells { rate: string; res: string; rent: string; window: string }
+  const chosen: Cells = {
+    rate: fmtPct(cfRate),
+    res: num(latest?.cfResidents),
+    rent: money(latest?.cfRent),
+    window: `${num(t.cfResidents)} residents · ${money(t.cfRent)}`,
+  };
+  const you: Cells = {
+    rate: fmtPct(silverRate),
+    res: num(latest?.silverResidents),
+    rent: money(latest?.silverRent),
+    window: `${num(t.silverResidents)} residents · ${money(t.silverRent)}`,
+  };
+  const gap: Cells = {
+    rate: pp(cfRate - silverRate),
+    res: signedNum(latest?.extraResidents),
+    rent: signedMoney(latest?.extraRent),
+    window: `${signedNum(t.extraResidents)} residents · ${signedMoney(t.extraRent)}`,
+  };
+  const own: Cells = source === "own_platinum" ? chosen : { rate: fmtPct(cf.ownPlatinumRate ?? 0), res: "—", rent: "—", window: "—" };
+  const peers: Cells = source === "peers" ? chosen : { rate: fmtPct(cf.peerRate ?? 0), res: "—", rent: "—", window: "—" };
+
+  const rows: [keyof Cells, string][] = [
+    ["rate", `Adoption rate <span style='color:#a09cb0;font-weight:400;'>· last ${n} BP months</span>`],
+    ["res", `Paying residents <span style='color:#a09cb0;font-weight:400;'>· ${_e(latestLabel)} BP month</span>`],
+    ["rent", `Rent paid <span style='color:#a09cb0;font-weight:400;'>· ${_e(latestLabel)} BP month</span>`],
+    ["window", `Missed over the window <span style='color:#a09cb0;font-weight:400;'>· ${n} BP months</span>`],
+  ];
+  const th = "padding:10px 14px;font-size:10px;letter-spacing:0.1em;text-transform:uppercase;color:#a09cb0;"
+    + "font-weight:600;border-bottom:2px solid #eceaf2;text-align:right;white-space:nowrap;";
+  const td = "padding:14px 14px;font-size:14px;color:#1d1d1d;border-bottom:1px solid #eceaf2;text-align:right;white-space:nowrap;";
+  const chosenBg = "background:#f8f7ff;";
+  const pill = '<span style="display:inline-block;margin-left:6px;padding:1px 7px;border-radius:99px;background:#6A3DB8;'
+    + 'color:#fff;font-size:9px;letter-spacing:0.06em;">counterfactual</span>';
+
+  const head = [`<th style="${th}text-align:left;">Metric</th>`, `<th style="${th}">You (silver)</th>`];
+  if (showOwn) {
+    head.push(`<th style="${th}${source === "own_platinum" ? chosenBg : ""}">Your platinum properties${source === "own_platinum" ? pill : ""}</th>`);
+  }
+  if (showPeers) {
+    head.push(`<th style="${th}${source === "peers" ? chosenBg : ""}">Platinum peers${source === "peers" ? pill : ""}</th>`);
+  }
+  head.push(`<th style="${th}color:#6A3DB8;">Gap <span style="font-weight:400;text-transform:none;letter-spacing:0;">vs ${_e(sourceLabel)}</span></th>`);
+
+  const body: string[] = [];
+  for (const [key, label] of rows) {
+    const cells = [`<td style="${td}text-align:left;font-weight:600;">${label}</td>`, `<td style="${td}">${you[key]}</td>`];
+    if (showOwn) cells.push(`<td style="${td}${source === "own_platinum" ? chosenBg : "color:#6b7280;"}">${own[key]}</td>`);
+    if (showPeers) cells.push(`<td style="${td}${source === "peers" ? chosenBg : "color:#6b7280;"}">${peers[key]}</td>`);
+    cells.push(`<td style="${td}font-weight:700;color:#6A3DB8;">${gap[key]}</td>`);
+    body.push(`<tr>${cells.join("")}</tr>`);
+  }
+
+  let methodology =
+    `Methodology: counterfactual rate = ${_e(sourceLabel)} (${fmtPct(cfRate)} pooled over the window), applied to your `
+    + `silver units month by month; the rent uplift uses your silver properties' own average rent per paying resident `
+    + `each month, never peers' rents.`;
+  if (showPeers) {
+    methodology += " Adoption = residents paying ÷ units in network — yours counts bills paid, the platinum-peer rate "
+      + "counts charged users (CHARGED_USERS_COUNT); both are residents paying through Flex that month.";
+  }
+
+  const html = `
+  <div class="slide" id="slide-${slideId}" style="background:#fff;flex-direction:column;padding:36px 56px 32px;overflow:hidden;">
+    <div style="flex-shrink:0;margin-bottom:14px;">
+      <div class="slide-label" style="font-size:9px;letter-spacing:0.18em;text-transform:uppercase;color:#6A3DB8;font-weight:600;margin-bottom:10px;">${PLATINUM_DECK_TITLE.toUpperCase()}</div>
+      <div class="slide-title" style="font-size:30px;font-weight:700;color:#1d1d1d;line-height:1.15;letter-spacing:-0.02em;margin-bottom:6px;">${PLATINUM_CLOSE_TITLE}</div>
+      <div style="font-size:13px;color:#6b7280;line-height:1.5;">${platinumHeadline(cf, true)}</div>
+    </div>
+    <div style="flex:1;min-height:0;">
+      <table style="width:100%;border-collapse:collapse;">
+        <thead><tr>${head.join("")}</tr></thead>
+        <tbody>${body.join("")}</tbody>
+      </table>
+    </div>
+    <div style="background:#2C194D;border-radius:10px;padding:16px 24px;display:flex;align-items:center;gap:16px;flex-shrink:0;margin-top:14px;">
+      <div style="font-size:11px;font-weight:600;color:rgba(255,255,255,0.55);text-transform:uppercase;letter-spacing:0.1em;flex-shrink:0;">The ask</div>
+      <div style="font-size:14px;color:#fff;font-weight:600;flex:1;">${PLATINUM_CLOSING_LINE}</div>
+    </div>
+    <div style="font-size:10px;color:#a09cb0;line-height:1.5;margin-top:10px;flex-shrink:0;">${methodology}</div>
+  </div>`;
   return { html, js: "" };
 }

@@ -6,15 +6,17 @@ import { useUsageTracking } from "@/hooks/useUsageTracking";
 import { QBRTab, type QBRFormState } from "./components/QBRTab.js";
 import { NewLogoTab, type NewLogoFormState } from "./components/NewLogoTab.js";
 import { ExpansionTab, type ExpansionFormState } from "./components/ExpansionTab.js";
+import { PlatinumTab, type PlatinumFormState } from "./components/PlatinumTab.js";
 import { ResultsPanel } from "./components/ResultsPanel.js";
 import { wrapSlidesHtml } from "./utils/wrap-slides-html.js";
 
-type TabId = "qbr" | "new_logo" | "expansion";
+type TabId = "qbr" | "new_logo" | "expansion" | "platinum";
 
 const TABS: { id: TabId; label: string }[] = [
   { id: "qbr", label: "QBR" },
   { id: "new_logo", label: "New Logo" },
   { id: "expansion", label: "Expansion" },
+  { id: "platinum", label: "Platinum" },
 ];
 
 export default function PMCMonthlyReportPage() {
@@ -165,6 +167,34 @@ export default function PMCMonthlyReportPage() {
     }
   }, [generateReport, track]);
 
+  // Platinum ("The Case for Marketing") - mirrors Flask's generatePlatinumBtn POST: one PMC,
+  // report_type platinum, default lookback, terminology. No additional PMCs / presets / period /
+  // growth controls by design (one PMC per deck). Delivery is forced to "presenting" so the
+  // Speaker Notes download shows - Flask always returns the 3-line script for this deck.
+  const handlePlatinumGenerate = useCallback(async (state: PlatinumFormState) => {
+    setDelivery("presenting");
+    setCurrentSubjectName(state.pmc_name);
+    const args = {
+      pmc_name: state.pmc_name,
+      report_name: "",
+      lookback_months: 12,
+      deck_mode: "platinum" as const,
+      adoption_target: 15,
+      testimonials: [],
+      total_portfolio_units: 0,
+      presenting_mode: true,
+      comparison_months: 1,
+      terminology: state.terminology as "resident" | "household",
+    };
+    lastArgsRef.current = args;
+    try {
+      await generateReport(args);
+      track("report_generated", { deck_mode: "platinum", pmc_name: args.pmc_name });
+    } catch {
+      // Error is in useApi state
+    }
+  }, [generateReport, track, setDelivery, setCurrentSubjectName]);
+
   const handleRetry = useCallback(async () => {
     if (activeTab === "new_logo" && lastProspectArgsRef.current) {
       try {
@@ -181,7 +211,7 @@ export default function PMCMonthlyReportPage() {
     }
   }, [activeTab, generateReport, generateProspectDeck]);
 
-  const deckLabel = activeTab === "qbr" ? "report" : activeTab === "new_logo" ? "prospect deck" : "expansion deck";
+  const deckLabel = activeTab === "qbr" ? "report" : activeTab === "new_logo" ? "prospect deck" : activeTab === "platinum" ? "platinum deck" : "expansion deck";
 
   // Log geocode + upload-parsing diagnostics to browser console for debugging
   useEffect(() => {
@@ -234,7 +264,14 @@ export default function PMCMonthlyReportPage() {
   // Pick the right data/error/generating state based on active tab
   const isGenerating = activeTab === "new_logo" ? prospectGenerating : generating;
   const currentReportData = activeTab === "new_logo" ? normalizedProspectData : effectiveReportData;
-  const currentError = activeTab === "new_logo" ? (effectiveProspectData?.error || prospectError) : reportError;
+  // Platinum's self-gates (Flask's 400/422 "No Platinum deck for {PMC}: ..." responses) ride
+  // back as an `error` field on an otherwise-empty report payload (same shape GetProspectDeck
+  // already uses), so they land in the same error box every other tab shows.
+  const currentError = activeTab === "new_logo"
+    ? (effectiveProspectData?.error || prospectError)
+    : activeTab === "platinum"
+      ? (effectiveReportData?.error || reportError)
+      : reportError;
 
   return (
     <div className="flex-1 flex flex-col overflow-y-auto bg-white">
@@ -271,6 +308,9 @@ export default function PMCMonthlyReportPage() {
           )}
           {activeTab === "expansion" && (
             <ExpansionTab pmcNames={pmcNames} pmcPresets={pmcPresets} pmcLoading={pmcLoading} generating={generating} onGenerate={handleExpansionGenerate} />
+          )}
+          {activeTab === "platinum" && (
+            <PlatinumTab generating={generating} onGenerate={handlePlatinumGenerate} />
           )}
         </div>
       </div>
