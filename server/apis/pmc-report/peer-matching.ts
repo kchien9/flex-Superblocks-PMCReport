@@ -274,6 +274,105 @@ export function largestPmcsPeerTier<T extends { name: string; totalUnits: number
   return { peers, label: LARGEST_PMCS_TIER_LABEL };
 }
 
+// ─── Locked-peer-cohort SQL (rolling calendar-time median + tenure-cohort benchmark) ──────
+// Extracted verbatim from get-pmc-monthly-report.ts so the generated SQL is a pure function of
+// its inputs (unit-testable, byte-identity provable). `optInOnly` is the Platinum deck's peer
+// pool (Flask `opt_in_only` in pull_rolling_peer_median / _pull_stage_benchmarks, 22d7052): the
+// cohort is still locked on each candidate's WHOLE portfolio by the ladder above, but the peers'
+// monthly rates are computed from their IS_MARKETING_OPT_IN = TRUE properties only - the one
+// added predicate sits on the rate rows, right after IS_INTEGRATED_TOTAL = TRUE, exactly where
+// Flask appends it. Default (false) -> the SQL string is byte-identical to the inlined original.
+export interface PeerPoolSqlOptions {
+  optInOnly?: boolean;
+}
+
+/** Rolling peer median NAR (per-month P25/P50/P75 from the locked peers). Bind params, in
+ * order: [...lockedPeers, cutoffStr, cutoffStr, lookbackMonths, cutoffStr, cutoffStr]. */
+export function rollingPeerMedianSql(lockedPeers: string[], lookbackMonths: number, opts: PeerPoolSqlOptions = {}): string {
+  const optInSql = opts.optInOnly ? " AND IS_MARKETING_OPT_IN = TRUE" : "";
+  return `WITH peer_monthly AS (
+            SELECT
+              BP_MONTH,
+              PMC_NAME,
+              SUM(CHARGED_USERS_COUNT) / NULLIF(SUM(PROPERTY_UNIT_COUNT)::FLOAT, 0) AS nar
+            FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS
+            WHERE PMC_NAME IN (${lockedPeers.map(() => "?").join(", ")})
+              AND IS_INTEGRATED_TOTAL = TRUE${optInSql}
+              -- cutoffStr is an EXCLUSIVE upper bound (1st of the next allowed month) —
+              -- BETWEEN is inclusive on both ends, which let this match Snowflake's pre-created
+              -- stub row for that month (zeroed billing columns), injecting a bogus NAR=0 point.
+              AND BP_MONTH >= DATEADD('month', -${lookbackMonths + 3}, ?::DATE)
+              AND BP_MONTH < ?
+            GROUP BY BP_MONTH, PMC_NAME
+         ),
+         smoothed AS (
+            SELECT
+              BP_MONTH, PMC_NAME,
+              AVG(nar) OVER (PARTITION BY PMC_NAME ORDER BY BP_MONTH ROWS BETWEEN 2 PRECEDING AND CURRENT ROW) AS smoothed_nar
+            FROM peer_monthly
+         )
+         SELECT
+           TO_VARCHAR(BP_MONTH, 'YYYY-MM-DD') AS BP_MONTH,
+           PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY smoothed_nar) AS SMOOTHED_NAR,
+           PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY smoothed_nar) AS P25,
+           PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY smoothed_nar) AS P75
+         FROM smoothed
+         WHERE BP_MONTH >= DATEADD('month', -?, ?::DATE)
+           AND BP_MONTH < ?
+           AND smoothed_nar IS NOT NULL
+         GROUP BY BP_MONTH
+         HAVING COUNT(*) >= 3
+         ORDER BY BP_MONTH`;
+}
+
+/** Tenure-cohort peer benchmark (months-since-launch 1-36) over the locked peers. Bind params,
+ * in order: [...lockedPeers, ...lockedPeers, cutoffStr]. pmc_launch stays whole-portfolio under
+ * optInOnly (a peer's launch month is a PMC fact); only the monthly_nar rate rows are restricted. */
+export function stageBenchmarkSql(lockedPeers: string[], opts: PeerPoolSqlOptions = {}): string {
+  const optInSql = opts.optInOnly ? " AND s.IS_MARKETING_OPT_IN = TRUE" : "";
+  return `WITH pmc_launch AS (
+            SELECT PMC_NAME, MIN(BP_MONTH) AS launch_month
+            FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS
+            WHERE PMC_NAME IN (${lockedPeers.map(() => "?").join(", ")})
+              AND ROLLOUT_MONTH IS NOT NULL
+              AND IS_INTEGRATED_TOTAL = TRUE
+            GROUP BY PMC_NAME
+         ),
+         monthly_nar AS (
+            SELECT
+              s.PMC_NAME,
+              DATEDIFF('month', l.launch_month, s.BP_MONTH) + 1 AS month_number,
+              SUM(s.BILLS_PAID_COUNT) / NULLIF(SUM(s.PROPERTY_UNIT_COUNT)::FLOAT, 0) AS adoption_rate
+            FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS s
+            JOIN pmc_launch l ON s.PMC_NAME = l.PMC_NAME
+            WHERE s.PMC_NAME IN (${lockedPeers.map(() => "?").join(", ")})
+              AND s.BP_MONTH >= l.launch_month
+              AND s.BP_MONTH < ?
+              AND s.IS_INTEGRATED_TOTAL = TRUE${optInSql}
+            GROUP BY s.PMC_NAME, month_number
+            HAVING adoption_rate IS NOT NULL AND adoption_rate > 0
+         ),
+         monthly_nar_smoothed AS (
+            SELECT
+              PMC_NAME, month_number,
+              AVG(adoption_rate) OVER (
+                PARTITION BY PMC_NAME ORDER BY month_number
+                ROWS BETWEEN 2 PRECEDING AND CURRENT ROW
+              ) AS smoothed_adoption_rate
+            FROM monthly_nar
+         )
+         SELECT
+           month_number AS MONTH_NUMBER,
+           PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY smoothed_adoption_rate) AS P25,
+           PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY smoothed_adoption_rate) AS P50,
+           PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY smoothed_adoption_rate) AS P75,
+           COUNT(DISTINCT PMC_NAME) AS PMC_COUNT
+         FROM monthly_nar_smoothed
+         WHERE month_number BETWEEN 1 AND 36
+         GROUP BY month_number
+         ORDER BY month_number`;
+}
+
 export function resolvePropertyPeerNar(
   state: string, units: number, avgRent: number, monthsLive: number,
   excludePmcNames: string[], pool: NetworkPoolProperty[],

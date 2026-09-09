@@ -37,7 +37,10 @@ import {
   resolvePropertyPeerNar,
   resolvePropertyPeerEngagement,
   largestPmcsPeerTier,
+  rollingPeerMedianSql,
+  stageBenchmarkSql,
 } from "./peer-matching.js";
+import { peerCriteriaLabel } from "./platinum.js";
 
 const SNOWFLAKE_SSO = "d38ee94a-4e93-46f5-ab44-c65a99b3aea5";
 
@@ -4068,6 +4071,13 @@ export default api({
     // real ladder tier-for-tier, in the same order, with the same thresholds.
     let lockedPeers: string[] = [];
     let lockedPeersCriteria = "comparable PMCs";
+    // Platinum deck's peer pool (Flask opt_in_only, 22d7052): the ladder below still locks the
+    // cohort on whole portfolios, but the rolling / tenure-cohort rate queries restrict to the
+    // peers' IS_MARKETING_OPT_IN = TRUE properties, the criteria label is prefixed
+    // "platinum peers · ", and the network-wide fallback is skipped (spec self-gate: no pool
+    // rather than a network-wide rate). Data-layer seam only for now - Task 5b's
+    // deck_mode "platinum" flips this; false keeps every existing deck byte-identical.
+    const peerOptInOnly = false as boolean;
     // Peer-candidate profile for GEO-TIER matching - query fired at the very top of this
     // function (right after cutoffStr), not here, so it overlaps with the rows query and the
     // two query batches in between instead of adding its own sequential stage. See that
@@ -4246,6 +4256,9 @@ export default api({
         }
       }
     }
+    // "platinum peers · <criteria>" once the cohort is locked (Flask prefixes locked_criteria /
+    // every tier label the same way); no cohort -> nothing to label.
+    if (lockedPeers.length > 0) lockedPeersCriteria = peerCriteriaLabel(lockedPeersCriteria, peerOptInOnly);
 
     // P25/P75 added alongside the existing SMOOTHED_NAR (Kevin's catch: an established
     // (>=36mo) PMC's Peer Benchmarks slide could show a P50 from this rolling tier while
@@ -4421,41 +4434,12 @@ export default api({
       ).catch((err) => { console.error("[PERC QUERY FAILED]", String(err)); return [] as z.infer<typeof SegmentPercentilesSchema>[]; })
       : Promise.resolve([] as z.infer<typeof SegmentPercentilesSchema>[]);
 
+    // SQL text lives in peer-matching.ts (rollingPeerMedianSql) - extracted verbatim so the
+    // Platinum deck's optInOnly variant and this default share one builder; default output is
+    // byte-identical to the previously inlined string.
     const rollingPromise = (lockedPeers.length >= 3)
       ? ctx.integrations.snowflake_sso.query(
-        `WITH peer_monthly AS (
-            SELECT
-              BP_MONTH,
-              PMC_NAME,
-              SUM(CHARGED_USERS_COUNT) / NULLIF(SUM(PROPERTY_UNIT_COUNT)::FLOAT, 0) AS nar
-            FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS
-            WHERE PMC_NAME IN (${lockedPeers.map(() => "?").join(", ")})
-              AND IS_INTEGRATED_TOTAL = TRUE
-              -- cutoffStr is an EXCLUSIVE upper bound (1st of the next allowed month) —
-              -- BETWEEN is inclusive on both ends, which let this match Snowflake's pre-created
-              -- stub row for that month (zeroed billing columns), injecting a bogus NAR=0 point.
-              AND BP_MONTH >= DATEADD('month', -${lookback_months + 3}, ?::DATE)
-              AND BP_MONTH < ?
-            GROUP BY BP_MONTH, PMC_NAME
-         ),
-         smoothed AS (
-            SELECT
-              BP_MONTH, PMC_NAME,
-              AVG(nar) OVER (PARTITION BY PMC_NAME ORDER BY BP_MONTH ROWS BETWEEN 2 PRECEDING AND CURRENT ROW) AS smoothed_nar
-            FROM peer_monthly
-         )
-         SELECT
-           TO_VARCHAR(BP_MONTH, 'YYYY-MM-DD') AS BP_MONTH,
-           PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY smoothed_nar) AS SMOOTHED_NAR,
-           PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY smoothed_nar) AS P25,
-           PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY smoothed_nar) AS P75
-         FROM smoothed
-         WHERE BP_MONTH >= DATEADD('month', -?, ?::DATE)
-           AND BP_MONTH < ?
-           AND smoothed_nar IS NOT NULL
-         GROUP BY BP_MONTH
-         HAVING COUNT(*) >= 3
-         ORDER BY BP_MONTH`,
+        rollingPeerMedianSql(lockedPeers, lookback_months, { optInOnly: peerOptInOnly }),
         RollingPeerSchema,
         [...lockedPeers, cutoffStr, cutoffStr, lookback_months, cutoffStr, cutoffStr],
         { label: "Rolling peer median NAR (per-month P25/P50/P75 from locked peers)" }
@@ -4479,49 +4463,10 @@ export default api({
     // peer's OWN adoption rate at their OWN months-since-launch, smoothed over their trailing 3
     // months of tenure before aggregating cross-sectionally, adoption_rate > 0 filter included
     // (Flask drops zero/null months from the curve itself, not just from display).
+    // SQL text lives in peer-matching.ts (stageBenchmarkSql) - same extraction as rollingPromise.
     const stageBenchmarkPromise = (lockedPeers.length >= 3)
       ? ctx.integrations.snowflake_sso.query(
-        `WITH pmc_launch AS (
-            SELECT PMC_NAME, MIN(BP_MONTH) AS launch_month
-            FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS
-            WHERE PMC_NAME IN (${lockedPeers.map(() => "?").join(", ")})
-              AND ROLLOUT_MONTH IS NOT NULL
-              AND IS_INTEGRATED_TOTAL = TRUE
-            GROUP BY PMC_NAME
-         ),
-         monthly_nar AS (
-            SELECT
-              s.PMC_NAME,
-              DATEDIFF('month', l.launch_month, s.BP_MONTH) + 1 AS month_number,
-              SUM(s.BILLS_PAID_COUNT) / NULLIF(SUM(s.PROPERTY_UNIT_COUNT)::FLOAT, 0) AS adoption_rate
-            FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS s
-            JOIN pmc_launch l ON s.PMC_NAME = l.PMC_NAME
-            WHERE s.PMC_NAME IN (${lockedPeers.map(() => "?").join(", ")})
-              AND s.BP_MONTH >= l.launch_month
-              AND s.BP_MONTH < ?
-              AND s.IS_INTEGRATED_TOTAL = TRUE
-            GROUP BY s.PMC_NAME, month_number
-            HAVING adoption_rate IS NOT NULL AND adoption_rate > 0
-         ),
-         monthly_nar_smoothed AS (
-            SELECT
-              PMC_NAME, month_number,
-              AVG(adoption_rate) OVER (
-                PARTITION BY PMC_NAME ORDER BY month_number
-                ROWS BETWEEN 2 PRECEDING AND CURRENT ROW
-              ) AS smoothed_adoption_rate
-            FROM monthly_nar
-         )
-         SELECT
-           month_number AS MONTH_NUMBER,
-           PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY smoothed_adoption_rate) AS P25,
-           PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY smoothed_adoption_rate) AS P50,
-           PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY smoothed_adoption_rate) AS P75,
-           COUNT(DISTINCT PMC_NAME) AS PMC_COUNT
-         FROM monthly_nar_smoothed
-         WHERE month_number BETWEEN 1 AND 36
-         GROUP BY month_number
-         ORDER BY month_number`,
+        stageBenchmarkSql(lockedPeers, { optInOnly: peerOptInOnly }),
         StageBenchmarkQuerySchema,
         [...lockedPeers, ...lockedPeers, cutoffStr],
         { label: "Tenure-cohort peer benchmark for Adoption Trend chart (locked peers, months-since-launch)" }
@@ -4772,8 +4717,10 @@ export default api({
     // Fallback: if tiered matching failed to produce per-month data, run a broader
     // network-wide rolling median (all PMCs except subject) to avoid a flat line. This one
     // stays sequential — it's a genuine fallback that only fires when the query above came
-    // back empty, so it can't be fired in parallel with it.
-    if (_msl >= 36 && networkPoolProps.length > 0 && Object.keys(rollingPeerMedianMap).length === 0) {
+    // back empty, so it can't be fired in parallel with it. Not for the Platinum peer pool
+    // (peerOptInOnly): Flask treats "All PMCs on Flex" as no pool there - the largest-PMCs rung
+    // is the last acceptable tier, so the map simply stays empty.
+    if (!peerOptInOnly && _msl >= 36 && networkPoolProps.length > 0 && Object.keys(rollingPeerMedianMap).length === 0) {
       try {
         const networkWideRolling = await ctx.integrations.snowflake_sso.query(
           `WITH peer_monthly AS (

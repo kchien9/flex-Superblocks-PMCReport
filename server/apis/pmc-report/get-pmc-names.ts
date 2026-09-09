@@ -26,6 +26,36 @@ function bpSafeCutoff(): string {
   return `${cutoff.getFullYear()}-${String(cutoff.getMonth() + 1).padStart(2, "0")}-01`;
 }
 
+// Platinum-deck picker (Flask list_silver_pmcs, 22d7052; spec: flex-pmc-reports
+// docs/superpowers/specs/2026-09-09-platinum-deck-design.md): PMCs with >= PLATINUM_MIN_SILVER
+// SILVER properties in-network at the latest completed BP month - silver = HAS_MARKETING_INTEGRATION
+// (automatic with DI) and NOT opted in to marketing; a NULL IS_MARKETING_OPT_IN counts as not
+// opted in (same reading as platinum.ts splitTierRows). Latest completed month = MAX(BP_MONTH)
+// under the same bpSafeCutoff bound the default query uses. Exported for the query-shape test.
+export const PLATINUM_MIN_SILVER = 3;
+export function silverPmcNamesSql(): string {
+  return `SELECT PMC_NAME
+       FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS s
+       WHERE PMC_NAME IS NOT NULL
+         AND BP_MONTH = (SELECT MAX(BP_MONTH) FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS WHERE BP_MONTH < ?)
+         AND IS_IN_NETWORK = TRUE
+         AND HAS_MARKETING_INTEGRATION = TRUE
+         AND COALESCE(IS_MARKETING_OPT_IN, FALSE) = FALSE
+         -- Same Deep SMB exclusion as the default picker below (Kevin's tool-wide rule: every
+         -- account search in this tool). Flask's list_silver_pmcs has no such clause - Clark's
+         -- default list_pmcs mirror already deviates from Flask on exactly this point, so the
+         -- Platinum picker follows Clark's own default rather than re-admitting Deep SMB here.
+         AND NOT EXISTS (
+           SELECT 1 FROM EXTERNAL_DATA.POLYTOMIC.SALESFORCE_ACCOUNT sf
+           WHERE REGEXP_REPLACE(UPPER(sf.NAME), '[^A-Z0-9]', '') = REGEXP_REPLACE(UPPER(s.PMC_NAME), '[^A-Z0-9]', '')
+             AND sf.SALES_SEGMENT__C = 'Deep SMB'
+             AND sf.ISDELETED = FALSE
+         )
+       GROUP BY PMC_NAME
+       HAVING COUNT(DISTINCT PROPERTY_PUBLIC_ID) >= ?
+       ORDER BY PMC_NAME`;
+}
+
 export default api({
   name: "GetPMCNames",
   description: "Fetches distinct PMC names active in the last 12 months.",
@@ -34,7 +64,11 @@ export default api({
     snowflake_sso: snowflake(SNOWFLAKE_SSO),
   },
 
-  input: z.object({}),
+  input: z.object({
+    // "platinum" -> the Platinum deck's silver-only picker (see silverPmcNamesSql). Omitted ->
+    // the default 12-month-active list, unchanged.
+    mode: z.enum(["platinum"]).optional(),
+  }),
 
   output: z.object({
     pmcNames: z.array(z.string()),
@@ -45,8 +79,17 @@ export default api({
     presets: z.array(PmcPresetSchema).optional(),
   }),
 
-  async run(ctx) {
+  async run(ctx, { mode }) {
     const cutoff = bpSafeCutoff();
+    if (mode === "platinum") {
+      const silverRows = await ctx.integrations.snowflake_sso.query(
+        silverPmcNamesSql(),
+        PMCNameRowSchema,
+        [cutoff, PLATINUM_MIN_SILVER],
+        { label: "Fetch PMC names with >= 3 silver properties at the latest completed BP month (Platinum deck picker)" }
+      );
+      return { pmcNames: silverRows.map((r) => r.PMC_NAME), presets: PMC_PRESETS };
+    }
     const rows = await ctx.integrations.snowflake_sso.query(
       `SELECT DISTINCT PMC_NAME
        FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS s
