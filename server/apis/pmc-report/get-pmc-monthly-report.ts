@@ -330,7 +330,7 @@ function renderCover(kpis: { pmcName: string; reportingMonth: string; partnerSin
       <div><div style="font-size:10px;letter-spacing:0.14em;text-transform:uppercase;color:rgba(255,255,255,0.28);margin-bottom:6px;font-family:'ABCDiatype',sans-serif;">Partner Since</div>
            <div style="font-size:16px;font-weight:600;color:rgba(255,255,255,0.85);font-family:'ABCDiatype',sans-serif;">${monthLabel(kpis.partnerSince)}</div></div>
       <div><div style="font-size:10px;letter-spacing:0.14em;text-transform:uppercase;color:rgba(255,255,255,0.28);margin-bottom:6px;font-family:'ABCDiatype',sans-serif;">${propsLabel}</div>
-           <div style="font-size:16px;font-weight:600;color:rgba(255,255,255,0.85);font-family:'ABCDiatype',sans-serif;">${kpis.propertyCount}</div></div>
+           <div style="font-size:16px;font-weight:600;color:rgba(255,255,255,0.85);font-family:'ABCDiatype',sans-serif;">${kpis.propertyCount.toLocaleString("en-US")}</div></div>
       ${periodTileHtml}
     </div>
     <div style="position:absolute;right:100px;top:50%;transform:translateY(-50%);width:380px;height:380px;border-radius:50%;background:radial-gradient(circle,rgba(106,61,184,0.22) 0%,transparent 68%);"></div>
@@ -416,7 +416,7 @@ function renderExecSummary(d: ExecSummaryInput): { html: string; js: string } {
     if (fmt === "pct") txt = `${Math.abs(pct).toFixed(1)}%`;
     else if (fmt === "pp") txt = `${(Math.abs(delta) * 100).toFixed(1)}pp`;
     else if (fmt === "currency") txt = fmtCurrency(Math.abs(delta));
-    else txt = Math.abs(Math.round(delta)).toLocaleString();
+    else txt = Math.abs(Math.round(delta)).toLocaleString("en-US");
     // "No change" handling: if the formatted text would display as 0, show grey "No change" instead
     if (/^0(\.0+)?(pp|%|)$/.test(txt)) {
       const lbl = fmt === "pp" ? "adoption" : fmt === "pct" ? "change" : "";
@@ -544,7 +544,7 @@ function renderExecSummary(d: ExecSummaryInput): { html: string; js: string } {
   // ── New signups QTD sub-label ─────────────────────────────────────────────
   const last3 = d.monthlyTotals.slice(-3);
   const qtdSignups = last3.reduce((s, m) => s + m.newSignups, 0);
-  const signupsSub = qtdSignups > 0 ? `${qtdSignups.toLocaleString()} last 3 months` : "first-time Flex payments this month";
+  const signupsSub = qtdSignups > 0 ? `${qtdSignups.toLocaleString("en-US")} last 3 months` : "first-time Flex payments this month";
 
   // ── SVG icons for tiles ────────────────────────────────────────────────────
   const svgBldg = '<svg width="13" height="13" viewBox="0 0 14 14" fill="none"><rect x="2" y="4" width="7" height="8.5" rx="0.8" stroke="#6A3DB8" stroke-width="1.3"/><path d="M9 7h2.5v5.5H9" stroke="#6A3DB8" stroke-width="1.3" stroke-linejoin="round"/><path d="M4.5 7v0M6.5 7v0M4.5 9.5v0M6.5 9.5v0" stroke="#6A3DB8" stroke-width="1.5" stroke-linecap="round"/></svg>';
@@ -594,12 +594,15 @@ function renderExecSummary(d: ExecSummaryInput): { html: string; js: string } {
   let entitySwitcherHtml = "";
   let entitySwitcherJs = "";
   if (showEntitySwitcher) {
+    // Explicit "en-US" (here and on the tile values below) - a bare toLocaleString() follows the
+    // runtime's default ICU locale, which in a container with no LANG set is the POSIX variant
+    // that prints "2717" with no grouping at all (Kevin: "2,717 instead of 2717").
     const fmtEntity = (residents: number, rent: number, narVal: number, properties: number) => ({
-      residents: residents.toLocaleString(),
+      residents: residents.toLocaleString("en-US"),
       rent: fmtCurrency(rent),
       nar: fmtPct(narVal),
-      properties: properties.toLocaleString(),
-      avg: residents > 0 ? `avg $${Math.round(rent / residents).toLocaleString()}/resident` : "",
+      properties: properties.toLocaleString("en-US"),
+      avg: residents > 0 ? `avg $${Math.round(rent / residents).toLocaleString("en-US")}/resident` : "",
     });
     // Combined entry mirrors exactly what the tile grid already shows (d.currentResidents etc,
     // same numbers the un-switched tiles render below) - not re-derived from entities, so
@@ -685,7 +688,7 @@ function renderExecSummary(d: ExecSummaryInput): { html: string; js: string } {
             <div>
               <div style="font-size:28px;font-weight:700;color:#fff;letter-spacing:-0.02em;"${showEntitySwitcher ? ` id="ev_rent_${slideId}"` : ""}>${fmtCurrency(d.currentRent)}</div>
               ${heroPill}
-              ${avgPayment > 0 ? `<div style="font-size:11px;color:rgba(255,255,255,0.40);margin-top:5px;"${showEntitySwitcher ? ` id="ev_avg_${slideId}"` : ""}>avg $${avgPayment.toLocaleString()}/resident</div>` : ""}
+              ${avgPayment > 0 ? `<div style="font-size:11px;color:rgba(255,255,255,0.40);margin-top:5px;"${showEntitySwitcher ? ` id="ev_avg_${slideId}"` : ""}>avg $${avgPayment.toLocaleString("en-US")}/resident</div>` : ""}
             </div>
             ${moRentSparkSvg ? `<div style="flex-shrink:0;">${moRentSparkSvg}</div>` : ""}
           </div>
@@ -693,9 +696,9 @@ function renderExecSummary(d: ExecSummaryInput): { html: string; js: string } {
       </div>
       <!-- 6 Metric Tiles (3-wide grid, rows auto-size to however many remain after hiding) -->
       <div style="display:grid;grid-template-columns:repeat(${tileCols},1fr);grid-auto-rows:1fr;gap:12px;">
-        ${hiddenTileSet.has("active_properties") ? "" : tile("Active properties", d.propertyCount.toLocaleString(), "", pillProps, "", svgBldg, showEntitySwitcher ? `ev_props_${slideId}` : "")}
-        ${hiddenTileSet.has("residents_paying") ? "" : tile("Residents paying", d.currentResidents.toLocaleString(), "", pillResidents, residentsSparkHtml, svgPerson, showEntitySwitcher ? `ev_res_${slideId}` : "")}
-        ${hiddenTileSet.has("new_residents") ? "" : tile("New residents paying this month", d.currentNewSignups.toLocaleString(), signupsSub, "", signupsSparkHtml, svgNewP)}
+        ${hiddenTileSet.has("active_properties") ? "" : tile("Active properties", d.propertyCount.toLocaleString("en-US"), "", pillProps, "", svgBldg, showEntitySwitcher ? `ev_props_${slideId}` : "")}
+        ${hiddenTileSet.has("residents_paying") ? "" : tile("Residents paying", d.currentResidents.toLocaleString("en-US"), "", pillResidents, residentsSparkHtml, svgPerson, showEntitySwitcher ? `ev_res_${slideId}` : "")}
+        ${hiddenTileSet.has("new_residents") ? "" : tile("New residents paying this month", d.currentNewSignups.toLocaleString("en-US"), signupsSub, "", signupsSparkHtml, svgNewP)}
         ${hiddenTileSet.has("adoption_rate") ? "" : tile("Adoption rate", fmtPct(nar), "", pillNar, narSparkHtml, svgPct, showEntitySwitcher ? `ev_nar_${slideId}` : "")}
         ${hiddenTileSet.has("true_repeat_rate") ? "" : tile("True repeat rate", retentionVal, retentionSub, "", "", svgRepeat)}
         ${hiddenTileSet.has("delinquency_shielded") ? "" : tile("Delinquency shielded", dqVal, dqSub, dqPill, "", svgShield)}
@@ -793,7 +796,7 @@ function renderCohortAnalysis(input: CohortOverviewInput & { slideId: number }):
             ${ageTag}
           </div>
           <div><div style="font-size:9px;text-transform:uppercase;letter-spacing:0.07em;color:#a09cb0;">Active</div>
-               <div style="font-size:17px;font-weight:700;color:#1d1d1d;">${c.propertyCount}</div></div>
+               <div style="font-size:17px;font-weight:700;color:#1d1d1d;">${c.propertyCount.toLocaleString("en-US")}</div></div>
           <div><div style="font-size:9px;text-transform:uppercase;letter-spacing:0.07em;color:#a09cb0;">Total Units</div>
                <div style="font-size:17px;font-weight:700;color:#1d1d1d;">${c.totalUnits.toLocaleString()}</div></div>
           <div><div style="font-size:9px;text-transform:uppercase;letter-spacing:0.07em;color:#a09cb0;">Residents Paying</div>
@@ -1380,13 +1383,13 @@ function renderFullPropertyTable(
     const narColor = row.adoptionRate >= 0.20 ? "#1a9e6a" : row.adoptionRate >= 0.10 ? "#d97706" : "#dc5050";
     const curSig = Math.round(row.newSignups);
     const prevSig = Math.round(row.prevSignups ?? 0);
-    let sigHtml = String(curSig);
+    let sigHtml = curSig.toLocaleString("en-US");
     if (prevSig > 0) {
       const delta = curSig - prevSig;
       const deltaPct = Math.abs(delta / prevSig) * 100;
       const arr = delta >= 0 ? "▲" : "▼";
       const sigColor = delta >= 0 ? "#1a9e6a" : "#dc5050";
-      sigHtml = `${curSig} <span style="font-size:10px;color:${sigColor};white-space:nowrap;">${arr}${deltaPct.toFixed(0)}%</span>`;
+      sigHtml = `${curSig.toLocaleString("en-US")} <span style="font-size:10px;color:${sigColor};white-space:nowrap;">${arr}${deltaPct.toFixed(0)}%</span>`;
     }
     const thisMonthRent = row.rentPaid ?? 0;
     const totalRent = row.cumRent ?? thisMonthRent;
@@ -1398,8 +1401,8 @@ function renderFullPropertyTable(
         <tr>
           <td data-sort="${_e(row.propertyName)}" style="padding:6px 8px;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:160px;">${_e(row.propertyName)}</td>
           <td data-sort="${rmSort}" style="padding:6px 8px;font-size:12px;text-align:right;color:#a09cb0;">${rmDisplay}</td>
-          <td data-sort="${row.units}" style="padding:6px 8px;font-size:12px;text-align:right;">${row.units.toLocaleString()}</td>
-          <td data-sort="${row.billsPaid}" style="padding:6px 8px;font-size:12px;text-align:right;">${Math.round(row.billsPaid)}</td>
+          <td data-sort="${row.units}" style="padding:6px 8px;font-size:12px;text-align:right;">${row.units.toLocaleString("en-US")}</td>
+          <td data-sort="${row.billsPaid}" style="padding:6px 8px;font-size:12px;text-align:right;">${Math.round(row.billsPaid).toLocaleString("en-US")}</td>
           <td data-sort="${curSig}" style="padding:6px 8px;font-size:12px;text-align:right;">${sigHtml}</td>
           <td data-sort="${row.adoptionRate}" style="padding:6px 8px;font-size:12px;text-align:right;font-weight:700;color:${narColor};">${fmtPct(row.adoptionRate)}</td>
           <td data-sort="${thisMonthRent}" style="padding:6px 8px;font-size:12px;text-align:right;">${fmtCurrency(thisMonthRent)}</td>

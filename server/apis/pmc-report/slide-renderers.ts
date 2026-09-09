@@ -3239,7 +3239,7 @@ export function renderSinceInception(input: SinceInceptionInput): SlideResult {
   const totalBillsAll = billsPaid.reduce((s, v) => s + v, 0);
   const currentYear = parseInt(reportingMonth.slice(0, 4), 10);
 
-  const subtitle = `<strong>${fmtCurrency(totalRentAll)} guaranteed</strong> and <strong>${totalBillsAll.toLocaleString()} bills paid</strong> since ${_e(pmcName)} joined Flex in ${firstYear}.`;
+  const subtitle = `<strong>${fmtCurrency(totalRentAll)} guaranteed</strong> and <strong>${totalBillsAll.toLocaleString("en-US")} bills paid</strong> since ${_e(pmcName)} joined Flex in ${firstYear}.`;
 
   // Projection for incomplete current year
   const lastMonthsActive = monthsActive[monthsActive.length - 1];
@@ -3743,8 +3743,8 @@ export function renderPortfolioComparison(input: PortfolioComparisonInput): Slid
       return `
         <tr>
           <td data-sort="${_e(e.pmcName)}" style="padding:8px 10px;font-size:12px;font-weight:600;color:${NAVY};white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:180px;">${_e(e.pmcName)}</td>
-          <td data-sort="${e.unitsOnFlex}" style="padding:8px 10px;font-size:12px;text-align:right;">${e.unitsOnFlex.toLocaleString()}</td>
-          <td data-sort="${e.payingResidents}" style="padding:8px 10px;font-size:12px;text-align:right;">${e.payingResidents.toLocaleString()}</td>
+          <td data-sort="${e.unitsOnFlex}" style="padding:8px 10px;font-size:12px;text-align:right;">${e.unitsOnFlex.toLocaleString("en-US")}</td>
+          <td data-sort="${e.payingResidents}" style="padding:8px 10px;font-size:12px;text-align:right;">${e.payingResidents.toLocaleString("en-US")}</td>
           <td data-sort="${e.adoptionRate}" style="padding:8px 10px;font-size:12px;text-align:right;font-weight:700;color:${narColor(e.adoptionRate)};">${fmtPct(e.adoptionRate)}</td>
           <td data-sort="${e.rentPaid}" style="padding:8px 10px;font-size:12px;text-align:right;color:${PURPLE};">${fmtCurrency(e.rentPaid)}</td>
           <td style="padding:6px 10px;text-align:center;">${sparkHtml}</td>
@@ -3761,8 +3761,8 @@ export function renderPortfolioComparison(input: PortfolioComparisonInput): Slid
   const combinedRow = `
         <tr>
           <td style="padding:9px 10px;font-size:12px;font-weight:800;color:#fff;">Combined</td>
-          <td style="padding:9px 10px;font-size:12px;text-align:right;font-weight:800;color:#fff;">${combinedUnits.toLocaleString()}</td>
-          <td style="padding:9px 10px;font-size:12px;text-align:right;font-weight:800;color:#fff;">${combinedResidents.toLocaleString()}</td>
+          <td style="padding:9px 10px;font-size:12px;text-align:right;font-weight:800;color:#fff;">${combinedUnits.toLocaleString("en-US")}</td>
+          <td style="padding:9px 10px;font-size:12px;text-align:right;font-weight:800;color:#fff;">${combinedResidents.toLocaleString("en-US")}</td>
           <td style="padding:9px 10px;font-size:12px;text-align:right;font-weight:800;color:#fff;">${fmtPct(combinedAdoptionRate)}</td>
           <td style="padding:9px 10px;font-size:12px;text-align:right;font-weight:800;color:#fff;">${fmtCurrency(combinedRent)}</td>
           <td style="padding:6px 10px;text-align:center;">${combinedSparkHtml}</td>
