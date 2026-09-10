@@ -48,8 +48,8 @@ import {
 import { peerCriteriaLabel, splitTierRows, platinumCounterfactual, PLATINUM_MIN_PROPERTIES } from "./platinum.js";
 import type { PeerRateByMonth } from "./platinum.js";
 import { parseCheckinMonth, checkinLookback, checkinProjectionEnd, checkinSummary, renderCheckinCover, renderAdoptionCheckin } from "./checkin.js";
-import { demoteCrossStateRegions, UNKNOWN_REGION } from "./geo-regions.js";
-import type { RegionDetailRow } from "./geo-regions.js";
+import { applyGeoRules, buildGeoLookups, cachedNetworkZipGeo, UNKNOWN_REGION } from "./geo-regions.js";
+import type { NetworkZipGeoRow, RegionDetailRow } from "./geo-regions.js";
 
 const SNOWFLAKE_SSO = "d38ee94a-4e93-46f5-ab44-c65a99b3aea5";
 
@@ -1402,10 +1402,12 @@ function renderStateBreakdown(input: StateBreakdownInput): { html: string; js: s
 
   // --- Build region map by state ---
   const regionsByState = new Map<string, { region: string; properties: number; totalUnits: number; billsPaid: number; adoptionRate: number }[]>();
-  // state -> (properties, units) for rows the query bucketed as 'Unknown' (ZIP had no DMA, or
-  // its prefix pins it to a different state than PROPERTY_STATE - see geo-regions.ts). Those
-  // never render as a bar labelled "Unknown"; they become one grey footnote line under that
-  // state's regions. The state totals above still count them. Mirrors Flask f7d95a6.
+  // state -> (properties, units) for rows bucketed as 'Unknown' (ZIP had no DMA and no usable
+  // neighbours, or the network puts its ZIP in a different state than PROPERTY_STATE - see
+  // geo-regions.ts). Those never render as a bar labelled "Unknown"; they become one grey
+  // footnote line under that state's regions. The state totals above still count them. Mirrors
+  // Flask f7d95a6 / 61facd0. DISPLAY_REGION (rule C) is the label to print - "PITTSBURGH (WV
+  // side)" for a WV property in a PA-home DMA - while PROPERTY_REGION stays the grouping key.
   const unmappedByState = new Map<string, { properties: number; units: number }>();
   for (const r of regionDetail) {
     if (!r.PROPERTY_STATE) continue;
@@ -1418,7 +1420,7 @@ function renderStateBreakdown(input: StateBreakdownInput): { html: string; js: s
     }
     const arr = regionsByState.get(r.PROPERTY_STATE) || [];
     const rate = r.TOTAL_UNITS > 0 ? r.BILLS_PAID / r.TOTAL_UNITS : 0;
-    arr.push({ region: r.PROPERTY_REGION, properties: r.PROPERTIES, totalUnits: r.TOTAL_UNITS, billsPaid: r.BILLS_PAID, adoptionRate: rate });
+    arr.push({ region: r.DISPLAY_REGION || r.PROPERTY_REGION, properties: r.PROPERTIES, totalUnits: r.TOTAL_UNITS, billsPaid: r.BILLS_PAID, adoptionRate: rate });
     regionsByState.set(r.PROPERTY_STATE, arr);
   }
   // Sort regions within each state by adoption rate desc
@@ -2619,12 +2621,20 @@ export default api({
     const RegionDetailSchema = z.object({
       PROPERTY_STATE: z.string(),
       PROPERTY_REGION: z.string(),
-      // First 3 digits of the property's ZIP - consumed (and dropped) by demoteCrossStateRegions,
-      // see geo-regions.ts. NULL when the property has no ZIP on file.
-      ZIP_PREFIX: z.string().nullable(),
+      // The property's 5-digit ZIP - consumed (and dropped) by applyGeoRules, which looks it up
+      // in the network-wide reference below; see geo-regions.ts. NULL when no ZIP is on file.
+      ZIP5: z.string().nullable(),
       PROPERTIES: z.number(),
       TOTAL_UNITS: z.number(),
       BILLS_PAID: z.number(),
+    });
+    // Network-wide ZIP reference (Flask pull_network_zip_geo): every in-network property at the
+    // month, ALL PMCs, by (ZIP5, state, DMA-or-NULL). DMA_NAME is NULL when the seed lacks the ZIP.
+    const NetworkZipGeoSchema = z.object({
+      ZIP5: z.string().nullable(),
+      PROPERTY_STATE: z.string().nullable(),
+      DMA_NAME: z.string().nullable(),
+      PROPERTIES: z.number(),
     });
 
     // Compute cutoff month number for YTD calculation
@@ -2694,43 +2704,78 @@ export default api({
     // on purpose (that's real, deliberately-tuned query cost this session already fought to keep
     // under control; Kevin didn't ask for those in Expansion, so they're untouched).
     const needsRegionDetail = needsQBRQueries || deck_mode === "expansion";
-    // The DMA is trusted only when the ZIP's 3-digit prefix agrees with t.PROPERTY_STATE: the
-    // SQL additionally groups by LEFT(PROPERTY_ZIP, 3) as ZIP_PREFIX and demoteCrossStateRegions
-    // (geo-regions.ts) folds any disagreeing rows into 'Unknown' and re-aggregates back to
-    // (state, region) before anything downstream sees the rows - so both await sites (QBR batch
-    // + Expansion) get the fixed frame. Mirrors Flask f7d95a6 (SEATTLE - TACOMA / DENVER were
-    // listed under CA on Kevin's Allied combined deck because the CA properties carried WA/CO
-    // ZIPs). State totals elsewhere are untouched; only the region bucket moves.
+    // The SQL additionally groups by LEFT(PROPERTY_ZIP, 5) as ZIP5 so applyGeoRules (geo-regions.ts)
+    // can (A) demote a DMA whose ZIP the rest of the network puts in another state, (B) recover a
+    // ZIP the DMA seed lacks from its (state, prefix) neighbours and (C) label legit cross-state
+    // DMAs "(XX side)" - all against the network-wide reference query below for the same month,
+    // then re-aggregate to (state, region) before anything downstream sees the rows - so both
+    // await sites (QBR batch + Expansion) get the fixed frame. Mirrors Flask 61facd0 (superseding
+    // the prefix-only f7d95a6 rule: SEATTLE - TACOMA / DENVER under CA on Kevin's Allied combined
+    // deck, then CA/AK/AR "Unknown" seed gaps and PITTSBURGH-under-WV reading as wrong-state bugs).
+    // State totals elsewhere are untouched; only the region bucket / label moves. The reference is
+    // best-effort: on failure the rows are served with the prefix-table tiebreaker only, never dropped.
     const regionDetailPromise: Promise<RegionDetailRow[]> = !needsRegionDetail
       ? Promise.resolve([] as RegionDetailRow[])
-      : ctx.integrations.snowflake_sso.query(
-          `WITH prop_zip AS (
-              SELECT PROPERTY_PUBLIC_ID, PROPERTY_ZIP,
-                     ROW_NUMBER() OVER (PARTITION BY PROPERTY_PUBLIC_ID ORDER BY CREATED_AT_UTC DESC) AS rn
-              FROM PRODUCTION.ANALYTICS.DIM_PROPERTIES_PMCS
-           )
-           SELECT
-              t.PROPERTY_STATE                            AS PROPERTY_STATE,
-              COALESCE(dma.DMA_NAME, 'Unknown')           AS PROPERTY_REGION,
-              LEFT(p.PROPERTY_ZIP, 3)                     AS ZIP_PREFIX,
-              COUNT(DISTINCT t.PROPERTY_NAME)             AS PROPERTIES,
-              SUM(t.PROPERTY_UNIT_COUNT)                  AS TOTAL_UNITS,
-              SUM(t.BILLS_PAID_COUNT)                     AS BILLS_PAID
-           FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS t
-           LEFT JOIN prop_zip p
-             ON p.PROPERTY_PUBLIC_ID = t.PROPERTY_PUBLIC_ID AND p.rn = 1
-           LEFT JOIN PRODUCTION.SEEDS.SEED_ZIP_CODE_TO_DMA_MAPPING dma
-             ON dma.ZIP_CODE = LEFT(p.PROPERTY_ZIP, 5)
-           WHERE t.PMC_NAME = ?
-             AND t.BP_MONTH = ?
-             AND t.IS_IN_NETWORK = TRUE
-             AND t.PROPERTY_STATE IS NOT NULL AND t.PROPERTY_STATE != ''
-           GROUP BY t.PROPERTY_STATE, COALESCE(dma.DMA_NAME, 'Unknown'), LEFT(p.PROPERTY_ZIP, 3)
-           ORDER BY t.PROPERTY_STATE, BILLS_PAID DESC`,
-          RegionDetailSchema,
-          [pmc_name, reportingMonthStr],
-          { label: "Pull DMA region detail for geo slide dropdowns" }
-        ).then(demoteCrossStateRegions).catch(() => [] as RegionDetailRow[]);
+      : Promise.all([
+          ctx.integrations.snowflake_sso.query(
+            `WITH prop_zip AS (
+                SELECT PROPERTY_PUBLIC_ID, PROPERTY_ZIP,
+                       ROW_NUMBER() OVER (PARTITION BY PROPERTY_PUBLIC_ID ORDER BY CREATED_AT_UTC DESC) AS rn
+                FROM PRODUCTION.ANALYTICS.DIM_PROPERTIES_PMCS
+             )
+             SELECT
+                t.PROPERTY_STATE                            AS PROPERTY_STATE,
+                COALESCE(dma.DMA_NAME, 'Unknown')           AS PROPERTY_REGION,
+                LEFT(p.PROPERTY_ZIP, 5)                     AS ZIP5,
+                COUNT(DISTINCT t.PROPERTY_NAME)             AS PROPERTIES,
+                SUM(t.PROPERTY_UNIT_COUNT)                  AS TOTAL_UNITS,
+                SUM(t.BILLS_PAID_COUNT)                     AS BILLS_PAID
+             FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS t
+             LEFT JOIN prop_zip p
+               ON p.PROPERTY_PUBLIC_ID = t.PROPERTY_PUBLIC_ID AND p.rn = 1
+             LEFT JOIN PRODUCTION.SEEDS.SEED_ZIP_CODE_TO_DMA_MAPPING dma
+               ON dma.ZIP_CODE = LEFT(p.PROPERTY_ZIP, 5)
+             WHERE t.PMC_NAME = ?
+               AND t.BP_MONTH = ?
+               AND t.IS_IN_NETWORK = TRUE
+               AND t.PROPERTY_STATE IS NOT NULL AND t.PROPERTY_STATE != ''
+             GROUP BY t.PROPERTY_STATE, COALESCE(dma.DMA_NAME, 'Unknown'), LEFT(p.PROPERTY_ZIP, 5)
+             ORDER BY t.PROPERTY_STATE, BILLS_PAID DESC`,
+            RegionDetailSchema,
+            [pmc_name, reportingMonthStr],
+            { label: "Pull DMA region detail for geo slide dropdowns" }
+          ),
+          // Same ZIP source/dedup as the detail query so the two agree ZIP for ZIP; no PMC scope
+          // (all PMCs). Cached per month (geo-regions.ts) - it's one network-wide aggregate.
+          cachedNetworkZipGeo(reportingMonthStr, () => ctx.integrations.snowflake_sso.query(
+            `WITH prop_zip AS (
+                SELECT PROPERTY_PUBLIC_ID, PROPERTY_ZIP,
+                       ROW_NUMBER() OVER (PARTITION BY PROPERTY_PUBLIC_ID ORDER BY CREATED_AT_UTC DESC) AS rn
+                FROM PRODUCTION.ANALYTICS.DIM_PROPERTIES_PMCS
+             )
+             SELECT
+                LEFT(p.PROPERTY_ZIP, 5)                     AS ZIP5,
+                t.PROPERTY_STATE                            AS PROPERTY_STATE,
+                dma.DMA_NAME                                AS DMA_NAME,
+                COUNT(DISTINCT t.PROPERTY_PUBLIC_ID)        AS PROPERTIES
+             FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS t
+             JOIN prop_zip p
+               ON p.PROPERTY_PUBLIC_ID = t.PROPERTY_PUBLIC_ID AND p.rn = 1
+             LEFT JOIN PRODUCTION.SEEDS.SEED_ZIP_CODE_TO_DMA_MAPPING dma
+               ON dma.ZIP_CODE = LEFT(p.PROPERTY_ZIP, 5)
+             WHERE t.BP_MONTH = ?
+               AND t.IS_IN_NETWORK = TRUE
+               AND t.PROPERTY_STATE IS NOT NULL AND t.PROPERTY_STATE != ''
+               AND p.PROPERTY_ZIP IS NOT NULL
+             GROUP BY LEFT(p.PROPERTY_ZIP, 5), t.PROPERTY_STATE, dma.DMA_NAME`,
+            NetworkZipGeoSchema,
+            [reportingMonthStr],
+            { label: "Pull network-wide ZIP -> state/DMA reference for geo region rules" }
+          )).catch((err) => {
+            console.warn(`[PMC Report] network ZIP geo reference failed for ${reportingMonthStr} (region rules degrade to prefix table): ${err instanceof Error ? err.message : String(err)}`);
+            return [] as NetworkZipGeoRow[];
+          }),
+        ]).then(([detail, ref]) => applyGeoRules(detail, buildGeoLookups(ref))).catch(() => [] as RegionDetailRow[]);
 
     // Dedicated property-level peer pool — Flask's real pull_network_property_pool
     // (generator/data.py:4900-5066), NOT a reuse of networkPool above. networkPool is
