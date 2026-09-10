@@ -251,6 +251,21 @@ function monthOnly(dateStr: string): string {
 // bill-pay (BP) months..." definition - that sentence survives only in the Adoption Check-in
 // footnote (checkin.ts bpMonthExplainer).
 
+// A closed-won opp this many months (or more) before the PMC's first BP row is a deal that never
+// launched (or churned and re-signed), not the start of the partnership. Shared by the
+// partner-since combine (rolloutDatePromise / partnerSince) and the tenure-percentile population
+// CTE so the subject and its ranking peers are dated by the same rule. Flask c2e2057
+// (_STALE_OPP_GAP_MONTHS).
+const STALE_OPP_GAP_MONTHS = 12;
+
+/** Whole calendar months from `earlier` to `later` (YYYY-MM-DD strings), like Snowflake's
+ * DATEDIFF('month'). Flask _months_after. */
+function monthsAfter(earlier: string, later: string): number {
+  const [ay, am] = earlier.slice(0, 7).split("-").map(Number);
+  const [by, bm] = later.slice(0, 7).split("-").map(Number);
+  return (by - ay) * 12 + (bm - am);
+}
+
 // Snowflake's PMC_NAME sometimes carries a "(FKA <old name>)" suffix for continuity after a
 // rename/acquisition (e.g. "AG Living (FKA Ashland Greene Capital Partners)"). Useful in a
 // system-of-record, but reads as clutter on every slide title across QBR/Expansion/New Logo —
@@ -3356,8 +3371,21 @@ export default api({
     // reverted. With the guard, they're not: verified directly against Bridge PM's own data -
     // "Allure" (rollout 2019-10-01) has 1,505 bills paid continuously from Oct 2019 through
     // today, not a gapped transfer artifact.
+    // FIRST_BP / FLOOR_BP ride along on the same scan for the stale-opp guard at the combine
+    // below (Flask c2e2057): the scope's earliest BP row of any kind, and the whole table's
+    // earliest BP month (its data floor). The scope predicate is bound TWICE (first_bp subquery
+    // + main filter).
+    const RolloutLaunchSchema = z.object({
+      LAUNCH_MONTH: z.string().nullable(),
+      FIRST_BP: z.string().nullable(),
+      FLOOR_BP: z.string().nullable(),
+    });
+    type RolloutLaunchRow = z.infer<typeof RolloutLaunchSchema>;
     const rolloutDatePromise = ctx.integrations.snowflake_sso.query(
-      `SELECT TO_VARCHAR(MIN(ROLLOUT_MONTH), 'YYYY-MM-DD') AS LAUNCH_MONTH
+      `SELECT TO_VARCHAR(MIN(ROLLOUT_MONTH), 'YYYY-MM-DD') AS LAUNCH_MONTH,
+              TO_VARCHAR((SELECT MIN(BP_MONTH) FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS
+                          WHERE PMC_NAME IN (${allPmcNames.map(() => "?").join(", ")})), 'YYYY-MM-DD') AS FIRST_BP,
+              TO_VARCHAR((SELECT MIN(BP_MONTH) FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS), 'YYYY-MM-DD') AS FLOOR_BP
        FROM (
            SELECT PROPERTY_PUBLIC_ID, ROLLOUT_MONTH, MIN(BP_MONTH) AS first_billed_month
            FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS
@@ -3365,10 +3393,10 @@ export default api({
            GROUP BY PROPERTY_PUBLIC_ID, ROLLOUT_MONTH
        ) t
        WHERE DATEDIFF('month', ROLLOUT_MONTH, first_billed_month) <= 3`,
-      LaunchSchema,
-      [...allPmcNames],
-      { label: "Pull guarded earliest rollout month for partner-since comparison" }
-    ).catch(() => [{ LAUNCH_MONTH: null }] as { LAUNCH_MONTH: string | null }[]);
+      RolloutLaunchSchema,
+      [...allPmcNames, ...allPmcNames],
+      { label: "Pull guarded earliest rollout month (+ first/floor BP month) for partner-since comparison" }
+    ).catch(() => [{ LAUNCH_MONTH: null, FIRST_BP: null, FLOOR_BP: null }] as RolloutLaunchRow[]);
 
     // Flask (generator/data.py:2367-2413, compute_benchmark): Portfolio Penetration's
     // denominator is deliberately NOT HUBSPOT_DEAL_TOTAL_COMPANY_UNITS for the SUBJECT PMC -
@@ -3477,9 +3505,13 @@ export default api({
               -- Same guard as rolloutDatePromise above: only trust a property's ROLLOUT_MONTH
               -- when its own earliest bp_month row starts close to it (<=3 months), so a
               -- transferred-in property's inherited old rollout_month doesn't win here either.
-              SELECT PMC_NAME, MIN(ROLLOUT_MONTH) AS rollout_launch
+              -- first_bp = the PMC's earliest BP row over ALL its rollout rows (Flask's
+              -- MIN(BP_MONTH) in pmc_rollout), not just the <=3-month-guarded properties - the
+              -- window over the aggregate carries it past the guard filter below.
+              SELECT PMC_NAME, MIN(ROLLOUT_MONTH) AS rollout_launch, MIN(pmc_first_bp) AS first_bp
               FROM (
-                  SELECT PMC_NAME, PROPERTY_PUBLIC_ID, ROLLOUT_MONTH, MIN(BP_MONTH) AS first_billed_month
+                  SELECT PMC_NAME, PROPERTY_PUBLIC_ID, ROLLOUT_MONTH, MIN(BP_MONTH) AS first_billed_month,
+                         MIN(MIN(BP_MONTH)) OVER (PARTITION BY PMC_NAME) AS pmc_first_bp
                   FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS
                   WHERE ROLLOUT_MONTH IS NOT NULL
                   GROUP BY PMC_NAME, PROPERTY_PUBLIC_ID, ROLLOUT_MONTH
@@ -3497,20 +3529,33 @@ export default api({
               WHERE o.IS_CLOSED_WON = TRUE
               GROUP BY pi.PMC_NAME
            ),
+           pmc_guarded_opps AS (
+              -- Same stale-opp guard as the partnerSince combine (STALE_OPP_GAP_MONTHS, Flask
+              -- c2e2057): an opp closed more than that many months before the PMC's first BP
+              -- row never launched, so the population falls back to rollout for it - unless its
+              -- first BP row is the table's own floor (history predates the data).
+              SELECT o.PMC_NAME,
+                     CASE WHEN DATEDIFF('month', o.opp_launch, r.first_bp) > ${STALE_OPP_GAP_MONTHS}
+                               AND r.first_bp > (SELECT MIN(BP_MONTH) FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS)
+                          THEN NULL ELSE o.opp_launch::DATE END AS opp_launch
+              FROM pmc_opps o
+              LEFT JOIN pmc_rollout r ON r.PMC_NAME = o.PMC_NAME
+           ),
            pmc_tenures AS (
               -- Earlier of the two (guarded rollout vs opp date), same reasoning as
               -- partnerSincePromise above, not "opp wins whenever it exists" - and driven off
               -- every known PMC_NAME (not just those with a qualifying rollout property), so a
               -- PMC with only an opp date isn't dropped from the ranking entirely.
+              -- Opp side goes through pmc_guarded_opps (the stale-opp guard).
               SELECT pi.PMC_NAME,
                      CASE
-                       WHEN o.opp_launch IS NOT NULL AND r.rollout_launch IS NOT NULL
-                         THEN LEAST(o.opp_launch::DATE, r.rollout_launch)
-                       ELSE COALESCE(o.opp_launch::DATE, r.rollout_launch)
+                       WHEN g.opp_launch IS NOT NULL AND r.rollout_launch IS NOT NULL
+                         THEN LEAST(g.opp_launch, r.rollout_launch)
+                       ELSE COALESCE(g.opp_launch, r.rollout_launch)
                      END AS launch_month
               FROM (SELECT DISTINCT PMC_NAME FROM pmc_ids) pi
               LEFT JOIN pmc_rollout r ON r.PMC_NAME = pi.PMC_NAME
-              LEFT JOIN pmc_opps o ON o.PMC_NAME = pi.PMC_NAME
+              LEFT JOIN pmc_guarded_opps g ON g.PMC_NAME = pi.PMC_NAME
            ),
            subject AS (
               SELECT MIN(launch_month) AS launch_month
@@ -4058,8 +4103,24 @@ export default api({
     try {
       const [launchRow] = await partnerSincePromise;
       const [rolloutRow] = await rolloutDatePromise;
-      const oppDate = launchRow?.LAUNCH_MONTH ?? null;
+      let oppDate = launchRow?.LAUNCH_MONTH ?? null;
       const guardedRollout = rolloutRow?.LAUNCH_MONTH ?? null;
+      const firstBp = rolloutRow?.FIRST_BP ?? null;
+      const floorBp = rolloutRow?.FLOOR_BP ?? null;
+      // Stale-opp guard (Kevin's catch on Coast Property Management, 2026-09-10; Flask c2e2057):
+      // the account had two "New Logo" opps closed-won Feb 2021 that never rolled out - zero BP
+      // rows anywhere until a fresh New Logo in May 2026 and a Jun 2026 rollout - so
+      // MIN(closed-won) printed "Partner since Feb 2021" on a partner five years younger than
+      // that. Live count: 41 PMCs network-wide have their earliest closed-won opp > 12 months
+      // before their first BP row (Doors, United Apartment Group, Skyline, Pratum, AD-West, 29th
+      // Street ...) - a signed-but-never-launched or churned-and-re-signed deal in every case,
+      // not a partnership. Rule: an opp date only counts when this scope's first BP row lands
+      // within STALE_OPP_GAP_MONTHS after it. The floor check keeps the rule from firing on
+      // genuinely old partners whose first BP row IS the table's own data floor (their history
+      // predates the table, so the gap is the table's, not theirs).
+      if (oppDate && firstBp && monthsAfter(oppDate, firstBp) > STALE_OPP_GAP_MONTHS && (!floorBp || firstBp > floorBp)) {
+        oppDate = null;
+      }
       if (oppDate && guardedRollout) {
         partnerSince = oppDate < guardedRollout ? oppDate : guardedRollout;
       } else {
