@@ -233,6 +233,27 @@ export function previousCalendarQuarter(latestMonth: string): CalendarQuarter {
   };
 }
 
+/** The last `n` completed calendar quarters, MOST RECENT FIRST, each in previousCalendarQuarter's
+ * exact shape. Element 0 is previousCalendarQuarter(latestMonth); each next element is the quarter
+ * before it (previousCalendarQuarter of the month before the prior quarter's `start`). Sep 2026 ->
+ * [Q3 2026, Q2 2026, Q1 2026]; Jan 2026 -> [Q4 2025, Q3 2025, Q2 2025]. Feeds the multi-quarter
+ * "Q<N> <YYYY> adds" buttons (Kevin, 2026-09-10: "instead of just showing q3 26 adds ... can we
+ * show like q2 as well? even q1? that way we can see how everything is ramping"). Flask
+ * previous_calendar_quarters; previousCalendarQuarter itself is unchanged - checkin.ts depends on it. */
+export function previousCalendarQuarters(latestMonth: string, n = 3): CalendarQuarter[] {
+  const out: CalendarQuarter[] = [];
+  let cur = latestMonth;
+  for (let i = 0; i < Math.max(0, Math.trunc(n)); i++) {
+    const q = previousCalendarQuarter(cur);
+    out.push(q);
+    let y = Number(q.start.slice(0, 4));
+    let m = Number(q.start.slice(5, 7)) - 1; // month before this quarter's start
+    if (m === 0) { y -= 1; m = 12; }
+    cur = `${y}-${String(m).padStart(2, "0")}-01`;
+  }
+  return out;
+}
+
 /** The cohort's own monthly series (same per-month sums the two charts already use:
  * residents = billsPaid, units, rentPaid; adoption = billsPaid/units, recomputed per month). */
 export interface QuarterAddsSeries {
@@ -283,18 +304,42 @@ export function buildQuarterAddsSeries(rows: QuarterAddsRow[], quarter: Calendar
   return { propertyCount: propertyNames.size, unitCount: monthly[monthly.length - 1].units, monthly };
 }
 
-/** Shared optional inputs for both quarter-toggle renderers. quarterCombined null/absent =
- * no cohort = no toggle rendered, output byte-identical to before the toggle existed. */
+/** One "Q<N> <YYYY> adds" button's worth of cohort data (Flask app.py `_quarters` entry):
+ * the quarter, its combined cohort series and the per-entity cohort series (keyed by the
+ * entity's real PMC_NAME; entities with no adds simply absent). */
+export interface QuarterAddsBlock {
+  quarter: CalendarQuarter;
+  combined: QuarterAddsSeries;
+  entities: QuarterAddsEntity[];
+}
+
+/** Shared optional input for both quarter-toggle renderers: the last completed quarters with
+ * adds, MOST RECENT FIRST (see get-pmc-monthly-report.ts). Absent/[] = no buttons rendered,
+ * output byte-identical to before the toggle existed. */
 export interface QuarterAddsInput {
-  quarter?: CalendarQuarter | null;
-  quarterCombined?: QuarterAddsSeries | null;
-  quarterEntities?: QuarterAddsEntity[];
+  quarters?: QuarterAddsBlock[] | null;
+}
+
+/** "159 properties, 27,961 units" - the counts clause shared by the combined and per-entity
+ * quarter headers (Flask `_q_counts`). */
+function quarterAddsCounts(s: QuarterAddsSeries): string {
+  return `${s.propertyCount.toLocaleString()} ${s.propertyCount === 1 ? "property" : "properties"}, ${s.unitCount.toLocaleString()} units`;
 }
 
 function quarterAddsHeader(quarter: CalendarQuarter, s: QuarterAddsSeries): string {
   // No "(BP months Jul–Sep)" clause - dropped in Flask 2785a75 (Kevin, round 5: "too wordy").
-  return `Properties added in ${quarter.label} — ${s.propertyCount.toLocaleString()} ${s.propertyCount === 1 ? "property" : "properties"}, ${s.unitCount.toLocaleString()} units`;
+  return `Properties added in ${quarter.label} — ${quarterAddsCounts(s)}`;
 }
+
+/** Residents/Units & Rent only (single-select switcher): the title while a quarter is on and an
+ * entity is selected - "<short name> · properties added in Q3 2026 — N properties, U units"
+ * (Flask `_q_entity_header`). */
+function quarterAddsEntityHeader(shortName: string, quarter: CalendarQuarter, s: QuarterAddsSeries): string {
+  return `${shortName} · properties added in ${quarter.label} — ${quarterAddsCounts(s)}`;
+}
+
+/** Thin divider between a chart's existing control buttons and the quarter buttons (Flask). */
+const QUARTER_BTN_DIVIDER = `<span style="width:1px;height:16px;background:#e5e7eb;margin:0 4px;"></span>`;
 
 // ─── render_metrosight_evidence (Slide 50 - "Rethinking Rent") ──────────────
 
@@ -2439,19 +2484,24 @@ export function renderAdoptionTrend(input: {
   const yMin = allPts.length > 0 ? Math.max(0, Math.floor(Math.min(...allPts)) - 1) : 0;
   const yMax = allPts.length > 0 ? Math.floor(Math.max(...allPts)) + 2 : 15;
 
-  // ─── "Q<N> <YYYY> adds" toggle (quarter-adds cohort view) ───────────────
-  // One .spark-ctrl-btn (absent when there's no cohort - every string below stays "" and the
-  // output is byte-identical to before this existed). Click = the combined line becomes the
-  // cohort's own adoption series (cohort residents / cohort units per month, recomputed), the
-  // peer median becomes the STAGE ramp (peer p50 at 1, 2, 3... months since the cohort's first
-  // month, from the same stage_benchmarks the full-portfolio line reads - apples-to-apples for a
-  // 3-5-month-old cohort), the established line hides, entity toggles keep working only for
-  // entities with >=1 add in the quarter (others hidden + forced off), header text swaps. Click
-  // again = everything restored from the saved arrays. See spec: docs/superpowers/specs/
-  // 2026-09-09-quarter-adds-toggle-design.md.
-  const quarter = input.quarter ?? null;
-  const quarterCombined = input.quarterCombined ?? null;
-  const hasQuarter = !!(quarter && quarterCombined && quarterCombined.monthly.length > 0);
+  // ─── "Q<N> <YYYY> adds" buttons (quarter-adds cohort view) ──────────────
+  // One .spark-ctrl-btn.ctl-btn per completed quarter that has adds, most recent first, MUTUALLY
+  // EXCLUSIVE (absent when there's no cohort - every string below stays "" and the output is
+  // byte-identical to before this existed). Click = the combined line becomes the cohort's own
+  // adoption series (cohort residents / cohort units per month, recomputed), the peer median
+  // becomes the STAGE ramp (peer p50 at 1, 2, 3... months since THAT cohort's first month, from
+  // the same stage_benchmarks the full-portfolio line reads - apples-to-apples for a 3-5-month-old
+  // cohort), the established line hides, entity toggles keep working only for entities with >=1
+  // add in the quarter (others hidden + forced off), header text swaps. Clicking the active
+  // button = everything restored from the saved arrays; clicking another quarter while one is on
+  // restores the full portfolio FIRST and then applies the new quarter, so the saved arrays are
+  // always the full portfolio's, never another quarter's. Title in quarter mode is always the
+  // combined `header`: this chart's entity toggles are MULTI-select (several lines on at once),
+  // so there is no single "selected entity" to title for - unlike Residents/Units & Rent, whose
+  // single-select switcher gets per-entity headers. See spec: docs/superpowers/specs/
+  // 2026-09-09-quarter-adds-toggle-design.md; Flask 333f372.
+  const quarters = (input.quarters ?? []).filter((qb) => qb.combined.monthly.length > 0);
+  const hasQuarter = quarters.length > 0;
   const QTR_PEER_LABEL = "Peer Median · same stage";
   let quarterBtnHtml = "";
   let quarterJs = "";
@@ -2460,7 +2510,7 @@ export function renderAdoptionTrend(input: {
   // and the sync pass must skip it (it has no button to reflect, and must not be turned on).
   const qtrSkip = hasQuarter ? "if(ds[j].atQtrHidden)continue;" : "";
   const qtrNotHidden = hasQuarter ? "&&!ds[j].atQtrHidden" : "";
-  if (hasQuarter && quarter && quarterCombined) {
+  if (hasQuarter) {
     const alignAdoption = (s: QuarterAddsSeries): (number | null)[] => {
       const byMonth = new Map(s.monthly.map((m) => [m.month, m]));
       return monthly.map((r) => {
@@ -2468,38 +2518,48 @@ export function renderAdoptionTrend(input: {
         return m && m.units > 0 ? Math.round((m.billsPaid / m.units) * 1000) / 10 : null;
       });
     };
-    const qCombinedVals = alignAdoption(quarterCombined);
-    // Keyed by the entity's atEntity index (its position in entityMonthlyEntries) so the toggle
-    // JS can match datasets by tag. An entity with no adds in the quarter simply has no key.
-    const qEntityVals: Record<number, (number | null)[]> = {};
-    if (showEntityLines) {
-      const byName = new Map((input.quarterEntities ?? []).map((e) => [e.pmcName, e.series]));
-      entityMonthlyEntries.forEach((e, i) => {
-        const s = byName.get(e.pmcName);
-        if (s && s.monthly.length > 0) qEntityVals[i] = alignAdoption(s);
-      });
-    }
-    // Stage-ramp peer median: bucket n = calendar months since the cohort's first month
-    // (1-based), read off the same stage_benchmarks map; null (a gap, never 0) before the cohort
-    // starts or where a bucket is missing. kpis null (Expansion below peer median) -> all null
-    // -> the peer line hides in quarter mode, same as it's absent in the full view.
-    const cohortFirst = quarterCombined.monthly[0].month;
-    const [cfy, cfm] = cohortFirst.split("-").map(Number);
     const sbmQ = kpis?.stage_benchmarks ?? {};
-    const qPeerVals: (number | null)[] = monthly.map((r) => {
-      const [ry, rm] = r.month.split("-").map(Number);
-      const n = (ry - cfy) * 12 + (rm - cfm) + 1;
-      if (n < 1) return null;
-      const p50 = sbmQ[n]?.p50;
-      return p50 ? Math.round(p50 * 1000) / 10 : null;
+    // One payload entry per quarter, most recent first (same order as the buttons; `qi` indexes it).
+    const qPayloads = quarters.map((qb) => {
+      const qCombinedVals = alignAdoption(qb.combined);
+      // Keyed by the entity's atEntity index (its position in entityMonthlyEntries) so the toggle
+      // JS can match datasets by tag. An entity with no adds in THIS quarter simply has no key.
+      const qEntityVals: Record<number, (number | null)[]> = {};
+      if (showEntityLines) {
+        const byName = new Map(qb.entities.map((e) => [e.pmcName, e.series]));
+        entityMonthlyEntries.forEach((e, i) => {
+          const s = byName.get(e.pmcName);
+          if (s && s.monthly.length > 0) qEntityVals[i] = alignAdoption(s);
+        });
+      }
+      // Stage-ramp peer median: bucket n = calendar months since THAT cohort's first month
+      // (1-based), read off the same stage_benchmarks map; null (a gap, never 0) before the cohort
+      // starts or where a bucket is missing. kpis null (Expansion below peer median) -> all null
+      // -> the peer line hides in quarter mode, same as it's absent in the full view.
+      const cohortFirst = qb.combined.monthly[0].month;
+      const [cfy, cfm] = cohortFirst.split("-").map(Number);
+      const qPeerVals: (number | null)[] = monthly.map((r) => {
+        const [ry, rm] = r.month.split("-").map(Number);
+        const n = (ry - cfy) * 12 + (rm - cfm) + 1;
+        if (n < 1) return null;
+        const p50 = sbmQ[n]?.p50;
+        return p50 ? Math.round(p50 * 1000) / 10 : null;
+      });
+      return {
+        label: qb.quarter.label,
+        header: quarterAddsHeader(qb.quarter, qb.combined),
+        combined: qCombinedVals,
+        entities: qEntityVals,
+        peer: qPeerVals,
+      };
     });
-    quarterBtnHtml = `<button class="spark-ctrl-btn ctl-btn" id="atQtrBtn${slideId}" onclick="flexToggleAdoptionQuarter(${slideId},this)">${_e(quarter.label)} adds</button>`;
+    quarterBtnHtml = qPayloads
+      .map((qp, qi) => `<button class="spark-ctrl-btn ctl-btn" id="adtQBtn${slideId}-${qi}" onclick="flexToggleAdoptionQuarter(${slideId},${qi},this)">${_e(qp.label)} adds</button>`)
+      .join("");
     const payload = {
       on: false,
-      combined: qCombinedVals,
-      entities: qEntityVals,
-      peer: qPeerVals,
-      header: quarterAddsHeader(quarter, quarterCombined),
+      qi: -1,
+      quarters: qPayloads,
       peerLabel: benchmarkLabel,
       peerLabelQ: QTR_PEER_LABEL,
     };
@@ -2509,15 +2569,17 @@ export function renderAdoptionTrend(input: {
     // Rescale: same Flask y-axis formula as render time, over the combined line + whichever of
     // peer/established/entity lines are visible; when the entity machinery exists its basePts
     // is swapped too so later entity toggles rescale against the quarter series, and restored
-    // on exit.
+    // on exit. Step 1 (a quarter is on - this one or another): restore the full portfolio from
+    // the saved arrays. Step 2 (clicked an inactive quarter, or none was on): apply it on top of
+    // the restored full state and save that full state.
     quarterJs = `
 window.atQuarterData=window.atQuarterData||{};window.atQuarterData[${slideId}]=${jsonPayload};
 if(!window.flexToggleAdoptionQuarter){
-window.flexToggleAdoptionQuarter=function(slideId,btn){
-  var q=window.atQuarterData[slideId];if(!q)return;
+window.flexToggleAdoptionQuarter=function(slideId,qi,btn){
+  var qd=window.atQuarterData[slideId];if(!qd||!qd.quarters||!qd.quarters[qi])return;
   var chart=Chart.getChart('chart'+slideId);if(!chart)return;
   var ds=chart.data.datasets,j,i,b,s,estIdx=-1,bmIdx=-1;
-  for(j=0;j<ds.length;j++){if(ds[j].label==='Established Properties')estIdx=j;else if(ds[j].label===q.peerLabel||ds[j].label===q.peerLabelQ)bmIdx=j;}
+  for(j=0;j<ds.length;j++){if(ds[j].label==='Established Properties')estIdx=j;else if(ds[j].label===qd.peerLabel||ds[j].label===qd.peerLabelQ)bmIdx=j;}
   var slide=document.getElementById('slide-'+slideId);
   var title=slide?slide.querySelector('.slide-title'):null;
   var note=document.getElementById('peerOutlierNote'+slideId);
@@ -2526,15 +2588,31 @@ window.flexToggleAdoptionQuarter=function(slideId,btn){
   var estLeg=document.getElementById('estLegend'+slideId),estFoot=document.getElementById('estFootnote'+slideId);
   var estBtn=slide?slide.querySelector('button[onclick^="toggleEstablished"]'):null;
   var ent=window.atEntityData?window.atEntityData[slideId]:null;
-  if(!q.on){
-    q.on=true;
-    s=q.saved={all:ds[0].data,ents:{},entVis:{},basePts:ent?ent.basePts:null,title:title?title.textContent:''};
+  var wasOn=!!qd.on,prevQi=qd.qi;
+  if(wasOn){
+    s=qd.saved;qd.on=false;qd.qi=-1;
+    ds[0].data=s.all;
+    if(estIdx>=0){chart.setDatasetVisibility(estIdx,s.estVis);if(estLeg)estLeg.style.display=s.estVis?'flex':'none';if(estFoot)estFoot.style.display=s.estVis?'block':'none';if(estBtn)estBtn.style.display='';}
+    if(bmIdx>=0){ds[bmIdx].data=s.bm;ds[bmIdx].label=qd.peerLabel;if(bmLbl)bmLbl.textContent=qd.peerLabel;chart.setDatasetVisibility(bmIdx,s.bmVis);if(bmLeg)bmLeg.style.display=s.bmVis?'flex':'none';if(bmBtn)bmBtn.style.display='';}
+    if(note)note.style.display=(bmIdx>=0&&s.bmVis)?'block':'none';
+    for(j=0;j<ds.length;j++){
+      if(ds[j].atEntity==null)continue;
+      i=ds[j].atEntity;ds[j].data=s.ents[i];delete ds[j].atQtrHidden;chart.setDatasetVisibility(j,s.entVis[i]);
+      b=document.getElementById('atEntBtn'+slideId+'-'+i);if(b)b.style.display='';
+    }
+    if(title)title.textContent=s.title;
+    if(ent&&s.basePts)ent.basePts=s.basePts;
+    var pb=document.getElementById('adtQBtn'+slideId+'-'+prevQi);if(pb)pb.classList.remove('is-active');
+  }
+  if(!wasOn||prevQi!==qi){
+    var q=qd.quarters[qi];qd.on=true;qd.qi=qi;
+    s=qd.saved={all:ds[0].data,ents:{},entVis:{},basePts:ent?ent.basePts:null,title:title?title.textContent:''};
     ds[0].data=q.combined;
     if(estIdx>=0){s.estVis=chart.isDatasetVisible(estIdx);chart.setDatasetVisibility(estIdx,false);if(estLeg)estLeg.style.display='none';if(estFoot)estFoot.style.display='none';if(estBtn)estBtn.style.display='none';}
     if(bmIdx>=0){
       s.bm=ds[bmIdx].data;s.bmVis=chart.isDatasetVisible(bmIdx);
       var hasRamp=false;for(i=0;i<q.peer.length;i++){if(q.peer[i]!=null){hasRamp=true;break;}}
-      if(hasRamp){ds[bmIdx].data=q.peer;ds[bmIdx].label=q.peerLabelQ;if(bmLbl)bmLbl.textContent=q.peerLabelQ;}
+      if(hasRamp){ds[bmIdx].data=q.peer;ds[bmIdx].label=qd.peerLabelQ;if(bmLbl)bmLbl.textContent=qd.peerLabelQ;}
       else{chart.setDatasetVisibility(bmIdx,false);if(bmLeg)bmLeg.style.display='none';if(bmBtn)bmBtn.style.display='none';}
     }
     if(note)note.style.display='none';
@@ -2547,26 +2625,13 @@ window.flexToggleAdoptionQuarter=function(slideId,btn){
     }
     if(title)title.textContent=q.header;
     btn.classList.add('is-active');
-  }else{
-    s=q.saved;q.on=false;
-    ds[0].data=s.all;
-    if(estIdx>=0){chart.setDatasetVisibility(estIdx,s.estVis);if(estLeg)estLeg.style.display=s.estVis?'flex':'none';if(estFoot)estFoot.style.display=s.estVis?'block':'none';if(estBtn)estBtn.style.display='';}
-    if(bmIdx>=0){ds[bmIdx].data=s.bm;ds[bmIdx].label=q.peerLabel;if(bmLbl)bmLbl.textContent=q.peerLabel;chart.setDatasetVisibility(bmIdx,s.bmVis);if(bmLeg)bmLeg.style.display=s.bmVis?'flex':'none';if(bmBtn)bmBtn.style.display='';}
-    if(note)note.style.display=(bmIdx>=0&&s.bmVis)?'block':'none';
-    for(j=0;j<ds.length;j++){
-      if(ds[j].atEntity==null)continue;
-      i=ds[j].atEntity;ds[j].data=s.ents[i];delete ds[j].atQtrHidden;chart.setDatasetVisibility(j,s.entVis[i]);
-      b=document.getElementById('atEntBtn'+slideId+'-'+i);if(b)b.style.display='';
-    }
-    if(title)title.textContent=s.title;
-    btn.classList.remove('is-active');
   }
   var pts=[];
   var pushPts=function(arr){for(var k=0;k<arr.length;k++){if(arr[k]!=null)pts.push(arr[k]);}};
   pushPts(ds[0].data);
   if(bmIdx>=0&&chart.isDatasetVisible(bmIdx))pushPts(ds[bmIdx].data);
   if(estIdx>=0&&chart.isDatasetVisible(estIdx))pushPts(ds[estIdx].data);
-  if(ent&&window.flexSyncAdoptionEntities){ent.basePts=q.on?pts.slice():(s.basePts||pts.slice());window.flexSyncAdoptionEntities(slideId,chart);}
+  if(ent&&window.flexSyncAdoptionEntities){ent.basePts=qd.on?pts.slice():(s.basePts||pts.slice());window.flexSyncAdoptionEntities(slideId,chart);}
   else{
     chart.options.scales.y.suggestedMin=pts.length?Math.max(0,Math.floor(Math.min.apply(null,pts))-1):0;
     chart.options.scales.y.suggestedMax=pts.length?Math.floor(Math.max.apply(null,pts))+2:15;
@@ -2713,7 +2778,8 @@ window.flexToggleAdoptionQuarter=function(slideId,btn){
       entitySwitchButton(i, _e(lbl), `flexToggleAdoptionEntity(${slideId},${i})`, ` id="atEntBtn${slideId}-${i}"`)
     ).join("");
     const showAllBtn = `<button class="spark-ctrl-btn ctl-btn" id="atShowAll${slideId}" onclick="flexToggleAllAdoptionEntities(${slideId})">Show all</button>`;
-    entityToggleHtml = `\n    <div class="spark-ctrl presenter-control" style="flex-wrap:wrap;margin:-4px 0 8px;">${showAllBtn}${btns}${quarterBtnHtml}</div>`;
+    // Quarter-adds buttons (most recent first) at the END of the row, past a thin divider ("" when absent).
+    entityToggleHtml = `\n    <div class="spark-ctrl presenter-control" style="flex-wrap:wrap;margin:-4px 0 8px;">${showAllBtn}${btns}${quarterBtnHtml ? QUARTER_BTN_DIVIDER + quarterBtnHtml : ""}</div>`;
     // basePts = the exact point set yMin/yMax above were computed from (combined + established +
     // peer median, as rendered). The sync function re-runs the same Flask formula over basePts +
     // every VISIBLE entity line on each click, so (a) with nothing toggled the axis is exactly
@@ -2757,7 +2823,7 @@ window.flexToggleAllAdoptionEntities=function(slideId){
 };
 }`;
   }
-  // Single-PMC deck (no entity row) with a cohort: the quarter button gets its own row in the
+  // Single-PMC deck (no entity row) with a cohort: the quarter buttons get their own row in the
   // same slot, same styling. Stays "" when there's no cohort.
   if (hasQuarter && !showEntityLines) {
     entityToggleHtml = `\n    <div class="spark-ctrl presenter-control" style="flex-wrap:wrap;margin:-4px 0 8px;">${quarterBtnHtml}</div>`;
@@ -3468,21 +3534,31 @@ export function renderResidentsUnitsCombo(input: ResidentsUnitsInput & QuarterAd
   const entities = entityMonthlyData ?? [];
   const showEntitySwitcher = entities.length > 1;
 
-  // ── "Q<N> <YYYY> adds" toggle (quarter-adds cohort view) ─────────────────────────────────
-  // Same contract as renderAdoptionTrend's: absent (every string "") when there's no cohort, so
-  // the no-cohort output is byte-identical to before. In quarter mode the SAME 3 lines (+ the
+  // ── "Q<N> <YYYY> adds" buttons (quarter-adds cohort view) ────────────────────────────────
+  // Same contract as renderAdoptionTrend's: one .ctl-btn per completed quarter with adds, most
+  // recent first, MUTUALLY EXCLUSIVE; absent (every string "") when there's no cohort, so the
+  // no-cohort output is byte-identical to before. In quarter mode the SAME 3 lines (+ the
   // invisible baseline fill) simply take the cohort's residents/units/rent arrays - no dataset
   // is ever hidden or added, so every state draws exactly 3 visible lines. Arrays are aligned to
   // monthlyTotals' month axis with null (a gap, not a 0) before the cohort's first month; the
   // datalabel formatters below are emitted null-safe only when a cohort exists, for the same
   // byte-identity reason. The entity switcher keeps working inside quarter mode (reads the
-  // quarter arrays), with buttons for entities that had no adds hidden and the view forced to
-  // Combined if the active one disappears.
-  const quarter = input.quarter ?? null;
-  const quarterCombined = input.quarterCombined ?? null;
-  const hasQuarter = !!(quarter && quarterCombined && quarterCombined.monthly.length > 0);
+  // selected quarter's arrays), with buttons for entities that had no adds in it hidden and the
+  // view forced to Combined if the active one disappears. Switching quarter = restore the full
+  // portfolio, then apply the new quarter, so the saved arrays are never another quarter's.
+  // Title in quarter mode: the switcher is SINGLE-select, so the header follows the selected
+  // view - the entity's own "<short name> · properties added in Q3 2026 — N properties, U units"
+  // when an entity is selected, the all-in `header` on Combined (Kevin, 2026-09-10: "when you
+  // have q3 26 clicked and click individual subsidiaries it shows just the props/units for that
+  // one pmc. then when u click combined it gives u the all in number"). Flask 333f372.
+  const quarters = (input.quarters ?? []).filter((qb) => qb.combined.monthly.length > 0);
+  const hasQuarter = quarters.length > 0;
   let quarterBtnHtml = "";
   let quarterJs = "";
+  // Display-shortened entity names - the SAME list the switcher buttons print (hoisted here so
+  // the per-entity quarter headers can reuse it); payload names and every lookup stay on the
+  // full pmcName, this is display-only. Only computed for the switcher case, exactly as before.
+  const entityLabels = showEntitySwitcher ? displayEntityNames(entities.map((e) => e.pmcName)) : [];
   // Platinum deck (Flask: `platinum and not _switch_active and not _q_active`) - the toggle only
   // exists on a single-entity, no-cohort chart; the call site passes neither in that mode.
   const plat = input.platinum && !showEntitySwitcher && !hasQuarter ? input.platinum : null;
@@ -3490,7 +3566,7 @@ export function renderResidentsUnitsCombo(input: ResidentsUnitsInput & QuarterAd
   // counterfactual's months without a rate); emitted verbatim as before otherwise.
   const numFmtJs = (hasQuarter || plat) ? "v => v == null ? '' : v.toLocaleString()" : "v => v.toLocaleString()";
   const rentFmtJs = (hasQuarter || plat) ? "v => v == null ? '' : fmtRent(v)" : "v => fmtRent(v)";
-  if (hasQuarter && quarter && quarterCombined) {
+  if (hasQuarter) {
     const alignQ = (s: QuarterAddsSeries) => {
       const byMonth = new Map(s.monthly.map((m) => [m.month, m]));
       return {
@@ -3499,25 +3575,47 @@ export function renderResidentsUnitsCombo(input: ResidentsUnitsInput & QuarterAd
         rent: monthlyTotals.map((m) => { const r = byMonth.get(m.month); return r ? Math.round(r.rentPaid * 100) / 100 : null; }),
       };
     };
-    // Keyed by the switcher's view index (0 = Combined, i+1 = entities[i]) so the toggle JS
-    // addresses the same buttons flexSwitchResUnitsView does. No key = no adds this quarter.
-    const qEntities: Record<number, ReturnType<typeof alignQ>> = {};
-    if (showEntitySwitcher) {
-      const byName = new Map((input.quarterEntities ?? []).map((e) => [e.pmcName, e.series]));
-      entities.forEach((e, i) => {
-        const s = byName.get(e.pmcName);
-        if (s && s.monthly.length > 0) qEntities[i + 1] = alignQ(s);
-      });
-    }
-    quarterBtnHtml = `<button class="spark-ctrl-btn ctl-btn" id="ruQtrBtn${slideId}" onclick="flexToggleRucQuarter(${slideId},this)">${_e(quarter.label)} adds</button>`;
-    const payload = { on: false, view: 0, combined: alignQ(quarterCombined), entities: qEntities, header: quarterAddsHeader(quarter, quarterCombined) };
+    // One payload entry per quarter, most recent first (same order as the buttons; `qi` indexes it).
+    const qBlocks = quarters.map((qb) => {
+      // Keyed by the switcher's view index (0 = Combined, i+1 = entities[i]) so the toggle JS
+      // addresses the same buttons flexSwitchResUnitsView does. No key = no adds this quarter.
+      const qEntities: Record<number, ReturnType<typeof alignQ>> = {};
+      // Aligned to entities order (index i = entities[i]); null = no adds in this quarter.
+      const entityHeaders: (string | null)[] = [];
+      if (showEntitySwitcher) {
+        const byName = new Map(qb.entities.map((e) => [e.pmcName, e.series]));
+        entities.forEach((e, i) => {
+          const s = byName.get(e.pmcName);
+          if (s && s.monthly.length > 0) {
+            qEntities[i + 1] = alignQ(s);
+            entityHeaders.push(quarterAddsEntityHeader(entityLabels[i], qb.quarter, s));
+          } else {
+            entityHeaders.push(null);
+          }
+        });
+      }
+      return {
+        label: qb.quarter.label,
+        header: quarterAddsHeader(qb.quarter, qb.combined),
+        entityHeaders,
+        combined: alignQ(qb.combined),
+        entities: qEntities,
+      };
+    });
+    quarterBtnHtml = qBlocks
+      .map((qb, qi) => `<button class="spark-ctrl-btn ctl-btn" id="rucQBtn${slideId}-${qi}" onclick="flexToggleRucQuarter(${slideId},${qi},this)">${_e(qb.label)} adds</button>`)
+      .join("");
+    const payload = { on: false, qi: -1, view: 0, quarters: qBlocks };
     const jsonPayload = JSON.stringify(payload).replace(/</g, "\\u003c");
     // flexRucApply = the exact swap + y2 rescale flexSwitchResUnitsView does, factored so the
     // quarter toggle and the in-quarter view switch share one code path (null-tolerant on the
     // rent axis bounds). Chart.getChart (not window.comboChart) so single-PMC decks - which
-    // never expose comboChart - work too. Toggle off restores the currently selected view's
-    // full-portfolio arrays (from ruEntityData when the switcher exists, else the arrays saved
-    // at toggle-on).
+    // never expose comboChart - work too. flexRucQuarterTitle = the quarter-mode title for the
+    // selected view (entity header when an entity is selected and has one, else the all-in
+    // header). Step 1 (a quarter is on - this one or another): restore the currently selected
+    // view's full-portfolio arrays (from ruEntityData when the switcher exists, else the arrays
+    // saved at toggle-on). Step 2 (clicked an inactive quarter, or none was on): apply it on
+    // top of the restored full state.
     quarterJs = `
 window.ruQuarterData=window.ruQuarterData||{};window.ruQuarterData[${slideId}]=${jsonPayload};
 if(!window.flexToggleRucQuarter){
@@ -3529,30 +3627,33 @@ window.flexRucApply=function(chart,d){
   chart.options.scales.y2.min=Math.max(0,rMin-rPad);chart.options.scales.y2.max=rMax+rPad;
   chart.update();
 };
-window.flexToggleRucQuarter=function(slideId,btn){
-  var q=window.ruQuarterData[slideId];if(!q)return;
+window.flexRucQuarterTitle=function(q,view){return (view>0&&q.entityHeaders&&q.entityHeaders[view-1])?q.entityHeaders[view-1]:q.header;};
+window.flexToggleRucQuarter=function(slideId,qi,btn){
+  var qd=window.ruQuarterData[slideId];if(!qd||!qd.quarters||!qd.quarters[qi])return;
   var chart=Chart.getChart('chart'+slideId);if(!chart)return;
   var ds=chart.data.datasets,v;
   var slide=document.getElementById('slide-'+slideId);var title=slide?slide.querySelector('.slide-title'):null;
   var row=btn.parentElement;var views=row?row.querySelectorAll('button[onclick^="flexSwitchResUnitsView"]'):[];
-  if(!q.on){
-    q.on=true;
-    var cur=0;for(v=0;v<views.length;v++){if(views[v].classList.contains('is-active'))cur=v;}
-    q.saved={residents:ds[2].data,units:ds[1].data,rent:ds[3].data,y2min:chart.options.scales.y2.min,y2max:chart.options.scales.y2.max,title:title?title.textContent:''};
-    if(cur>0&&!q.entities[cur])cur=0;
-    for(v=0;v<views.length;v++){views[v].style.display=(v===0||q.entities[v])?'':'none';views[v].classList.toggle('is-active',v===cur);}
-    q.view=cur;
-    window.flexRucApply(chart,cur===0?q.combined:q.entities[cur]);
-    if(title)title.textContent=q.header;
-    btn.classList.add('is-active');
-  }else{
-    var s=q.saved;q.on=false;
-    for(v=0;v<views.length;v++){views[v].style.display='';views[v].classList.toggle('is-active',v===q.view);}
-    var ed=window.ruEntityData?window.ruEntityData[slideId]:null;var full=ed?ed[q.view]:null;
+  var wasOn=!!qd.on,prevQi=qd.qi;
+  if(wasOn){
+    var s=qd.saved;qd.on=false;qd.qi=-1;
+    for(v=0;v<views.length;v++){views[v].style.display='';views[v].classList.toggle('is-active',v===qd.view);}
+    var ed=window.ruEntityData?window.ruEntityData[slideId]:null;var full=ed?ed[qd.view]:null;
     if(full){window.flexRucApply(chart,full);}
     else{ds[0].data=s.residents;ds[1].data=s.units;ds[2].data=s.residents;ds[3].data=s.rent;chart.options.scales.y2.min=s.y2min;chart.options.scales.y2.max=s.y2max;chart.update();}
     if(title)title.textContent=s.title;
-    btn.classList.remove('is-active');
+    var pb=document.getElementById('rucQBtn'+slideId+'-'+prevQi);if(pb)pb.classList.remove('is-active');
+  }
+  if(!wasOn||prevQi!==qi){
+    var q=qd.quarters[qi];qd.on=true;qd.qi=qi;
+    var cur=0;for(v=0;v<views.length;v++){if(views[v].classList.contains('is-active'))cur=v;}
+    qd.saved={residents:ds[2].data,units:ds[1].data,rent:ds[3].data,y2min:chart.options.scales.y2.min,y2max:chart.options.scales.y2.max,title:title?title.textContent:''};
+    if(cur>0&&!q.entities[cur])cur=0;
+    for(v=0;v<views.length;v++){views[v].style.display=(v===0||q.entities[v])?'':'none';views[v].classList.toggle('is-active',v===cur);}
+    qd.view=cur;
+    window.flexRucApply(chart,cur===0?q.combined:q.entities[cur]);
+    if(title)title.textContent=window.flexRucQuarterTitle(q,cur);
+    btn.classList.add('is-active');
   }
 };
 }`;
@@ -3562,9 +3663,8 @@ window.flexToggleRucQuarter=function(slideId,btn){
   let entitySwitcherJs = "";
   let comboChartExposeJs = "";
   if (showEntitySwitcher) {
-    // Labels are display-shortened (displayEntityNames); the per-entity series are looked up
-    // by position, never by label, so this is display-only.
-    const entityLabels = displayEntityNames(entities.map((e) => e.pmcName));
+    // Labels are display-shortened (entityLabels, hoisted above the quarter block); the
+    // per-entity series are looked up by position, never by label, so this is display-only.
     const payload = [
       { label: "Combined", residents, units, rent },
       ...entities.map((e, i) => {
@@ -3589,22 +3689,25 @@ window.flexToggleRucQuarter=function(slideId,btn){
     // the single-PMC/<=1-entity case - where this stays "" - leaves the html template's own
     // whitespace between slide-header and the legend row completely untouched (byte-identical
     // to pre-Task-12 HEAD).
-    entitySwitcherHtml = `\n    <div class="spark-ctrl presenter-control" style="flex-wrap:wrap;max-width:620px;margin:-4px 0 8px;">${btns}${quarterBtnHtml}</div>`;
+    // Quarter-adds buttons (most recent first) at the END of the row, past a thin divider ("" when absent).
+    entitySwitcherHtml = `\n    <div class="spark-ctrl presenter-control" style="flex-wrap:wrap;max-width:620px;margin:-4px 0 8px;">${btns}${quarterBtnHtml ? QUARTER_BTN_DIVIDER + quarterBtnHtml : ""}</div>`;
     // Escape "<" so a PMC name containing "</script>" can't break out of the inline script tag -
     // same convention as Task 9's jsonPayload.
     const jsonPayload = JSON.stringify(payload).replace(/</g, "\\u003c");
     comboChartExposeJs = `window['comboChart${slideId}'] = _comboChart;\n    `;
-    // With a cohort present, the switcher reads the quarter arrays while quarter mode is on and
-    // leaves the quarter button's own .is-active alone (it shares the row). Without one, this is
-    // the pre-existing string verbatim.
+    // With cohorts present, the switcher reads the selected quarter's arrays while quarter mode
+    // is on, re-titles the slide for the newly selected view (flexRucQuarterTitle) and leaves the
+    // quarter buttons' own .is-active alone (they share the row, as does the divider span).
+    // Without one, this is the pre-existing string verbatim.
     entitySwitcherJs = `window.ruEntityData=window.ruEntityData||{};window.ruEntityData[${slideId}]=${jsonPayload};`
       + `if(!window.flexSwitchResUnitsView){window.flexSwitchResUnitsView=function(slideId,idx,btn){`
       + (hasQuarter
-        ? `var q=window.ruQuarterData?window.ruQuarterData[slideId]:null;var d=(q&&q.on)?(idx===0?q.combined:q.entities[idx]):(window.ruEntityData[slideId]||[])[idx];if(!d)return;if(q)q.view=idx;`
+        ? `var qd=window.ruQuarterData?window.ruQuarterData[slideId]:null;var qq=(qd&&qd.on)?qd.quarters[qd.qi]:null;var d=qq?(idx===0?qq.combined:qq.entities[idx]):(window.ruEntityData[slideId]||[])[idx];if(!d)return;if(qd)qd.view=idx;`
         : `var d=(window.ruEntityData[slideId]||[])[idx];if(!d)return;`)
       + `var chart=window['comboChart'+slideId];if(!chart)return;`
       + (hasQuarter
         ? `window.flexRucApply(chart,d);`
+          + `if(qq){var sl=document.getElementById('slide-'+slideId);var t=sl?sl.querySelector('.slide-title'):null;if(t)t.textContent=window.flexRucQuarterTitle(qq,idx);}`
         : `chart.data.datasets[0].data=d.residents;chart.data.datasets[1].data=d.units;`
           + `chart.data.datasets[2].data=d.residents;chart.data.datasets[3].data=d.rent;`
           + `var rMin=Math.min.apply(null,d.rent),rMax=Math.max.apply(null,d.rent);`
@@ -3612,11 +3715,11 @@ window.flexToggleRucQuarter=function(slideId,btn){
           + `chart.options.scales.y2.min=Math.max(0,rMin-rPad);chart.options.scales.y2.max=rMax+rPad;`
           + `chart.update();`)
       + (hasQuarter
-        ? `var row=btn.parentElement;if(row){Array.prototype.forEach.call(row.children,function(b){if(b.id!=='ruQtrBtn'+slideId)b.classList.toggle('is-active',b===btn);});}`
+        ? `var row=btn.parentElement;if(row){Array.prototype.forEach.call(row.children,function(b){if(b.classList.contains('spark-ctrl-btn')&&b.id.indexOf('rucQBtn')!==0)b.classList.toggle('is-active',b===btn);});}`
         : `var row=btn.parentElement;if(row){Array.prototype.forEach.call(row.children,function(b){b.classList.toggle('is-active',b===btn);});}`)
       + `};}`;
   }
-  // Single-PMC deck (no switcher) with a cohort: the quarter button gets its own row in the
+  // Single-PMC deck (no switcher) with a cohort: the quarter buttons get their own row in the
   // same slot. Stays "" when there's no cohort.
   if (hasQuarter && !showEntitySwitcher) {
     entitySwitcherHtml = `\n    <div class="spark-ctrl presenter-control" style="flex-wrap:wrap;max-width:620px;margin:-4px 0 8px;">${quarterBtnHtml}</div>`;
