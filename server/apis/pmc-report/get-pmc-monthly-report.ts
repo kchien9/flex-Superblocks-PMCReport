@@ -241,17 +241,15 @@ function monthOnly(dateStr: string): string {
   return d.toLocaleDateString("en-US", { month: "long", timeZone: "UTC" });
 }
 
-// One-line definition of what a "BP month" is, printed once on the Exec Summary (Kevin's ask:
-// "can we be clear that we're showing September BP month (which is technically like August
-// cal) - just don't want to invite questions of 'we're only 9 days into September'"). Every
-// other place the deck prints the reporting month just carries the "BP month" / "BP" suffix
-// and leans on this sentence for the definition.
-function bpMonthExplainer(reportingMonth: string): string {
-  const d = new Date(reportingMonth + "T00:00:00Z");
-  const short = d.toLocaleDateString("en-US", { month: "short", year: "numeric", timeZone: "UTC" });
-  const long = monthOnly(reportingMonth);
-  return `Months are Flex bill-pay (BP) months. The ${short} BP month covers ${long} rent — activity that closed at the start of ${long}.`;
-}
+// Reporting-month labelling (Kevin, 2026-09-09: "can we be clear that we're showing September
+// BP month (which is technically like August cal)... don't want to invite questions of 'we're
+// only 9 days into September'"): every place the deck prints the reporting month as a label
+// says "BP month" / "BP" (footer, cover, table headers, delta pills); chart axis ticks are left
+// alone. EXCEPTION (Kevin 2026-09-10, "this is too wordy too - just say coast property mgmt -
+// september 2026 (remove bp month), partner since date"; Flask 56265fa): the Exec Summary
+// subtitle prints the bare full month and no longer carries the one-line "Months are Flex
+// bill-pay (BP) months..." definition - that sentence survives only in the Adoption Check-in
+// footnote (checkin.ts bpMonthExplainer).
 
 // Snowflake's PMC_NAME sometimes carries a "(FKA <old name>)" suffix for continuity after a
 // rename/acquisition (e.g. "AG Living (FKA Ashland Greene Capital Partners)"). Useful in a
@@ -345,7 +343,8 @@ function renderCover(kpis: { pmcName: string; reportingMonth: string; partnerSin
   // this isn't a review, so nothing needs to fill that slot). QBR keeps its own third tile
   // exactly as before - Flask's render_cover, generator/slides.py:91-92.
   // "BP month(s)" suffix (Kevin's ask) so the period reads as Flex bill-pay months, not calendar
-  // months - the Exec Summary carries the one-line definition (bpMonthExplainer).
+  // months (the Exec Summary subtitle itself is the one label that prints the bare month - see
+  // the reporting-month labelling note near the top of this file).
   const periodRange = kpis.firstMonth
     ? `${monthLabel(kpis.firstMonth)} – ${monthLabel(kpis.reportingMonth)} BP months`
     : `${monthLabel(kpis.reportingMonth)} BP month`;
@@ -804,8 +803,7 @@ function renderExecSummary(d: ExecSummaryInput): { html: string; js: string } {
         <div style="display:flex;align-items:center;gap:8px;">${entitySwitcherHtml}${sparkCtrlHtml}${deltaToggle}</div>
       </div>
       <div class="slide-title" style="margin-bottom:6px;">What we've built together.</div>
-      <div style="font-size:12px;color:#6b7280;">${pmc} &middot; ${reportingMonth} BP month &nbsp;&middot;&nbsp; Partner since ${_e(sinceLbl)}</div>
-      <div style="font-size:11px;color:#a09cb0;margin-top:4px;">${bpMonthExplainer(d.reportingMonth)}</div>
+      <div style="font-size:12px;color:#6b7280;">${pmc} &middot; ${reportingMonth} &nbsp;&middot;&nbsp; Partner since ${_e(sinceLbl)}</div>
     </div>
     <div style="flex:1;display:grid;grid-template-columns:minmax(0,5fr) minmax(0,7fr);gap:16px;min-height:0;">
       <!-- Hero: Rent Guaranteed -->
@@ -4092,7 +4090,8 @@ export default api({
     const prevMonth = latestIdx >= cmpIdx ? monthlyTotals[latestIdx - cmpIdx] : null;
     // Build "vs ..." label: show actual month name when comparison_months > 1. Suffixed "BP" so
     // the pill reads as a bill-pay-month comparison (Kevin: "just don't want to invite questions
-    // of 'we're only 9 days into September'") - see bpMonthExplainer.
+    // of 'we're only 9 days into September'") - see the reporting-month labelling note near the
+    // top of this file.
     let vsLabel = "vs last BP month";
     if (prevMonth) {
       const prevDate = new Date(prevMonth.month + "T00:00:00");
