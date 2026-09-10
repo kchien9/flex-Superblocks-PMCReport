@@ -120,7 +120,10 @@ export default api({
          AND o.ISDELETED = FALSE
          AND o.TYPE = 'New Logo'
       WHERE a.ISDELETED = FALSE
-        AND a.ACCOUNT_STATUS__C = 'Prospect'
+        -- Prospect OR Partner (Kevin 2026-09-10, Harmoniq Residential was Partner-tagged and
+        -- invisible here; SF hygiene isn't reliable enough for the picker to be the gate).
+        -- Mirrors Flask search_sf_accounts.
+        AND a.ACCOUNT_STATUS__C IN ('Prospect', 'Partner')
         AND a.TYPE = 'PMC'
         -- Deep SMB excluded from every account search in this tool (Kevin's call) - this
         -- segment isn't a fit for either report type.
