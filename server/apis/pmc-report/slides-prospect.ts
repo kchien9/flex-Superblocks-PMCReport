@@ -132,6 +132,12 @@ export interface Benchmarks {
   prospect_region: string;
   _peer_pmc_names: string[];
   median_signups_pmc?: number;
+  // Platinum comparator for the embed-activation slide (DI + IS_MARKETING_OPT_IN peers, Flask
+  // e138728 pull_peer_platinum_rate). Only set when the pull succeeds — every consumer falls
+  // back to median_nar without them.
+  platinum_median_nar?: number;
+  platinum_peer_count?: number;
+  platinum_scope?: string; // "comparable" | "network"
 }
 
 export interface PeerRow {
@@ -307,15 +313,52 @@ export function renderEmbedActivation(
   const mspLabel = mspLabelMap[embedData.msp || ""] || embedData.msp || "";
   const prospectUnits = prospect.units || 0;
   const chargedUsers = embedData.charged_users || 0;
+  // AppFolio's embed table has no per-property unit counts -> unit_count is 0/null and the
+  // rate is over the prospect's total units; the labels below must say so.
+  const realUnitCount = Boolean(embedData.unit_count);
   const unitCount = embedData.unit_count || prospectUnits;
   const propertyCount = embedData.property_count || 0;
   const medianNar = benchmarks.median_nar || 0.10;
 
+  // Comparator: Platinum peers (DI + marketing opt-in) when pull_peer_platinum_rate found
+  // them; otherwise the plain integrated-peer median exactly as before. An OON embed rate can
+  // already beat bare-DI peers (Harmoniq 5.9% vs 5.6%) — the pitch is integration + marketing.
+  const plat = benchmarks.platinum_median_nar;
+  const platScope = benchmarks.platinum_scope ?? "comparable";
+  const usePlat = plat != null;
+  const compareNar = usePlat ? plat : medianNar;
+
   const embedRate = unitCount > 0 ? chargedUsers / unitCount : 0;
-  const projected = Math.floor(prospectUnits * medianNar);
+  const projected = Math.floor(prospectUnits * compareNar);
   const upside = Math.max(0, projected - chargedUsers);
 
-  const embedRateStr = embedRate > 0 ? `${(embedRate * 100).toFixed(1)}%` : "-";
+  const pct1 = (v: number): string => `${(v * 100).toFixed(1)}%`;
+
+  let projTitle: string;
+  let projSub: string;
+  let gapSub: string;
+  if (usePlat) {
+    projTitle = "With integration + marketing (Platinum) - peer median";
+    const projPool = platScope === "network" ? "Platinum properties across Flex" : "similar PMCs' opted-in properties";
+    projSub = `${pct1(compareNar)} adoption &middot; ${prospectUnits.toLocaleString()} units &middot; ${projPool}`;
+    gapSub = "The gap between passive embed discovery and a fully integrated, marketed program.";
+  } else {
+    projTitle = "With full integration - peer median";
+    projSub = `${pct1(compareNar)} adoption &middot; ${prospectUnits.toLocaleString()} units &middot; based on similar ${_e(mspLabel)} PMCs on Flex`;
+    gapSub = "The gap between passive embed discovery and a fully integrated program.";
+  }
+
+  let rateStatSub: string;
+  let rateBarSub: string;
+  if (realUnitCount) {
+    rateStatSub = "of embed portfolio";
+    rateBarSub = `${pct1(embedRate)} of portfolio &middot; residents find Flex on their own, no marketing push`;
+  } else {
+    rateStatSub = `of ${prospectUnits.toLocaleString()} total units`;
+    rateBarSub = `${pct1(embedRate)} of your total units &middot; residents find Flex on their own, no marketing push`;
+  }
+
+  const embedRateStr = embedRate > 0 ? pct1(embedRate) : "-";
 
   function stat(label: string, value: string, sub?: string): string {
     const subHtml = sub ? `<div style="font-size:11px;color:rgba(255,255,255,0.38);margin-top:4px;">${sub}</div>` : "";
@@ -326,14 +369,24 @@ export function renderEmbedActivation(
   const embedPct = Math.min(chargedUsers / barMax, 1.0) * 100;
   const projPct = Math.min(projected / barMax, 1.0) * 100;
 
+  // Never print "+0" — when the embed rate already clears the comparator, reframe the
+  // median as the floor rather than arguing against the integration.
+  const callout = upside > 0
+    ? `<div style="font-size:40px;font-weight:700;color:${PURPLE};flex-shrink:0;">+${upside.toLocaleString()}</div>` +
+      `<div style="font-size:13px;color:${DARK};line-height:1.55;">additional residents who could split rent through Flex.<br><span style="color:${GRAY};font-size:11px;">${gapSub}</span></div>`
+    : `<div style="font-size:13px;color:${DARK};line-height:1.55;">` +
+      `<div style="font-size:22px;font-weight:700;color:${PURPLE};margin-bottom:6px;">Already ahead of the median.</div>` +
+      `Your residents found Flex on their own at a rate above the integrated median - with integration and marketing, ${pct1(compareNar)} is the peer baseline, not the ceiling.` +
+      `</div>`;
+
   const left = `<div style="width:340px;flex-shrink:0;background:${NAVY};padding:48px 36px;display:flex;flex-direction:column;">
     <div style="font-size:10px;font-weight:600;color:rgba(255,255,255,0.4);text-transform:uppercase;letter-spacing:0.12em;margin-bottom:16px;">${_e(mspLabel)} · CURRENT ACTIVITY</div>
     <div style="font-size:22px;font-weight:700;color:${WHITE};line-height:1.25;margin-bottom:10px;">Flex is already working at your properties.</div>
-    <div style="font-size:12px;color:rgba(255,255,255,0.55);line-height:1.65;margin-bottom:28px;">${chargedUsers.toLocaleString()} residents split rent through Flex today - through ${_e(mspLabel)}, without a formal integration.</div>
+    <div style="font-size:12px;color:rgba(255,255,255,0.55);line-height:1.65;margin-bottom:28px;">${chargedUsers.toLocaleString()} residents split rent through Flex today - through ${_e(mspLabel)}, without a formal integration or any marketing to residents.</div>
     <div style="flex:1;">
       ${stat("Residents active now", chargedUsers.toLocaleString(), `via ${_e(mspLabel)} embed`)}
       ${stat("Properties live", propertyCount.toLocaleString())}
-      ${stat("Current adoption rate", embedRateStr, "of embed portfolio")}
+      ${stat("Current adoption rate", embedRateStr, rateStatSub)}
     </div>
     <div style="border-top:1px solid rgba(255,255,255,0.1);padding-top:12px;font-size:10px;color:rgba(255,255,255,0.22);">Flex &middot; Confidential</div>
   </div>`;
@@ -346,19 +399,18 @@ export function renderEmbedActivation(
         <div style="font-size:22px;font-weight:700;color:${GRAY};">${chargedUsers.toLocaleString()}</div>
       </div>
       <div style="background:#e5e7eb;border-radius:4px;height:12px;width:100%;"><div style="background:${GRAY};border-radius:4px;height:12px;width:${embedPct.toFixed(1)}%;"></div></div>
-      <div style="font-size:11px;color:${GRAY};margin-top:6px;">${(embedRate * 100).toFixed(1)}% of portfolio &middot; residents find Flex on their own, no marketing push</div>
+      <div style="font-size:11px;color:${GRAY};margin-top:6px;">${rateBarSub}</div>
     </div>
     <div style="margin-bottom:36px;">
       <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px;">
-        <div style="font-size:13px;font-weight:600;color:${DARK};">With full integration - peer median</div>
+        <div style="font-size:13px;font-weight:600;color:${DARK};">${projTitle}</div>
         <div style="font-size:28px;font-weight:700;color:${PURPLE};">~${projected.toLocaleString()}</div>
       </div>
       <div style="background:#ede9fe;border-radius:4px;height:12px;width:100%;"><div style="background:${PURPLE};border-radius:4px;height:12px;width:${projPct.toFixed(1)}%;"></div></div>
-      <div style="font-size:11px;color:${GRAY};margin-top:6px;">${(medianNar * 100).toFixed(1)}% adoption &middot; ${prospectUnits.toLocaleString()} units &middot; based on similar ${_e(mspLabel)} PMCs on Flex</div>
+      <div style="font-size:11px;color:${GRAY};margin-top:6px;">${projSub}</div>
     </div>
     <div style="background:rgba(141,112,238,0.08);border:1px solid rgba(141,112,238,0.2);border-radius:10px;padding:20px 28px;display:flex;align-items:center;gap:24px;">
-      <div style="font-size:40px;font-weight:700;color:${PURPLE};flex-shrink:0;">+${upside.toLocaleString()}</div>
-      <div style="font-size:13px;color:${DARK};line-height:1.55;">additional residents who could split rent through Flex.<br><span style="color:${GRAY};font-size:11px;">The gap between passive embed discovery and a fully integrated program.</span></div>
+      ${callout}
     </div>
   </div>`;
 

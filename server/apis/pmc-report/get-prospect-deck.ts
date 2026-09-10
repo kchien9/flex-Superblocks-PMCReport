@@ -234,6 +234,10 @@ export default api({
       pool_size: z.number(),
       match_level: z.string(),
       match_mode: z.string(),
+      // Platinum comparator (DI + marketing opt-in peers) — present only when the pull succeeds.
+      platinum_median_nar: z.number().optional(),
+      platinum_peer_count: z.number().optional(),
+      platinum_scope: z.string().optional(),
     }),
     email_draft: z.string(),
     error: z.string().nullable(),
@@ -1192,11 +1196,62 @@ export default api({
     }
     };
 
+    // 3e. Platinum comparator for the embed-activation slide — Clark mirror of Flask
+    // pull_peer_platinum_rate (e138728). One query at latestMo over IS_INTEGRATED_TOTAL AND
+    // IS_MARKETING_OPT_IN properties: per-PMC bills_paid/units, keep PMCs with > 0 opt-in units,
+    // median across PMCs. >= 3 peers -> scope "comparable"; else network-wide (>= 100 opt-in
+    // units per PMC) -> "network". Any failure / no rows -> keys stay absent -> old comparator.
+    const PlatinumSchema = z.object({
+      PMC_NAME: z.string().nullable(),
+      PLATINUM_NAR: z.coerce.number().nullable(),
+      OPT_IN_UNITS: z.coerce.number().nullable(),
+    });
+    const runPlatinum = async (names: string[] | null): Promise<{ nar: number; units: number }[]> => {
+      const nameFilter = names ? `AND PMC_NAME IN (${names.map(() => "?").join(",")})` : "";
+      const having = names ? "" : "HAVING SUM(PROPERTY_UNIT_COUNT) >= 100";
+      const platSql = `
+        SELECT PMC_NAME,
+               SUM(BILLS_PAID_COUNT)::FLOAT / NULLIF(SUM(PROPERTY_UNIT_COUNT), 0) AS PLATINUM_NAR,
+               SUM(PROPERTY_UNIT_COUNT)                                          AS OPT_IN_UNITS
+        FROM ${TBL}
+        WHERE BP_MONTH = ?
+          AND IS_INTEGRATED_TOTAL = TRUE
+          AND IS_MARKETING_OPT_IN = TRUE
+          ${nameFilter}
+        GROUP BY PMC_NAME
+        ${having}
+      `;
+      const rows = await ctx.integrations.snowflake_sso.query(
+        platSql, PlatinumSchema, [latestMo, ...(names ?? [])],
+        { label: names ? "Pull peer platinum rate" : "Pull network platinum rate" },
+      );
+      return rows
+        .filter(r => r.PLATINUM_NAR != null && r.OPT_IN_UNITS != null && r.OPT_IN_UNITS > 0)
+        .map(r => ({ nar: r.PLATINUM_NAR as number, units: r.OPT_IN_UNITS as number }));
+    };
+    const pullPeerPlatinumRate = async () => {
+      try {
+        let rows = peerPmcNames.length > 0 ? await runPlatinum(peerPmcNames) : [];
+        let scope = "comparable";
+        if (rows.length < 3) {
+          rows = await runPlatinum(null);
+          scope = "network";
+        }
+        if (rows.length === 0) return;
+        benchmarks.platinum_median_nar = median(rows.map(r => r.nar));
+        benchmarks.platinum_peer_count = rows.length;
+        benchmarks.platinum_scope = scope;
+      } catch (e: any) {
+        ctx.log.warn("pull_peer_platinum_rate failed", { error: e.message });
+      }
+    };
+
     await Promise.all([
       pullPeerMonthlyMetrics(),
       pullPeerCohort(),
       pullRampCurve(),
       pullPeerAdoptionTrend(),
+      pullPeerPlatinumRate(),
     ]);
 
     // ─── Step 4: Build pool for renderers ────────────────────────────────────
@@ -1800,6 +1855,9 @@ export default api({
         pool_size: benchmarks.pool_size,
         match_level: benchmarks.match_level,
         match_mode: benchmarks.match_mode,
+        platinum_median_nar: benchmarks.platinum_median_nar,
+        platinum_peer_count: benchmarks.platinum_peer_count,
+        platinum_scope: benchmarks.platinum_scope,
       },
       email_draft: termedEmailDraft,
       error: null,
