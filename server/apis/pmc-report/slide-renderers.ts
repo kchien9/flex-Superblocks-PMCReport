@@ -292,10 +292,8 @@ export interface QuarterAddsInput {
 }
 
 function quarterAddsHeader(quarter: CalendarQuarter, s: QuarterAddsSeries): string {
-  // "(BP months Jul–Sep)" names the quarter's months as Flex bill-pay months (Kevin's ask) -
-  // monthsLabel minus its year, which "Q3 2026" already carries.
-  const bpMonths = quarter.monthsLabel.replace(/\s\d{4}$/, "");
-  return `Properties added in ${quarter.label} (BP months ${bpMonths}) — ${s.propertyCount.toLocaleString()} ${s.propertyCount === 1 ? "property" : "properties"}, ${s.unitCount.toLocaleString()} units`;
+  // No "(BP months Jul–Sep)" clause - dropped in Flask 2785a75 (Kevin, round 5: "too wordy").
+  return `Properties added in ${quarter.label} — ${s.propertyCount.toLocaleString()} ${s.propertyCount === 1 ? "property" : "properties"}, ${s.unitCount.toLocaleString()} units`;
 }
 
 // ─── render_metrosight_evidence (Slide 50 - "Rethinking Rent") ──────────────
@@ -2495,7 +2493,7 @@ export function renderAdoptionTrend(input: {
       const p50 = sbmQ[n]?.p50;
       return p50 ? Math.round(p50 * 1000) / 10 : null;
     });
-    quarterBtnHtml = `<button class="spark-ctrl-btn" id="atQtrBtn${slideId}" onclick="flexToggleAdoptionQuarter(${slideId},this)">${_e(quarter.label)} adds</button>`;
+    quarterBtnHtml = `<button class="spark-ctrl-btn ctl-btn" id="atQtrBtn${slideId}" onclick="flexToggleAdoptionQuarter(${slideId},this)">${_e(quarter.label)} adds</button>`;
     const payload = {
       on: false,
       combined: qCombinedVals,
@@ -2714,7 +2712,7 @@ window.flexToggleAdoptionQuarter=function(slideId,btn){
     const btns = entityLabels.map((lbl, i) =>
       entitySwitchButton(i, _e(lbl), `flexToggleAdoptionEntity(${slideId},${i})`, ` id="atEntBtn${slideId}-${i}"`)
     ).join("");
-    const showAllBtn = `<button class="spark-ctrl-btn" id="atShowAll${slideId}" onclick="flexToggleAllAdoptionEntities(${slideId})" style="border-style:dashed;">Show all</button>`;
+    const showAllBtn = `<button class="spark-ctrl-btn ctl-btn" id="atShowAll${slideId}" onclick="flexToggleAllAdoptionEntities(${slideId})">Show all</button>`;
     entityToggleHtml = `\n    <div class="spark-ctrl presenter-control" style="flex-wrap:wrap;margin:-4px 0 8px;">${showAllBtn}${btns}${quarterBtnHtml}</div>`;
     // basePts = the exact point set yMin/yMax above were computed from (combined + established +
     // peer median, as rendered). The sync function re-runs the same Flask formula over basePts +
@@ -3511,7 +3509,7 @@ export function renderResidentsUnitsCombo(input: ResidentsUnitsInput & QuarterAd
         if (s && s.monthly.length > 0) qEntities[i + 1] = alignQ(s);
       });
     }
-    quarterBtnHtml = `<button class="spark-ctrl-btn" id="ruQtrBtn${slideId}" onclick="flexToggleRucQuarter(${slideId},this)">${_e(quarter.label)} adds</button>`;
+    quarterBtnHtml = `<button class="spark-ctrl-btn ctl-btn" id="ruQtrBtn${slideId}" onclick="flexToggleRucQuarter(${slideId},this)">${_e(quarter.label)} adds</button>`;
     const payload = { on: false, view: 0, combined: alignQ(quarterCombined), entities: qEntities, header: quarterAddsHeader(quarter, quarterCombined) };
     const jsonPayload = JSON.stringify(payload).replace(/</g, "\\u003c");
     // flexRucApply = the exact swap + y2 rescale flexSwitchResUnitsView does, factored so the
@@ -3584,7 +3582,7 @@ window.flexToggleRucQuarter=function(slideId,btn){
     // color accent as the Exec Summary and Adoption Trend switchers.
     const btns = payload.map((p, i) =>
       i === 0
-        ? `<button class="spark-ctrl-btn is-active" onclick="flexSwitchResUnitsView(${slideId},0,this)">${_e(p.label)}</button>`
+        ? `<button class="spark-ctrl-btn ctl-btn is-active" onclick="flexSwitchResUnitsView(${slideId},0,this)">${_e(p.label)}</button>`
         : entitySwitchButton(i - 1, _e(p.label), `flexSwitchResUnitsView(${slideId},${i},this)`)
     ).join("");
     // Leading newline+indent baked into the string itself (not the surrounding template) so
@@ -4336,9 +4334,9 @@ window['siYtd${slideId}'] = {
 // mechanism (a single-select switcher or a stacked bar, both meant to declutter an N-entity
 // view down to something readable), this slide's whole reason to exist IS the side-by-side
 // comparison, so it's a plain sortable table instead. Column order is a hard requirement -
-// Kevin's explicit fix, revised twice during this project: Entity, Units on Flex, Paying
-// Residents, Adoption Rate (<month>), Rent Paid (<month>), Total Rent Paid, Total Bills Paid,
-// Trend. Only renders (non-empty html) when
+// Kevin's explicit fix, revised three times during this project: Entity, Units on Flex, Paying
+// Residents, Adoption Rate (<month>), Rent Paid (<month>), Avg Rent Paid (<month>), Total Rent
+// Paid, Total Bills Paid, Adoption Trend. Only renders (non-empty html) when
 // there's more than 1 combined entity - a single-PMC report has nothing to compare, so this
 // slide should not appear at all, same "byte-identical when <=1 entity" contract every other
 // entity-breakdown consumer in this plan already follows.
@@ -4383,8 +4381,9 @@ export interface PortfolioComparisonInput {
    * T12/lifetime. Kevin's catch on the Asset Living deck: "is this total rent paid? over last 12
    * months? or ytd? or lifetime?" - a bare "Rent Paid" header can't answer that, so the slide
    * states the month in the Rent Paid header (the $ column is the one whose window is genuinely
-   * ambiguous) and in an "as of" note under the title (covering the other three). Optional only
-   * so a caller without it degrades to the old unlabelled headers, never a wrong label. */
+   * ambiguous) on a second header line ("<br>(Sep 2026 BP)") - the same on Adoption Rate and
+   * Avg Rent Paid. Optional only so a caller without it degrades to the old unlabelled headers,
+   * never a wrong label. */
   asOfMonth?: string | null;
   /** The Combined row's all-time totals - MUST be the same figures the Since Inception subtitle
    * prints ("$X guaranteed and N bills paid since <year>"), i.e. the combined yearly query's
@@ -4394,6 +4393,11 @@ export interface PortfolioComparisonInput {
    * blank cell" reason as the per-entity fields. */
   lifetimeRent?: number;
   lifetimeBills?: number;
+  /** The Combined row's "Avg Rent Paid" - the Exec Summary hero's own avg $/resident number
+   * (kpis currentRent / currentResidents for the reporting month; Flask `combined_kpis["avg_rent"]`)
+   * so the two slides can't disagree by a rounding step. Falls back to the summed entity rows'
+   * rent / residents when absent. */
+  avgRentPerResident?: number | null;
 }
 
 export function renderPortfolioComparison(input: PortfolioComparisonInput): SlideResult {
@@ -4403,6 +4407,8 @@ export function renderPortfolioComparison(input: PortfolioComparisonInput): Slid
   const EM_DASH = "—";
   const fmtLifetimeRent = (v: number | undefined) => (v == null ? EM_DASH : fmtCurrency(v));
   const fmtLifetimeBills = (v: number | undefined) => (v == null ? EM_DASH : Math.round(v).toLocaleString("en-US"));
+  // "$1,676" - no K/M abbreviation, the same format as the Exec Summary's avg $/resident tile.
+  const fmtAvgRent = (v: number) => `$${Math.round(v).toLocaleString("en-US")}`;
 
   // Combined row: sum units/residents/rent; Adoption Rate RECOMPUTED from the summed
   // residents/units, never averaged across the entity rows' own percentages - averaging is
@@ -4412,6 +4418,10 @@ export function renderPortfolioComparison(input: PortfolioComparisonInput): Slid
   const combinedResidents = entities.reduce((s, e) => s + e.payingResidents, 0);
   const combinedRent = entities.reduce((s, e) => s + e.rentPaid, 0);
   const combinedAdoptionRate = combinedUnits > 0 ? combinedResidents / combinedUnits : 0;
+  // Prefer the Exec Summary's own avg $/resident (what its tile prints) so the two slides can't
+  // disagree by a rounding step; fall back to the same ratio when it wasn't passed (Flask 2785a75).
+  const combinedAvg = (input.avgRentPerResident ?? 0) || (combinedResidents > 0 ? combinedRent / combinedResidents : 0);
+  const combinedAvgRent = combinedAvg ? fmtAvgRent(combinedAvg) : "-";
 
   // One color per entity - the shared module-level ENTITY_PALETTE (same index = same entity =
   // same color as Since Inception's segments and Adoption Trend's lines), not a second palette.
@@ -4429,6 +4439,10 @@ export function renderPortfolioComparison(input: PortfolioComparisonInput): Slid
       const nameFull = _e(e.pmcName);
       const nameDisp = _e(entityLabels[i]);
       const nameTitle = nameDisp !== nameFull ? ` title="${nameFull}"` : "";
+      // Avg rent per paying resident this month = rentPaid / payingResidents, the same ratio the
+      // Exec Summary's "avg $X/resident" sub-line prints for this entity. "-" (data-sort -1)
+      // when the entity has no paying residents.
+      const avgRent = e.payingResidents > 0 ? e.rentPaid / e.payingResidents : null;
       // Entity names WRAP (white-space:normal, no ellipsis/max-width) - Kevin's catch on the
       // 8-entity Asset Living deck: "don't truncate the names ... just wrap the text". Rows grow
       // to fit; the table below is sized to fill the slide's height anyway (see the container).
@@ -4439,6 +4453,7 @@ export function renderPortfolioComparison(input: PortfolioComparisonInput): Slid
           <td data-sort="${e.payingResidents}" style="padding:8px 10px;font-size:12px;text-align:right;">${e.payingResidents.toLocaleString("en-US")}</td>
           <td data-sort="${e.adoptionRate}" style="padding:8px 10px;font-size:12px;text-align:right;font-weight:700;color:${narColor(e.adoptionRate)};">${fmtPct(e.adoptionRate)}</td>
           <td data-sort="${e.rentPaid}" style="padding:8px 10px;font-size:12px;text-align:right;">${fmtCurrency(e.rentPaid)}</td>
+          <td data-sort="${avgRent ?? -1}" style="padding:8px 10px;font-size:12px;text-align:right;">${avgRent != null ? fmtAvgRent(avgRent) : "-"}</td>
           <td data-sort="${e.lifetimeRent ?? 0}" style="padding:8px 10px;font-size:12px;text-align:right;color:${PURPLE};font-weight:600;">${fmtLifetimeRent(e.lifetimeRent)}</td>
           <td data-sort="${e.lifetimeBills ?? 0}" style="padding:8px 10px;font-size:12px;text-align:right;">${fmtLifetimeBills(e.lifetimeBills)}</td>
           <td style="padding:6px 10px;text-align:center;">${sparkHtml}</td>
@@ -4459,26 +4474,32 @@ export function renderPortfolioComparison(input: PortfolioComparisonInput): Slid
           <td style="padding:9px 10px;font-size:12px;text-align:right;font-weight:800;color:#fff;">${combinedResidents.toLocaleString("en-US")}</td>
           <td style="padding:9px 10px;font-size:12px;text-align:right;font-weight:800;color:#fff;">${fmtPct(combinedAdoptionRate)}</td>
           <td style="padding:9px 10px;font-size:12px;text-align:right;font-weight:800;color:#fff;">${fmtCurrency(combinedRent)}</td>
+          <td style="padding:9px 10px;font-size:12px;text-align:right;font-weight:800;color:#fff;">${combinedAvgRent}</td>
           <td style="padding:9px 10px;font-size:12px;text-align:right;font-weight:800;color:#fff;">${fmtLifetimeRent(input.lifetimeRent)}</td>
           <td style="padding:9px 10px;font-size:12px;text-align:right;font-weight:800;color:#fff;">${fmtLifetimeBills(input.lifetimeBills)}</td>
           <td style="padding:6px 10px;text-align:center;">${combinedSparkHtml}</td>
         </tr>`;
 
-  // Column order is a hard requirement (Kevin, revised twice): Entity · Units on Flex · Paying
-  // Residents · Adoption Rate (<month>) · Rent Paid (<month>) · Total Rent Paid · Total Bills
-  // Paid · Adoption Trend. The two "(<month>)" headers name the single month the snapshot
-  // columns are for; the two "Total" columns are all-time since each entity joined Flex. The
-  // sparkline column is each entity's monthly adoption-rate series over the report's lookback
-  // window (Combined row = the combined adoption series) - labeled as such, not a bare "Trend"
-  // (Kevin: "is this adoption trend? if so label it as such").
+  // Column order is a hard requirement (Kevin, revised three times - round 3 twice, round 5
+  // once; Flask 2785a75): Entity · Units on Flex · Paying Residents · Adoption Rate<br>(<month>
+  // BP) · Rent Paid<br>(<month> BP) · Avg Rent Paid<br>(<month> BP) · Total Rent Paid · Total
+  // Bills Paid · Adoption Trend. The three month-stamped headers carry the BP month on their own
+  // second line (<br> - the th is white-space:normal); the two "Total" columns are all-time
+  // since each entity joined Flex. The explanatory subtitle that used to spell this out was
+  // dropped at Kevin's request ("we dont need to say this just remove"). The sparkline column
+  // is each entity's monthly adoption-rate series over the report's lookback window (Combined
+  // row = the combined adoption series) - labeled as such, not a bare "Trend" (Kevin: "is this
+  // adoption trend? if so label it as such").
   const TREND_COL = "Adoption Trend";
+  const bpLine = asOfLabel ? `<br>(${_e(asOfLabel)} BP)` : "";
   const cols = [
     "Entity", "Units on Flex", "Paying Residents",
-    asOfLabel ? `Adoption Rate (${asOfLabel} BP)` : "Adoption Rate",
-    asOfLabel ? `Rent Paid (${asOfLabel} BP)` : "Rent Paid",
+    `Adoption Rate${bpLine}`,
+    `Rent Paid${bpLine}`,
+    `Avg Rent Paid${bpLine}`,
     "Total Rent Paid", "Total Bills Paid", TREND_COL,
   ];
-  const colWidths = ["21%", "10%", "11%", "12%", "12%", "12%", "12%", "10%"];
+  const colWidths = ["20%", "9%", "10%", "12%", "11%", "10%", "11%", "9%", "8%"];
   const thHtml = cols
     .map((c, i) => {
       // Adoption Trend has no single scalar to sort by (it's a sparkline, not a number) - left
@@ -4495,17 +4516,6 @@ export function renderPortfolioComparison(input: PortfolioComparisonInput): Slid
     })
     .join("");
 
-  // Subtitle states both windows in plain words (Kevin: "rent paid sep 26 still doesn't answer
-  // my question - is it all time rent, ytd rent, or what?"): the four snapshot columns are ONE
-  // month; the two Total columns are all-time. Falls back to "the latest completed month" when
-  // the call site didn't pass asOfMonth.
-  const monthWords = asOfLabel ? `for the ${_e(asOfLabel)} BP month (latest completed)` : "for the latest completed BP month";
-  // The sparkline's window is the report's own lookback - the combined series has one point per
-  // month of it, so its length IS the window (falls back to generic wording if it wasn't passed).
-  const trendMonths = combinedMonthlySeries?.length ?? 0;
-  const trendWords = trendMonths >= 2 ? `Adoption Trend is the last ${trendMonths} months` : "Adoption Trend is monthly adoption over the report window";
-  const subtitle = `Units, Residents, Adoption and Rent Paid are ${monthWords}; Total Rent Paid / Total Bills Paid are all-time since joining Flex; ${trendWords}. Click a column header to sort.`;
-
   // The table fills the slide's remaining height (container flex:1 + table height:100% - the
   // browser distributes the extra height across the rows) instead of a short table over a big
   // blank bottom (Kevin: "there's a lot of whitespace at bottom we can fill"). With more
@@ -4516,7 +4526,6 @@ export function renderPortfolioComparison(input: PortfolioComparisonInput): Slid
     <div class="slide-header">
       <div class="slide-label">Portfolio</div>
       <div class="slide-title">Portfolio Comparison</div>
-      <div style="font-size:11px;color:#a09cb0;margin-top:4px;">${subtitle}</div>
     </div>
     <div style="overflow-y:auto;flex:1;min-height:0;display:flex;flex-direction:column;">
       <table style="width:100%;height:100%;border-collapse:collapse;table-layout:fixed;">

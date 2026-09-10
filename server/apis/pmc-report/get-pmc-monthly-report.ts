@@ -736,7 +736,7 @@ function renderExecSummary(d: ExecSummaryInput): { html: string; js: string } {
     // standardized across all three switchers.
     const btns = payload.map((p, i) =>
       i === 0
-        ? `<button class="spark-ctrl-btn is-active" onclick="flexSwitchEntity(${slideId},0,this)">${_e(p.label)}</button>`
+        ? `<button class="spark-ctrl-btn ctl-btn is-active" onclick="flexSwitchEntity(${slideId},0,this)">${_e(p.label)}</button>`
         : entitySwitchButton(i - 1, _e(p.label), `flexSwitchEntity(${slideId},${i},this)`)
     ).join("");
     entitySwitcherHtml = `<div class="spark-ctrl presenter-control" style="flex-wrap:wrap;max-width:460px;">${btns}</div>`;
@@ -1717,6 +1717,14 @@ function buildDeckHtml(params: {
   .spark-ctrl-btn.is-hidden { color: #dc5050; background: #fee2e2; border-color: #fca5a5; text-decoration: line-through; }
   .spark-ctrl-btn.is-active { color: #fff; background: #6A3DB8; border-color: #6A3DB8; }
   .spark-ctrl-btn.is-active:hover { color: #fff; background: #6A3DB8; }
+  /* View-level controls (Combined / Show all / "Q3 2026 adds") in the entity switcher rows -
+     a rounded purple-outlined pill so they read as controls, distinct from the per-entity
+     buttons' grey square-cornered look with a colored left border (Kevin: "make these a
+     little more visually apparent so theyre more distinct from the individual subsidiary
+     buttons"). .is-active still fills solid purple; the pill shape carries the distinction.
+     Mirrors Flask deck_base.html (2785a75). */
+  .spark-ctrl-btn.ctl-btn { border-radius: 999px; border-color: #c4b5e6; color: #6A3DB8; background: #f5f1fb; font-weight: 700; padding: 3px 11px; }
+  .spark-ctrl-btn.ctl-btn:hover { border-color: #6A3DB8; }
   :fullscreen .spark-ctrl, :-webkit-full-screen .spark-ctrl { display: none; }
   .stat-toggle-btn.is-active { background: #6A3DB8; color: #fff; border-color: #6A3DB8; }
   .nav-overlay { position: fixed; inset: 0; z-index: 200; background: rgba(17,17,17,0.72); display: flex; align-items: center; justify-content: center; }
@@ -5927,6 +5935,9 @@ export default api({
               // Combined all-time totals = the Since Inception subtitle's own figures.
               lifetimeRent: combinedLifetimeRent,
               lifetimeBills: combinedLifetimeBills,
+              // Combined Avg Rent Paid = the Exec Summary hero's own avg $/resident
+              // (currentRent / currentResidents from the same latestMonth row).
+              avgRentPerResident: latestMonth && latestMonth.billsPaid > 0 ? latestMonth.rentPaid / latestMonth.billsPaid : null,
             });
             pushSlide(sid, r);
             break;
@@ -6555,6 +6566,9 @@ export default api({
       // Combined all-time totals = the Since Inception subtitle's own figures.
       lifetimeRent: combinedLifetimeRent,
       lifetimeBills: combinedLifetimeBills,
+      // Combined Avg Rent Paid = the Exec Summary hero's own avg $/resident (currentRent /
+      // currentResidents from the same latestMonth row).
+      avgRentPerResident: latestMonth && latestMonth.billsPaid > 0 ? latestMonth.rentPaid / latestMonth.billsPaid : null,
     });
 
     // Flask SLIDE_ORDER: [3, 54, 6, 21, 14, 49, 12, 39, 15, 26, 50, 44, 23, 58, 34, 45, 53, 57, 59]
