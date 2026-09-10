@@ -2353,20 +2353,26 @@ export function renderAdoptionTrend(input: {
       // from, so "how many peers" always describes the number actually behind the label
       // shown, not some other month's count (Kevin's ask - thin months shouldn't read with
       // the same confidence as well-populated ones).
+      // This is the AGE-MATCHED line: each point is the matched peers' median at the same
+      // months-since-launch as the point beside it, not the same calendar month. The old
+      // "Peer Median (true 1:1 match in OR, WA)" only named the geography tier and read as a
+      // pure geo match (Kevin on Coast, 4 months old: "shouldn't it also be new rollout and
+      // time aware?") - so the chip spells out the time alignment the way the calendar-time
+      // variant below says "same time period", with the fuller distinction in the hover
+      // tooltip. Mirrors Flask render_adoption_trend; Clark keeps its extra "· N PMCs" count.
+      let stageRow: (typeof sbm)[number] | undefined;
       for (let mn = Math.max(1, msl - n + 1); mn < Math.min(msl + 1, 37); mn++) {
         const row = sbm[mn];
-        if (row?.peer_label) {
-          const countSuffix = row.pmc_count ? ` · ${row.pmc_count} PMC${row.pmc_count === 1 ? "" : "s"}` : "";
-          benchmarkLabel = `Peer Median (${row.peer_label}${countSuffix})`;
-          break;
-        }
+        if (row?.peer_label) { stageRow = row; break; }
       }
-      if (benchmarkLabel === "Peer Median" && msl > 36) {
-        const row = sbm[36];
-        if (row?.peer_label) {
-          const countSuffix = row.pmc_count ? ` · ${row.pmc_count} PMC${row.pmc_count === 1 ? "" : "s"}` : "";
-          benchmarkLabel = `Peer Median (${row.peer_label}${countSuffix})`;
-        }
+      if (!stageRow?.peer_label && msl > 36 && sbm[36]?.peer_label) stageRow = sbm[36];
+      if (stageRow?.peer_label) {
+        const countSuffix = stageRow.pmc_count ? ` · ${stageRow.pmc_count} PMC${stageRow.pmc_count === 1 ? "" : "s"}` : "";
+        benchmarkLabel = `Peer Median · ${stageRow.peer_label}${countSuffix} · same months since launch`;
+        benchmarkLabelTooltip =
+          "Each point compares your adoption rate to comparable PMCs' median at the same " +
+          "number of months after their own launch - a ramp-curve comparison, not the same " +
+          "calendar month.";
       }
     }
   }
