@@ -48,6 +48,8 @@ import {
 import { peerCriteriaLabel, splitTierRows, platinumCounterfactual, PLATINUM_MIN_PROPERTIES } from "./platinum.js";
 import type { PeerRateByMonth } from "./platinum.js";
 import { parseCheckinMonth, checkinLookback, checkinProjectionEnd, checkinSummary, renderCheckinCover, renderAdoptionCheckin } from "./checkin.js";
+import { demoteCrossStateRegions, UNKNOWN_REGION } from "./geo-regions.js";
+import type { RegionDetailRow } from "./geo-regions.js";
 
 const SNOWFLAKE_SSO = "d38ee94a-4e93-46f5-ab44-c65a99b3aea5";
 
@@ -1227,7 +1229,7 @@ interface StateBreakdownInput {
   portfolioNar: number;
   reportingMonth: string;
   slideId?: number;
-  regionDetail?: { PROPERTY_STATE: string; PROPERTY_REGION: string; PROPERTIES: number; TOTAL_UNITS: number; BILLS_PAID: number }[];
+  regionDetail?: RegionDetailRow[];
 }
 
 function renderStateBreakdown(input: StateBreakdownInput): { html: string; js: string } {
@@ -1400,8 +1402,20 @@ function renderStateBreakdown(input: StateBreakdownInput): { html: string; js: s
 
   // --- Build region map by state ---
   const regionsByState = new Map<string, { region: string; properties: number; totalUnits: number; billsPaid: number; adoptionRate: number }[]>();
+  // state -> (properties, units) for rows the query bucketed as 'Unknown' (ZIP had no DMA, or
+  // its prefix pins it to a different state than PROPERTY_STATE - see geo-regions.ts). Those
+  // never render as a bar labelled "Unknown"; they become one grey footnote line under that
+  // state's regions. The state totals above still count them. Mirrors Flask f7d95a6.
+  const unmappedByState = new Map<string, { properties: number; units: number }>();
   for (const r of regionDetail) {
     if (!r.PROPERTY_STATE) continue;
+    if (r.PROPERTY_REGION === UNKNOWN_REGION) {
+      const u = unmappedByState.get(r.PROPERTY_STATE) || { properties: 0, units: 0 };
+      u.properties += r.PROPERTIES;
+      u.units += r.TOTAL_UNITS;
+      unmappedByState.set(r.PROPERTY_STATE, u);
+      continue;
+    }
     const arr = regionsByState.get(r.PROPERTY_STATE) || [];
     const rate = r.TOTAL_UNITS > 0 ? r.BILLS_PAID / r.TOTAL_UNITS : 0;
     arr.push({ region: r.PROPERTY_REGION, properties: r.PROPERTIES, totalUnits: r.TOTAL_UNITS, billsPaid: r.BILLS_PAID, adoptionRate: rate });
@@ -1411,27 +1425,37 @@ function renderStateBreakdown(input: StateBreakdownInput): { html: string; js: s
   for (const [, regions] of regionsByState) {
     regions.sort((a, b) => b.adoptionRate - a.adoptionRate);
   }
+  const hasDrilldown = regionsByState.size > 0 || unmappedByState.size > 0;
 
   // --- Build state rows ---
   let stateRowsHtml = "";
   let stateIdx = 0;
   for (const s of states) {
     const regions = regionsByState.get(s.state);
+    const unmapped = unmappedByState.get(s.state);
     let regionBlock = "";
     let onclick = "";
-    if (regions && regions.length > 0) {
+    if ((regions && regions.length > 0) || unmapped) {
       const rowsId = `geo-region-${slideId}-${stateIdx}`;
-      const localScale = Math.max(Math.max(...regions.map(r => r.adoptionRate)), portfolioNar) * 1.15 || 1.0;
       let regionRows = "";
-      for (const rr of regions) {
-        regionRows += barRow({
-          stateLabel: rr.region,
-          rate: rr.adoptionRate,
-          avg: portfolioNar,
-          props: rr.properties,
-          units: rr.totalUnits,
-          scale: localScale,
-        });
+      if (regions && regions.length > 0) {
+        const localScale = Math.max(Math.max(...regions.map(r => r.adoptionRate)), portfolioNar) * 1.15 || 1.0;
+        for (const rr of regions) {
+          regionRows += barRow({
+            stateLabel: rr.region,
+            rate: rr.adoptionRate,
+            avg: portfolioNar,
+            props: rr.properties,
+            units: rr.totalUnits,
+            scale: localScale,
+          });
+        }
+      }
+      if (unmapped) {
+        // Footnote, not a bar: an "Unknown" row ranked among real markets read as a data error
+        // to Kevin (Allied combined deck). A state with ONLY unmapped properties still gets the
+        // expand affordance so the footnote is reachable. String matches Flask's exactly.
+        regionRows += `<div style="font-size:10px;color:#a09cb0;margin-top:4px;margin-bottom:${rowMargin};">+${unmapped.properties} ${unmapped.properties === 1 ? "property" : "properties"} · ${unmapped.units.toLocaleString()} units without a mapped market</div>`;
       }
       // Left border acts as a visible tree guide-line connecting every region row back to
       // its parent state - a plain padding-left (the old approach) only nudged the label
@@ -1473,11 +1497,11 @@ function renderStateBreakdown(input: StateBreakdownInput): { html: string; js: s
   if (hasEst) {
     legendText += ` &middot; Darker shade = established properties (3+ mo.) &middot; Lighter shade = all properties`;
   }
-  if (regionsByState.size > 0) {
+  if (hasDrilldown) {
     legendText += ` &middot; Click a state to see its regions`;
   }
 
-  const regionScript = regionsByState.size > 0
+  const regionScript = hasDrilldown
     ? `<script>if(!window.flexToggleGeoRegion){window.flexToggleGeoRegion=function(rowId){var block=document.getElementById(rowId);if(!block)return;block.style.display=(block.style.display==='none')?'block':'none';};}</script>`
     : "";
 
@@ -2587,6 +2611,9 @@ export default api({
     const RegionDetailSchema = z.object({
       PROPERTY_STATE: z.string(),
       PROPERTY_REGION: z.string(),
+      // First 3 digits of the property's ZIP - consumed (and dropped) by demoteCrossStateRegions,
+      // see geo-regions.ts. NULL when the property has no ZIP on file.
+      ZIP_PREFIX: z.string().nullable(),
       PROPERTIES: z.number(),
       TOTAL_UNITS: z.number(),
       BILLS_PAID: z.number(),
@@ -2659,8 +2686,15 @@ export default api({
     // on purpose (that's real, deliberately-tuned query cost this session already fought to keep
     // under control; Kevin didn't ask for those in Expansion, so they're untouched).
     const needsRegionDetail = needsQBRQueries || deck_mode === "expansion";
-    const regionDetailPromise = !needsRegionDetail
-      ? Promise.resolve([] as { PROPERTY_STATE: string; PROPERTY_REGION: string; PROPERTIES: number; TOTAL_UNITS: number; BILLS_PAID: number }[])
+    // The DMA is trusted only when the ZIP's 3-digit prefix agrees with t.PROPERTY_STATE: the
+    // SQL additionally groups by LEFT(PROPERTY_ZIP, 3) as ZIP_PREFIX and demoteCrossStateRegions
+    // (geo-regions.ts) folds any disagreeing rows into 'Unknown' and re-aggregates back to
+    // (state, region) before anything downstream sees the rows - so both await sites (QBR batch
+    // + Expansion) get the fixed frame. Mirrors Flask f7d95a6 (SEATTLE - TACOMA / DENVER were
+    // listed under CA on Kevin's Allied combined deck because the CA properties carried WA/CO
+    // ZIPs). State totals elsewhere are untouched; only the region bucket moves.
+    const regionDetailPromise: Promise<RegionDetailRow[]> = !needsRegionDetail
+      ? Promise.resolve([] as RegionDetailRow[])
       : ctx.integrations.snowflake_sso.query(
           `WITH prop_zip AS (
               SELECT PROPERTY_PUBLIC_ID, PROPERTY_ZIP,
@@ -2670,6 +2704,7 @@ export default api({
            SELECT
               t.PROPERTY_STATE                            AS PROPERTY_STATE,
               COALESCE(dma.DMA_NAME, 'Unknown')           AS PROPERTY_REGION,
+              LEFT(p.PROPERTY_ZIP, 3)                     AS ZIP_PREFIX,
               COUNT(DISTINCT t.PROPERTY_NAME)             AS PROPERTIES,
               SUM(t.PROPERTY_UNIT_COUNT)                  AS TOTAL_UNITS,
               SUM(t.BILLS_PAID_COUNT)                     AS BILLS_PAID
@@ -2682,12 +2717,12 @@ export default api({
              AND t.BP_MONTH = ?
              AND t.IS_IN_NETWORK = TRUE
              AND t.PROPERTY_STATE IS NOT NULL AND t.PROPERTY_STATE != ''
-           GROUP BY t.PROPERTY_STATE, COALESCE(dma.DMA_NAME, 'Unknown')
+           GROUP BY t.PROPERTY_STATE, COALESCE(dma.DMA_NAME, 'Unknown'), LEFT(p.PROPERTY_ZIP, 3)
            ORDER BY t.PROPERTY_STATE, BILLS_PAID DESC`,
           RegionDetailSchema,
           [pmc_name, reportingMonthStr],
           { label: "Pull DMA region detail for geo slide dropdowns" }
-        ).catch(() => [] as { PROPERTY_STATE: string; PROPERTY_REGION: string; PROPERTIES: number; TOTAL_UNITS: number; BILLS_PAID: number }[]);
+        ).then(demoteCrossStateRegions).catch(() => [] as RegionDetailRow[]);
 
     // Dedicated property-level peer pool — Flask's real pull_network_property_pool
     // (generator/data.py:4900-5066), NOT a reuse of networkPool above. networkPool is
@@ -3314,7 +3349,7 @@ export default api({
     });
 
     // --- Network property pool was moved earlier (fired before the batch) ---
-    let regionDetail: { PROPERTY_STATE: string; PROPERTY_REGION: string; PROPERTIES: number; TOTAL_UNITS: number; BILLS_PAID: number }[] = [];
+    let regionDetail: RegionDetailRow[] = [];
     // Subject PMC's own properties' median renter income, keyed by property name — feeds the
     // RTI (rent-to-income) peer-matching tier in peer-matching.ts's resolvePropertyPeerMetric.
     const subjectIncomeByProperty = new Map<string, number>();
