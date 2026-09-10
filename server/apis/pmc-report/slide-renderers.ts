@@ -321,9 +321,10 @@ export interface QuarterAddsInput {
 }
 
 /** "159 properties, 27,961 units" - the counts clause shared by the combined and per-entity
- * quarter headers (Flask `_q_counts`). */
+ * quarter headers. Flask-exact (`f"{n:,} properties, {u:,} units"`): always "properties", never a
+ * singular "1 property"; explicit en-US grouping so a POSIX-locale container still prints commas. */
 function quarterAddsCounts(s: QuarterAddsSeries): string {
-  return `${s.propertyCount.toLocaleString()} ${s.propertyCount === 1 ? "property" : "properties"}, ${s.unitCount.toLocaleString()} units`;
+  return `${s.propertyCount.toLocaleString("en-US")} properties, ${s.unitCount.toLocaleString("en-US")} units`;
 }
 
 function quarterAddsHeader(quarter: CalendarQuarter, s: QuarterAddsSeries): string {

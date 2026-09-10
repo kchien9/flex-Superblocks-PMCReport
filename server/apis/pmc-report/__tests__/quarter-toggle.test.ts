@@ -109,10 +109,10 @@ test("Residents/Units: two quarter buttons most recent first, with per-entity he
   assert.ok(!pq4.header.includes("(BP months"));
   // per-entity headers use the display-shortened name (same list the switcher buttons print)
   assert.deepEqual(pq4.entityHeaders, [
-    `${alphaShort} · properties added in Q4 2025 — 1 property, 100 units`,
-    `${betaShort} · properties added in Q4 2025 — 1 property, 200 units`,
+    `${alphaShort} · properties added in Q4 2025 — 1 properties, 100 units`,
+    `${betaShort} · properties added in Q4 2025 — 1 properties, 200 units`,
   ]);
-  assert.deepEqual(pq3.entityHeaders, [`${alphaShort} · properties added in Q3 2025 — 1 property, 100 units`, null]);
+  assert.deepEqual(pq3.entityHeaders, [`${alphaShort} · properties added in Q3 2025 — 1 properties, 100 units`, null]);
   assert.equal(pq3.entities["2"], undefined); // Beta (view index 2) hidden while Q3 is selected
   assert.ok(pq3.entities["1"]);
   assert.equal(pq4.combined.residents.length, monthlyTotals.length);
