@@ -408,7 +408,12 @@ function renderCover(kpis: { pmcName: string; reportingMonth: string; partnerSin
   </div>`;
 }
 
-interface ExecSummaryInput {
+/**
+ * Exported ONLY so __tests__/exec-switcher-wiring.test.ts can render a combined Exec Summary
+ * and assert the switcher's wiring is complete. Nothing else imports it - the deck builds this
+ * slide through renderExecSummary below, in-module, as it always has.
+ */
+export interface ExecSummaryInput {
   slideId: number;
   pmcName: string;
   reportingMonth: string;
@@ -461,18 +466,37 @@ interface ExecSummaryInput {
   // + its "N last 3 months" sub-label, and all five sparklines - not just the four tile values.
   // `monthly` is this entity's own series over the same window monthlyTotals covers (sparse:
   // only months the entity has rows in, chronological), built from the same inNetwork rows, so
-  // the per-entity figures sum exactly to the combined ones. What still can't switch: True
-  // repeat rate (PARTNER_REPORTING_CORE_METRICS / cohort query, combined only) and Delinquency
-  // shielded (a single combined SUM) - neither has a per-entity source in this report.
+  // the per-entity figures sum exactly to the combined ones.
+  //
+  // dqShielded / dqSinceComparison are the Delinquency-shielded tile's value and its
+  // since-comparison pill, per entity - the last node on this slide that didn't switch. The
+  // tile used to be emitted with no id at all, so picking a subsidiary left the whole combined
+  // portfolio's DQ dollar figure and its green pill on screen under that subsidiary's numbers:
+  // plausible, and wrong. Flask has always swapped it (_exec_switch_ids["dq"] /
+  // _exec_pill_ids["dq"], generator/slides.py:9057/9068, emitted at :9546-9549), fed by these
+  // same two per-entity values (app.py:2204-2229); the call site's entityDqFor computes them
+  // from a dedicated per-entity DQ_PROPERTY pull. null means "no shielded rent for this entity
+  // in the window", which renders the same em-dash + empty pill Combined shows in that state.
+  //
+  // What STILL doesn't switch, deliberately: True repeat rate. It comes from the retention
+  // cohort / PARTNER_REPORTING_CORE_METRICS, computed at the combined level only - there is no
+  // per-entity source for it anywhere in either repo, and Flask documents the same decision
+  // (slides.py:9262-9266: "that one tile intentionally does NOT switch and always shows the
+  // combined figure, documented rather than faked"). Do not give that tile an id.
   entityBreakdown?: {
     pmcName: string; currentResidents: number; currentRent: number; currentNar: number; propertyCount: number; totalUnits: number;
     prevResidents: number | null; prevRent: number | null; prevNar: number | null; prevPropertyCount: number | null;
     currentNewSignups: number;
     monthly: { month: string; billsPaid: number; units: number; rentPaid: number; newSignups: number; adoptionRate: number }[];
+    dqShielded: number | null;
+    dqSinceComparison: number | null;
   }[];
 }
 
-function renderExecSummary(d: ExecSummaryInput): { html: string; js: string } {
+/**
+ * Exported ONLY for __tests__/exec-switcher-wiring.test.ts (see ExecSummaryInput above).
+ */
+export function renderExecSummary(d: ExecSummaryInput): { html: string; js: string } {
   const slideId = d.slideId;
   const pmc = _e(d.pmcName);
   // Bare full month, no "BP month" suffix (Flask _month_full, 56265fa) - the ONE reporting-month
@@ -634,17 +658,30 @@ function renderExecSummary(d: ExecSummaryInput): { html: string; js: string } {
   const rwl = rentWindowLabel({ partnerSince: d.partnerSince, lookbackMonths: d.lookbackMonths, coversFullTenure: tenureMonths <= d.lookbackMonths && !!d.partnerSince });
 
   // ── DQ shielded ───────────────────────────────────────────────────────────
-  const dqVal = d.lifetimeDqShielded != null && d.lifetimeDqShielded > 0 ? fmtCurrency(d.lifetimeDqShielded) : "\u2014";
+  // The tile's value string, a function for the same reason dqPillFor below is one - the
+  // switcher builds each entity's own with this exact rule. Combined's output is byte-identical
+  // to what it was before the switcher existed; an entity's is what the tile WOULD read if the
+  // deck were that entity alone.
+  const dqValFor = (shielded: number | null): string =>
+    shielded != null && shielded > 0 ? fmtCurrency(shielded) : "\u2014";
+  const dqVal = dqValFor(d.lifetimeDqShielded);
   // Window now tracks the report's own period (Full/Quarter/YTD via lookbackMonths) instead of
   // a fixed 13 months — caption names the real window so it's never ambiguous (Kevin's catch).
+  // The caption is deliberately NOT per-entity and does not switch: every entity's figure is
+  // summed over the same lookbackMonths window (see entityDqFor at the call site), so one
+  // caption is true for all of them — same as Flask, whose _dq_caption sits outside
+  // _exec_switch_ids entirely.
   const dqSub = d.lifetimeDqShielded != null && d.lifetimeDqShielded > 0
     ? `rent covered when residents missed — trailing ${d.lookbackMonths} month${d.lookbackMonths === 1 ? "" : "s"}`
     : "";
-  // DQ since-comparison pill — always green/positive framing
-  let dqPill = "";
-  if (d.dqSinceComparison != null && d.dqSinceComparison > 0) {
-    dqPill = `<div class="exec-delta" style="display:inline-block;background:rgba(26,158,106,0.11);color:#1a9e6a;font-size:10px;font-weight:700;border-radius:6px;padding:3px 9px;margin-top:6px;">+${fmtCurrency(d.dqSinceComparison)} ${_vs}</div>`;
-  }
+  // DQ since-comparison pill — always green/positive framing. A function (not a one-off) so
+  // the entity switcher below builds each entity's own DQ pill with the exact same rule the
+  // Combined one uses; same reason heroRentPill / sparksFor / signupsSubFor are functions.
+  const dqPillFor = (sinceComparison: number | null): string =>
+    sinceComparison == null || sinceComparison <= 0
+      ? ""
+      : `<div class="exec-delta" style="display:inline-block;background:rgba(26,158,106,0.11);color:#1a9e6a;font-size:10px;font-weight:700;border-radius:6px;padding:3px 9px;margin-top:6px;">+${fmtCurrency(sinceComparison)} ${_vs}</div>`;
+  const dqPill = dqPillFor(d.dqSinceComparison);
 
   // ── New signups QTD sub-label ─────────────────────────────────────────────
   // A function so the entity switcher below can build each entity's own sub-label with the
@@ -717,6 +754,10 @@ function renderExecSummary(d: ExecSummaryInput): { html: string; js: string } {
     res: pill(e.currentResidents, e.prevResidents, "abs"),
     nar: pill(e.currentNar, e.prevNar, "pp"),
     rent: heroRentPill(e.currentRent, e.prevRent),
+    // Fifth pill, matching Flask's _entity_pills (slides.py:9398-9418), which has had a "dq"
+    // key all along. Built by the same dqPillFor the Combined pill uses, off this entity's own
+    // windowed DQ sum since the same combined comparison month.
+    dq: dqPillFor(e.dqSinceComparison),
   }));
   // Wraps a pill in a swappable container when the switcher is live. display:contents keeps
   // the pill div itself as the flex item / inline-block it already is (the wrapper generates
@@ -766,12 +807,18 @@ function renderExecSummary(d: ExecSummaryInput): { html: string; js: string } {
       sparks: sparksFor(monthly),
     });
     const entityLabels = displayEntityNames(entities.map((e) => e.pmcName));
+    // `dq` is the Delinquency-shielded tile's value string, built by the same dqValFor the
+    // Combined tile uses. It joins the payload (and the handler's update set below) because the
+    // tile had no id at all until now: selecting a subsidiary left the entire combined
+    // portfolio's DQ figure and its green pill on screen. Flask has swapped this since
+    // _exec_switch_ids gained its "dq" key (slides.py:9057).
     const payload = [
-      { label: "Combined", ...fmtEntity(d.currentResidents, d.currentRent, nar, d.propertyCount), ...viewFor(d.monthlyTotals, d.currentNewSignups, d.lifetimeRent), pills: { props: pillProps, res: pillResidents, nar: pillNar, rent: heroPill } },
+      { label: "Combined", ...fmtEntity(d.currentResidents, d.currentRent, nar, d.propertyCount), ...viewFor(d.monthlyTotals, d.currentNewSignups, d.lifetimeRent), dq: dqVal, pills: { props: pillProps, res: pillResidents, nar: pillNar, rent: heroPill, dq: dqPill } },
       ...entities.map((e, i) => ({
         label: entityLabels[i],
         ...fmtEntity(e.currentResidents, e.currentRent, e.currentNar, e.propertyCount),
         ...viewFor(e.monthly, e.currentNewSignups, e.monthly.reduce((s, m) => s + m.rentPaid, 0)),
+        dq: dqValFor(e.dqShielded),
         pills: entityPills[i],
       })),
     ];
@@ -799,8 +846,10 @@ function renderExecSummary(d: ExecSummaryInput): { html: string; js: string } {
       + `setTxt('ev_props_'+slideId,d.properties);setTxt('ev_res_'+slideId,d.residents);`
       + `setTxt('ev_nar_'+slideId,d.nar);setTxt('ev_rent_'+slideId,d.rent);setTxt('ev_avg_'+slideId,d.avg);`
       + `setTxt('ev_lifetime_'+slideId,d.lifetime);setTxt('ev_newsig_'+slideId,d.newSignups);setTxt('ev_sigsub_'+slideId,d.signupsSub);`
+      // Delinquency shielded - the tile this handler used to leave at the combined figure.
+      + `setTxt('ev_dq_'+slideId,d.dq);`
       + `var p=d.pills||{};setHtml('ep_props_'+slideId,p.props);setHtml('ep_res_'+slideId,p.res);`
-      + `setHtml('ep_nar_'+slideId,p.nar);setHtml('ep_rent_'+slideId,p.rent);`
+      + `setHtml('ep_nar_'+slideId,p.nar);setHtml('ep_rent_'+slideId,p.rent);setHtml('ep_dq_'+slideId,p.dq);`
       // Sparklines swap INSIDE their existing wrappers (sp_nar_/sp_res_/ss_/sp_mo_ are the same
       // divs flexToggleSpark shows/hides, so a hidden sparkline stays hidden across a switch);
       // the hero area gets its own wrapper id below. A wrapper only exists when the Combined
@@ -816,8 +865,11 @@ function renderExecSummary(d: ExecSummaryInput): { html: string; js: string } {
   // With the switcher live, an entity's pill can exist even when Combined's doesn't, so the
   // Hide/Show-change toggle has to account for every entry's pills - otherwise a subsidiary's
   // delta would have no way to be hidden. Without the switcher this is exactly the old check.
-  const anyEntityDelta = showEntitySwitcher && entityPills.some((p) => !!(p.props || p.res || p.nar || p.rent));
-  const anyDelta = !!(pillProps || pillResidents || pillNar || heroPill) || anyEntityDelta;
+  // p.dq included since the DQ pill is now swappable too - an entity whose only delta is its
+  // DQ pill would otherwise have no way to be hidden. Flask's own _any_delta already counts
+  // every value in every entity's pill dict plus the combined _dq_since_pill (slides.py:9520).
+  const anyEntityDelta = showEntitySwitcher && entityPills.some((p) => !!(p.props || p.res || p.nar || p.rent || p.dq));
+  const anyDelta = !!(pillProps || pillResidents || pillNar || heroPill || dqPill) || anyEntityDelta;
 
   // Starts hidden when the form-level toggle forces it (Kevin's ask) - the button and its
   // onclick logic are otherwise unchanged, so the live in-deck override still works exactly the
@@ -881,8 +933,12 @@ function renderExecSummary(d: ExecSummaryInput): { html: string; js: string } {
         ${hiddenTileSet.has("residents_paying") ? "" : tile("Residents paying", d.currentResidents.toLocaleString("en-US"), "", wrapPill("res", pillResidents), residentsSparkHtml, svgPerson, showEntitySwitcher ? `ev_res_${slideId}` : "")}
         ${hiddenTileSet.has("new_residents") ? "" : tile("New residents paying this month", d.currentNewSignups.toLocaleString("en-US"), signupsSub, "", signupsSparkHtml, svgNewP, showEntitySwitcher ? `ev_newsig_${slideId}` : "", showEntitySwitcher ? `ev_sigsub_${slideId}` : "")}
         ${hiddenTileSet.has("adoption_rate") ? "" : tile("Adoption rate", fmtPct(nar), "", wrapPill("nar", pillNar), narSparkHtml, svgPct, showEntitySwitcher ? `ev_nar_${slideId}` : "")}
+        <!-- True repeat rate gets NO value id on purpose: no per-entity source exists for it
+             (combined-level cohort / PARTNER_REPORTING_CORE_METRICS only), and Flask makes the
+             same call explicitly at slides.py:9262-9266. It is the one tile that stays
+             Combined in every switcher view. -->
         ${hiddenTileSet.has("true_repeat_rate") ? "" : tile("True repeat rate", retentionVal, retentionSub, "", "", svgRepeat)}
-        ${hiddenTileSet.has("delinquency_shielded") ? "" : tile("Delinquency shielded", dqVal, dqSub, dqPill, "", svgShield)}
+        ${hiddenTileSet.has("delinquency_shielded") ? "" : tile("Delinquency shielded", dqVal, dqSub, wrapPill("dq", dqPill), "", svgShield, showEntitySwitcher ? `ev_dq_${slideId}` : "")}
       </div>
     </div>
   </div>`;
@@ -2932,6 +2988,16 @@ export default api({
       NUMBER_OF_RESIDENTS: z.number().nullable(),
     });
 
+    // Per-entity DQ rows (PMC_NAME x BP_MONTH grain) for the Exec Summary switcher's
+    // Delinquency-shielded tile + pill. A separate query from the combined one rather than
+    // adding PMC_NAME to its GROUP BY, for the same reason EntityYearlyRentSchema is separate:
+    // the combined pull's month-grain shape is what the Delinquency slide's trend chart reads.
+    const EntityDqShieldedRowSchema = z.object({
+      PMC_NAME: z.string(),
+      BP_MONTH: z.string().nullable(),
+      TOTAL_RENT_SHIELDED: z.number().nullable(),
+    });
+
     const SegmentPercentilesSchema = z.object({
       METRIC: z.string(),
       P25: z.number().nullable(),
@@ -3468,7 +3534,7 @@ export default api({
       ROLLOUT_DATE: z.string(),
       FIRST_CONNECTED_AT: z.string(),
     });
-    const [metricsRows, dqShieldedRows, yearlyRentBillsRows, entityYearlyRentRows, trendRawRows, retentionCohortRows, customerMonthRows, subjectSignupTimingRows] = await Promise.all([
+    const [metricsRows, dqShieldedRows, entityDqShieldedRows, yearlyRentBillsRows, entityYearlyRentRows, trendRawRows, retentionCohortRows, customerMonthRows, subjectSignupTimingRows] = await Promise.all([
       ctx.integrations.snowflake_sso.query(
         `SELECT TO_VARCHAR(BP_MONTH, 'YYYY-MM-DD') AS BP_MONTH, NAR, SEGMENT_NAR_AVG,
                 BILLS_PAID, BILLS_PAID_NEW, BILLS_PAID_REPEAT, BILLS_PAID_PREV_MONTH,
@@ -3503,6 +3569,29 @@ export default api({
         [...allPmcNames, cutoffStr],
         { label: "Fetch DQ shielded data from DQ_PROPERTY" }
       ),
+      // Per-entity DQ, for the Exec Summary switcher's Delinquency-shielded tile. Same table,
+      // same 13-month bounds and same cutoff as the combined pull directly above - one grain
+      // finer - so the per-entity figures sum exactly to the combined one rather than
+      // approximately. Gated on allPmcNames.length > 1: a single-PMC report has no switcher
+      // and never fires this. Mirrors Flask, which pulls each entity's own delinquency frame
+      // into _dq_split for exactly this purpose (app.py:2196-2201).
+      allPmcNames.length > 1
+        ? ctx.integrations.snowflake_sso.query(
+            `SELECT PMC_NAME,
+                    TO_VARCHAR(BP_MONTH, 'YYYY-MM-DD') AS BP_MONTH,
+                    SUM(TOTAL_RENT_SHIELDED) AS TOTAL_RENT_SHIELDED
+             FROM PRODUCTION.EXTERNAL_REPORTING.DQ_PROPERTY
+             WHERE PMC_NAME IN (${allPmcNames.map(() => "?").join(", ")})
+               AND BP_MONTH >= DATEADD('month', -13, CURRENT_DATE())
+               AND BP_MONTH < ?
+             GROUP BY 1, 2
+             ORDER BY 1, 2 DESC
+             LIMIT 500`,
+            EntityDqShieldedRowSchema,
+            [...allPmcNames, cutoffStr],
+            { label: "Fetch DQ shielded per combined entity (exec summary switcher)" }
+          ).catch(() => [] as z.infer<typeof EntityDqShieldedRowSchema>[])
+        : Promise.resolve([] as z.infer<typeof EntityDqShieldedRowSchema>[]),
       needsSinceInception
         ? ctx.integrations.snowflake_sso.query(
             `SELECT
@@ -5637,6 +5726,64 @@ export default api({
     // per-entity hero window rent, "N last 3 months" sub-label and sparklines; sparse (only
     // months the entity has rows in), chronological like monthlyTotals.
     const inNetworkByPmc = groupRowsByPmc(inNetwork);
+    // ── Per-entity Delinquency shielded, for the Exec Summary switcher ──────────────────────
+    // The DQ tile was the last node on that slide that never switched: it was emitted with no
+    // id at all, so selecting a subsidiary left the entire combined portfolio's DQ dollar
+    // figure and its green pill sitting under the subsidiary's own numbers. It looked right
+    // and it was wrong, which is the worst failure mode there is in a live partner meeting.
+    //
+    // Flask swaps it (_exec_switch_ids["dq"] / _exec_pill_ids["dq"], slides.py:9057/9068,
+    // emitted at :9546-9549), fed by per-entity dq_shielded / dq_since_comparison backfilled
+    // into _pmc_split at app.py:2204-2229. These two values reproduce that computation
+    // exactly:
+    //
+    //   dqShielded        = SUM(total_rent_shielded) over this entity's rows from its OWN
+    //                       latest DQ month back (lookback_months - 1) calendar months.
+    //   dqSinceComparison = the same windowed rows, further restricted to months strictly
+    //                       AFTER the combined comparison month.
+    //
+    // Two details that are easy to get wrong and that Flask pins:
+    //  * the window is anchored at each entity's own latest DQ month, not at the report's
+    //    latestCompletedMonth - DQ_PROPERTY lags BP_MONTH by a month, and anchoring at the
+    //    report month silently drops the oldest real DQ row (the same bug the combined figure
+    //    already had fixed, see dqLatestMonth above);
+    //  * the window length is lookback_months (the report's own Full/Quarter/YTD period), NOT
+    //    the min(tenure, 12) rule delinquencyWindowMonths implements. That rule gates the
+    //    standalone Delinquency SLIDE; the exec tile has always tracked the report period, and
+    //    Flask's per-entity backfill uses `lookback` too (app.py:2214). Mixing them would make
+    //    the tile disagree with its own "trailing N months" caption.
+    //
+    // The comparison month is the COMBINED one (comparisonMonth), not a per-entity one - same
+    // as Flask, which reads _cmp_month off the combined monthly frame for every entity, so all
+    // nine switcher views describe the same period.
+    const entityDqByPmc = new Map<string, { month: string; shielded: number }[]>();
+    for (const r of entityDqShieldedRows) {
+      if (r.BP_MONTH == null) continue;
+      const arr = entityDqByPmc.get(r.PMC_NAME) ?? [];
+      arr.push({ month: r.BP_MONTH, shielded: r.TOTAL_RENT_SHIELDED ?? 0 });
+      entityDqByPmc.set(r.PMC_NAME, arr);
+    }
+    function entityDqFor(name: string): { shielded: number | null; sinceComparison: number | null } {
+      const rows = entityDqByPmc.get(name);
+      if (rows == null || rows.length === 0) return { shielded: null, sinceComparison: null };
+      // String max, not the query's ORDER BY - same defensive derivation as dqLatestMonth.
+      const latest = rows.reduce((acc, r) => (r.month > acc ? r.month : acc), rows[0].month);
+      const windowStartDate = new Date(latest + "T00:00:00Z");
+      windowStartDate.setUTCMonth(windowStartDate.getUTCMonth() - (lookback_months - 1));
+      const windowStart = windowStartDate.toISOString().slice(0, 10);
+      const windowed = rows.filter((r) => r.month >= windowStart);
+      const shielded = windowed.reduce((sum, r) => sum + r.shielded, 0);
+      const since = comparisonMonth
+        ? windowed.filter((r) => r.month > comparisonMonth).reduce((sum, r) => sum + r.shielded, 0)
+        : null;
+      // Same "> 0 ? n : null" normalization the combined lifetimeDqShielded /
+      // dqSinceComparison get at the renderExecSummary call below, so an entity with no
+      // shielded rent renders the tile's em-dash and an empty pill exactly like Combined does.
+      return {
+        shielded: shielded > 0 ? shielded : null,
+        sinceComparison: since != null && since > 0 ? since : null,
+      };
+    }
     const entityBreakdown = canonicalGroups(latestRows).map(([name, rows]) => {
       const residents = rows.reduce((s, r) => s + r.BILLS_PAID, 0);
       const rent = rows.reduce((s, r) => s + r.RENT_PAID, 0);
@@ -5645,6 +5792,7 @@ export default api({
       const prevResidents = prevRows ? prevRows.reduce((s, r) => s + r.BILLS_PAID, 0) : null;
       const prevUnits = prevRows ? prevRows.reduce((s, r) => s + r.PROPERTY_UNIT_COUNT, 0) : null;
       const prevProps = prevRows ? new Set(prevRows.map((r) => r.PROPERTY_NAME)).size : 0;
+      const dq = entityDqFor(name);
       const ebMap = new Map<string, { billsPaid: number; units: number; rentPaid: number; newSignups: number }>();
       for (const row of inNetworkByPmc.get(name) ?? []) {
         const existing = ebMap.get(row.BP_MONTH) || { billsPaid: 0, units: 0, rentPaid: 0, newSignups: 0 };
@@ -5675,6 +5823,11 @@ export default api({
         // Same NEW_SIGNUPS ?? 0 sum monthlyTotals' newSignups uses, over this entity's latest rows.
         currentNewSignups: rows.reduce((s, r) => s + (r.NEW_SIGNUPS ?? 0), 0),
         monthly,
+        // Delinquency shielded + its since-comparison pill value, so the switcher can swap the
+        // DQ tile (see entityDqFor above). Sourced from the entity's OWN DQ rows, which is why
+        // this needed its own query rather than being derivable from anything already pulled.
+        dqShielded: dq.shielded,
+        dqSinceComparison: dq.sinceComparison,
       };
     });
 
