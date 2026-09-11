@@ -5585,7 +5585,26 @@ export default api({
     const cohortTrueRepeatEarly = (retentionCohortRows.length > 0 && (retentionCohortRows[0]?.TOTAL_CUSTOMERS ?? 0) >= RELIABLE_REPEAT_RATE_MIN)
       ? retentionCohortRows[0]?.TRUE_REPEAT_RATE ?? null
       : null;
-    const effectiveTrueRepeat = cohortTrueRepeatEarly ?? trueRepeatRate;
+    // ── True Repeat Rate: ONE value, read by every consumer ──────────────────────────────
+    // The deck had two sources and four renderings of one fact: the Exec Summary tile read
+    // `effectiveTrueRepeat` (cohort-preferred), QBR's close read its own local copy of the same
+    // expression, Expansion's retention slide read a third copy, and
+    // renderExpansionCaseClose was handed the BARE MoM fallback - so a single Expansion deck
+    // could state one partner's repeat rate as two different numbers, on two slides, minutes
+    // apart. Flask's answer (slides.py:76-106) is that the value is computed exactly once
+    // beside the other kpis (_set_true_repeat_rate, app.py:748) and every renderer that STATES
+    // the metric reads it through _repeat_rate / _repeat_rate_str - never recomputing, never
+    // formatting it itself.
+    //
+    // This is that single source. Cohort-derived where it's reliable, MoM fallback otherwise
+    // (both already gated on RELIABLE_REPEAT_RATE_MIN above), then Flask's _repeat_rate gate:
+    // a non-positive value is not a real number to quote, so it becomes null and callers fall
+    // back qualitatively. Every read site below uses THIS const; printing always goes through
+    // the shared fmtPct (formatters.ts), so one source AND one rendering - the exact pair
+    // Kevin's AJH catch needed ("100%" on the tile vs "100.0%" on the proof point).
+    const effectiveTrueRepeat = ((cohortTrueRepeatEarly ?? trueRepeatRate) ?? 0) > 0
+      ? (cohortTrueRepeatEarly ?? trueRepeatRate)
+      : null;
 
     // Per-entity current-month numbers for the Exec Summary switcher (Task 9). Grouped from
     // latestRows - the exact same row set the combined currentResidents/currentRent/totalUnits
@@ -5859,7 +5878,9 @@ export default api({
     // Computed here (shared by both QBR and expansion mode, which branches before QBR's own
     // later retention-slide computation of the same value) so it exists before either code path
     // that might read it.
-    const subjectRepeatValue = (cohortTrueRepeatEarly ?? trueRepeatRate) ?? retentionAvg;
+    // effectiveTrueRepeat, not a fourth copy of the cohort-vs-MoM expression (see its
+    // declaration for why this metric now has exactly one source).
+    const subjectRepeatValue = effectiveTrueRepeat ?? retentionAvg;
 
     let loyaltyBuckets: { name: string; description: string; count: number; color: string }[] | null = null;
     let loyaltyTotal = 0;
@@ -6479,12 +6500,10 @@ export default api({
               slideId: slideNum,
               pmcName: pmcDisplayName,
               reportingMonth: latestCompletedMonth,
-              // Was the bare MoM-based trueRepeatRate directly - unlike QBR's own retention
-              // slide, which already prefers the cohort-derived value (stable lifetime metric,
-              // matches Flask) over the MoM fallback (non-deterministic across months). Fixed
-              // to use the same preference here, so Expansion's hero stat isn't a different,
-              // less-reliable number than QBR's for the same PMC.
-              trueRepeatRate: cohortTrueRepeatEarly ?? trueRepeatRate,
+              // effectiveTrueRepeat - the deck's single source (see its declaration). This
+              // used to be the bare MoM trueRepeatRate, then its own inline copy of the
+              // cohort-preferring expression; both are gone.
+              trueRepeatRate: effectiveTrueRepeat,
               avgRetention: retentionAvg,
               momRates: momRetentionRates,
               loyaltyBuckets,
@@ -6631,7 +6650,13 @@ export default api({
               lifetimeDqShielded: lifetimeDqShielded ?? 0,
               hasNiroActivity: false,
               benchmarkNar: canonicalPeerNarP50 ?? segmentNarAvg ?? 0.085,
-              trueRepeatRate,
+              // effectiveTrueRepeat, NOT the bare MoM `trueRepeatRate` this used to pass.
+              // renderExpansionCaseClose states the metric as a proof point on the closing
+              // slide while the retention slide two slides earlier stated the cohort value -
+              // the same Expansion deck quoted one partner's repeat rate as two numbers.
+              // Exactly Kevin's live AJH catch, which Flask fixed by giving the metric one
+              // source (slides.py:76-106).
+              trueRepeatRate: effectiveTrueRepeat,
               // Names the real window lifetimeDqShielded is summed over (Kevin's catch) -
               // see the comment at its use inside renderExpansionCaseClose.
               lookbackMonths: lookback_months,
@@ -6958,10 +6983,10 @@ export default api({
     // Use cohort-derived true repeat rate (lifetime metric, stable across runs).
     // The MoM fallback (trueRepeatRate) measures a different thing and is non-deterministic
     // across months, so only use it if the cohort query genuinely has no data.
-    // Reuses cohortTrueRepeatEarly (already gated on RELIABLE_REPEAT_RATE_MIN above) rather
-    // than re-reading TRUE_REPEAT_RATE raw - same value QBR's exec tile and Peer Benchmarks
-    // already use, so this slide's hero stat can't drift from what the rest of the deck shows.
-    const finalTrueRepeatRate = cohortTrueRepeatEarly ?? trueRepeatRate;
+    // Reads effectiveTrueRepeat, the deck's single source (see its declaration) - this was a
+    // third local copy of the cohort-vs-MoM expression. Kept as a named alias rather than
+    // inlined so the two call sites below read unchanged.
+    const finalTrueRepeatRate = effectiveTrueRepeat;
 
     // Average rent per resident per month (for KPI card) — from monthlyTotals (real,
     // PROPERTY_BP_MONTH_STATS-derived), not the fabricated PARTNER_REPORTING_CORE_METRICS table.
