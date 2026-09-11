@@ -394,3 +394,53 @@ export function resolvePropertyPeerEngagement(
     (p) => p.t12EngPer100, 8, subjectIncome,
   );
 }
+
+// ─── Subject portfolio ceiling (Salesforce total company units) ─────────────
+
+/** One DIM_SALES_ACCOUNTS row for a subject PMC, as selected by get-pmc-monthly-report.ts. */
+export interface SubjectPortfolioRow {
+  PMC_ID: number | null;
+  TOTAL_COMPANY_UNITS: number | null;
+  FLEX_UNITS: number | null;
+}
+
+/**
+ * Total company units for the subject (or combined) PMC — the "Path to Full Portfolio" ceiling
+ * and the Portfolio Penetration denominator.
+ *
+ * Flask's rule, which this mirrors: ONE account row per PMC, then sum across the named PMCs.
+ *   - compute_benchmark's portfolio_total takes a single row (cursor.fetchone(),
+ *     generator/data.py:2717-2731) — never a sum.
+ *   - The Expansion auto-populate keys list_expansion_candidates by PMC name
+ *     ({name: total_units}, app.py:1948-1955), so duplicate account rows for one PMC collapse
+ *     to one value there too; that query also requires ACCOUNT_FLEX_UNITS > 0 and
+ *     ACCOUNT_TOTAL_COMPANY_UNITS > ACCOUNT_FLEX_UNITS (generator/data.py:400-405), which is
+ *     what keeps a stale/duplicate zero-Flex account row from being picked.
+ *
+ * So, per PMC_ID: prefer a row that actually has Flex units on it (FLEX_UNITS > 0, Flask's own
+ * filter), and among equally-preferred rows take the larger total. Live-verified case this
+ * exists for (2026-09-11): AJH Management (PMC_ID 478) has an 11,000-unit Partner account plus a
+ * 70-unit deleted Deep SMB duplicate — the rule must return 11,000, and blind summing returned
+ * 11,070. Summing is never correct for one PMC: duplicates are duplicates, not extra portfolio.
+ *
+ * Returns 0 when nothing usable came back, so callers keep their existing
+ * "0 → fall back to enrolled units" behavior.
+ */
+export function resolveSubjectPortfolioUnits(rows: SubjectPortfolioRow[]): number {
+  const bestByPmc = new Map<string, { total: number; hasFlex: boolean }>();
+  for (const r of rows) {
+    const total = r.TOTAL_COMPANY_UNITS ?? 0;
+    if (total <= 0) continue;
+    const hasFlex = (r.FLEX_UNITS ?? 0) > 0;
+    // Rows are grouped by PMC_ID; a null PMC_ID can't be attributed to a specific entity, so
+    // every such row shares one bucket rather than each contributing its own total.
+    const key = String(r.PMC_ID ?? "");
+    const cur = bestByPmc.get(key);
+    if (cur === undefined || (hasFlex && !cur.hasFlex) || (hasFlex === cur.hasFlex && total > cur.total)) {
+      bestByPmc.set(key, { total, hasFlex });
+    }
+  }
+  let sum = 0;
+  for (const v of bestByPmc.values()) sum += v.total;
+  return sum;
+}

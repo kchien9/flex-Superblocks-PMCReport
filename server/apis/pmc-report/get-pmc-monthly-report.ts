@@ -38,9 +38,11 @@ import {
 } from "./expansion-renderers.js";
 import {
   type NetworkPoolProperty,
+  type SubjectPortfolioRow,
   propertyAgeBucket,
   resolvePropertyPeerNar,
   resolvePropertyPeerEngagement,
+  resolveSubjectPortfolioUnits,
   largestPmcsPeerTier,
   rollingPeerMedianSql,
   stageBenchmarkSql,
@@ -3802,13 +3804,31 @@ export default api({
     // headline number, so the noisier field is tolerated there but not for the subject's own
     // value.
     // For combined entities, distinct PMC_NAMEs can map to distinct PMC_IDs (and therefore
-    // distinct Salesforce accounts) - dropped the old LIMIT 1 (which assumed exactly one
-    // subject) so every combined entity's account row comes back; downstream consumers now
-    // sum ACCOUNT_TOTAL_COMPANY_UNITS across all returned rows instead of reading a single row.
-    const SubjectPortfolioTotalSchema = z.object({ TOTAL_COMPANY_UNITS: z.coerce.number().nullable() });
+    // distinct Salesforce accounts) - the old LIMIT 1 (which assumed exactly one subject) stays
+    // dropped so every combined entity's account row comes back.
+    //
+    // BUT: one PMC_ID can itself own MORE THAN ONE account row in DIM_SALES_ACCOUNTS (real case,
+    // live-verified 2026-09-11: "AJH Management" has an 11,000-unit Partner account and a
+    // 70-unit deleted Deep SMB duplicate; FLEX.SALES.DIM_CRM_ACCOUNT_HISTORY returns the
+    // 11,000-unit row TWICE with IS_CURRENT = TRUE). Summing every returned row therefore
+    // inflates the portfolio ceiling by whatever duplicates happen to exist - it would report
+    // 11,070 (or 22,000 on the new-schema table) for an 11,000-unit PMC. Flask never sums
+    // duplicates: compute_benchmark's portfolio_total takes ONE row (cursor.fetchone(),
+    // generator/data.py:2717-2731) and the Expansion auto-populate keys
+    // list_expansion_candidates by PMC name (one value per name, app.py:1948-1955). So the rule
+    // is: one row per PMC_ID, then sum across distinct PMC_IDs. resolveSubjectPortfolioUnits
+    // owns that selection (pure + unit-tested); PMC_ID and ACCOUNT_FLEX_UNITS are selected here
+    // purely to feed it.
+    const SubjectPortfolioTotalSchema = z.object({
+      PMC_ID: z.coerce.number().nullable(),
+      TOTAL_COMPANY_UNITS: z.coerce.number().nullable(),
+      FLEX_UNITS: z.coerce.number().nullable(),
+    });
     let subjectPortfolioTotalError: string | null = null;
     const subjectPortfolioTotalPromise = ctx.integrations.snowflake_sso.query(
-      `SELECT acc.ACCOUNT_TOTAL_COMPANY_UNITS AS TOTAL_COMPANY_UNITS
+      `SELECT acc.PMC_ID                        AS PMC_ID,
+              acc.ACCOUNT_TOTAL_COMPANY_UNITS   AS TOTAL_COMPANY_UNITS,
+              acc.ACCOUNT_FLEX_UNITS            AS FLEX_UNITS
        FROM PRODUCTION.SALES.DIM_SALES_ACCOUNTS acc
        JOIN (SELECT DISTINCT PMC_ID FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS WHERE PMC_NAME IN (${allPmcNames.map(() => "?").join(", ")})) p
             ON acc.PMC_ID = p.PMC_ID`,
@@ -3817,7 +3837,7 @@ export default api({
       { label: "Subject PMC's true total company units from Salesforce accounts (for Portfolio Penetration denominator)" }
     ).catch((err) => {
       subjectPortfolioTotalError = err instanceof Error ? err.message : String(err);
-      return [] as { TOTAL_COMPANY_UNITS: number | null }[];
+      return [] as SubjectPortfolioRow[];
     });
 
     // --- Network property pool was moved earlier (fired before the batch) ---
@@ -4719,7 +4739,7 @@ export default api({
       expTotalPortfolioEarly = total_portfolio_units || null;
       if (!expTotalPortfolioEarly) {
         const expPortfolioRows = await subjectPortfolioTotalPromise;
-        const acctUnits = expPortfolioRows.reduce((sum, r) => sum + (r.TOTAL_COMPANY_UNITS ?? 0), 0);
+        const acctUnits = resolveSubjectPortfolioUnits(expPortfolioRows);
         expTotalPortfolioEarly = acctUnits > 0 ? acctUnits : (latestMonth?.units ?? 0);
       }
       // Region detail (Kevin's ask - Expansion's own "By State" slide never got QBR's DMA
@@ -5233,7 +5253,7 @@ export default api({
       if (subjectPortfolioTotalError) {
         console.warn(`[PMC Report] subject portfolio-total Salesforce query failed for ${pmc_name}: ${subjectPortfolioTotalError}`);
       }
-      const subjectTotalCompanyUnits = subjectPortfolioRows.reduce((sum, r) => sum + (r.TOTAL_COMPANY_UNITS ?? 0), 0);
+      const subjectTotalCompanyUnits = resolveSubjectPortfolioUnits(subjectPortfolioRows);
       // Numerator: latestMonth.units (IS_IN_NETWORK-filtered), NOT Flask's literal
       // current["property_unit_count"].sum() (unfiltered df, same missing-filter pattern as
       // the engagement bug fixed earlier). Verified live for Wellington: Flask's own SFDC
@@ -6168,7 +6188,7 @@ export default api({
       let expTotalPortfolio = expTotalPortfolioEarly ?? total_portfolio_units;
       if (!expTotalPortfolio) {
         const expPortfolioRows = await subjectPortfolioTotalPromise;
-        const acctUnits = expPortfolioRows.reduce((sum, r) => sum + (r.TOTAL_COMPANY_UNITS ?? 0), 0);
+        const acctUnits = resolveSubjectPortfolioUnits(expPortfolioRows);
         expTotalPortfolio = acctUnits > 0 ? acctUnits : enrolledUnits;
       }
       const expNarPerc = segmentPercentiles.find((s) => s.metric === "NAR");
