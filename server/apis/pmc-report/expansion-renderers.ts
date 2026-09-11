@@ -114,7 +114,7 @@ export function renderExpansionGap(input: ExpansionGapInput): SlideResult {
                     padding:8px 0;border-bottom:1px solid rgba(255,255,255,0.08);">
           <div>
             <div style="font-size:10px;color:rgba(255,255,255,0.65);font-weight:600;">${label}</div>
-            <div style="font-size:9px;color:rgba(255,255,255,0.32);">${(nar * 100).toFixed(1)}% adoption</div>
+            <div style="font-size:9px;color:rgba(255,255,255,0.32);">${fmtPct(nar)} adoption</div>
           </div>
           <div style="font-size:16px;font-weight:700;color:${color};">+${fmtCurrency(delta)} rent/mo</div>
         </div>`;
@@ -138,7 +138,7 @@ export function renderExpansionGap(input: ExpansionGapInput): SlideResult {
     // a slide contradicting its own numbers. Branch the claim on whether there's real upside.
     leftBody = (p50Delta === 0 && p75Delta === 0)
       ? `${pmc} has ${flexUnits.toLocaleString()} units on Flex, already outperforming both the peer median and top-quartile adoption benchmark. There's no adoption upside left to capture here - the opportunity now is expanding to the rest of the portfolio.`
-      : `${pmc} has ${flexUnits.toLocaleString()} units on Flex. Growing from ${(currentNar * 100).toFixed(1)}% to peer median adds significantly more in guaranteed rent - no new properties needed.`;
+      : `${pmc} has ${flexUnits.toLocaleString()} units on Flex. Growing from ${fmtPct(currentNar)} to peer median adds significantly more in guaranteed rent - no new properties needed.`;
     leftSectionLabel = `ADOPTION UPLIFT · ${flexUnits.toLocaleString()} ENROLLED UNITS`;
     scenarioRows =
       scenRow("Peer Median", p50Nar, "#FCD34D", p50Delta) +
@@ -265,7 +265,7 @@ export function renderExpansionGap(input: ExpansionGapInput): SlideResult {
   const showPeerLabelJs = showPeer ? "true" : "false";
 
   const peerLegendHtml = showPeer
-    ? `<div style="display:flex;align-items:center;gap:5px;"><div style="width:12px;height:12px;background:rgba(220,80,80,0.32);border-radius:2px;border:1px solid rgba(220,80,80,0.50);"></div><div style="font-size:10px;color:#524e5b;">Gap to peer median (${(p50Nar * 100).toFixed(1)}%)</div></div>`
+    ? `<div style="display:flex;align-items:center;gap:5px;"><div style="width:12px;height:12px;background:rgba(220,80,80,0.32);border-radius:2px;border:1px solid rgba(220,80,80,0.50);"></div><div style="font-size:10px;color:#524e5b;">Gap to peer median (${fmtPct(p50Nar)})</div></div>`
     : "";
 
   const notEnrolledPct = totalPortfolio > 0 ? Math.round((totalPortfolio - flexUnits) / totalPortfolio * 100) : 0;
@@ -299,7 +299,7 @@ export function renderExpansionGap(input: ExpansionGapInput): SlideResult {
           </div>
           <div style="display:flex;align-items:center;gap:5px;">
             <div style="width:12px;height:12px;background:rgba(106,61,184,0.28);border-radius:2px;border:1px solid rgba(106,61,184,0.20);"></div>
-            <div style="font-size:10px;color:#524e5b;">At your rate (${(currentNar * 100).toFixed(1)}%)</div>
+            <div style="font-size:10px;color:#524e5b;">At your rate (${fmtPct(currentNar)})</div>
           </div>
           ${peerLegendHtml}
         </div>
@@ -329,7 +329,7 @@ window['initSlide${slideId}'] = (function() {
     const projLbl = ${projLblJs};
     const currRateLbl = ${currRateFullLblJs};
     const showPeerLabel = ${showPeerLabelJs};
-    const narPct = '${(currentNar * 100).toFixed(1)}';
+    const narPct = ${JSON.stringify(fmtPct(currentNar))};
     const totalUnits = ${totalPortfolio};
 
     const rentBaseVals = ${rentBaseValsJs};
@@ -367,7 +367,7 @@ window['initSlide${slideId}'] = (function() {
           cands.push({
             yIdeal: el.y - 12,
             xRight: cw - el.x + 10,
-            lines:  ['TODAY - ON FLEX', currLbl + ' rent/mo · ' + narPct + '%'],
+            lines:  ['TODAY - ON FLEX', currLbl + ' rent/mo · ' + narPct],
             bg: 'white', border: '#6A3DB8', color: '#2C194D',
           });
         }
@@ -629,7 +629,7 @@ export function renderExpansionCaseClose(input: ExpansionCaseCloseInput): SlideR
       category: "Repeat usage",
       headline: "Residents who use Flex keep coming back",
       body: trueRepeat != null && trueRepeat > 0
-        ? `${(trueRepeat * 100).toFixed(1)}% of eligible residents came back in a given month \u2013 once residents start using Flex, most keep using it.`
+        ? `${fmtPct(trueRepeat)} of eligible residents came back in a given month \u2013 once residents start using Flex, most keep using it.`
         : "Once residents start using Flex, most keep using it, month after month.",
     },
     {

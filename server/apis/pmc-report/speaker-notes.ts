@@ -15,20 +15,25 @@
  * notes generation) — a safe, additive follow-up.
  */
 
+import { fmtPct, fmtPctNum } from "./format-pct.js";
+
 function _e(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 
+// Both wrappers now sit on the shared formatters in format-pct.ts rather than re-implementing
+// the "drop a bare trailing .0" rule locally, which is how that rule ended up living in five
+// places at once. Flask does exactly this (speaker_notes.py:17-22 imports _fmt_pct and
+// _fmt_pct_num from generator.slides) and for exactly this reason: the notes a rep reads out
+// loud have to match the slide they're standing in front of, to the character.
 function pctStr(v: number): string {
-  // Drop the trailing ".0" on a whole-number percent (Kevin's catch: "85%", not "85.0%") -
-  // same fix as get-pmc-monthly-report.ts's own fmtPct, just never ported to this file.
-  const s = (v * 100).toFixed(1);
-  return s.endsWith(".0") ? s.slice(0, -2) + "%" : s + "%";
+  return fmtPct(v);
 }
 
+/** Flask speaker_notes.py `_pp` verbatim - typographic minus, and ".0" dropped ("-2pp"). */
 function ppStr(v: number): string {
   const sign = v >= 0 ? "+" : "−";
-  return `${sign}${Math.abs(v * 100).toFixed(1)}pp`;
+  return `${sign}${fmtPctNum(Math.abs(v) * 100)}pp`;
 }
 
 function kStr(v: number): string {
@@ -1381,7 +1386,7 @@ export function buildProspectSpeakerNotesHtml(
     ],
     peer_perf: [
       `These are ${poolSize} PMCs matched to ${name} — real criteria: ${matchLevel}. PMS and asset type are NOT matching criteria (this pool is PMS-agnostic); don't claim otherwise if asked. All identifiers are redacted.`,
-      `Median adoption is ${(medianNar * 100).toFixed(1)}% — roughly 1 in ${Math.max(1, Math.round(1 / Math.max(medianNar, 0.01)))} units. Walk through one row to make it concrete.`,
+      `Median adoption is ${pctStr(medianNar)} — roughly 1 in ${Math.max(1, Math.round(1 / Math.max(medianNar, 0.01)))} units. Walk through one row to make it concrete.`,
       "The delinquency protection column shows rent that was guaranteed even when a resident missed a payment. That's a value prop most PMCs haven't thought about.",
       "If they ask 'how long does it take to get there?' — point to the Live column. Median is 65 months. These companies have been doing this for years.",
     ],
