@@ -204,7 +204,7 @@ export async function pullPeerBenchmark(
           COUNT(DISTINCT t.PROPERTY_STATE) AS state_count,
           SUM(t.BILLS_PAID_COUNT)::FLOAT / NULLIF(SUM(t.PROPERTY_UNIT_COUNT), 0) AS current_adoption,
           SUM(t.RENT_PAID_AMOUNT) AS current_monthly_rent,
-          -- NOTE: deliberately no SUM(t.NEW_SIGNUPS_COUNT) here. The slide's "New Paying
+          -- NOTE: deliberately no raw new-signups event sum here. The slide's "New Paying
           -- Residents" number comes from pmc_new_residents (first-ever payment per customer);
           -- the raw per-property event count double-counts intra-PMC property transfers.
           SUM(t.PROPERTY_UNIT_COUNT) AS total_units,
