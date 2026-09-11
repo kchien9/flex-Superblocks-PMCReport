@@ -8,10 +8,11 @@ import { NewLogoTab, type NewLogoFormState } from "./components/NewLogoTab.js";
 import { ExpansionTab, type ExpansionFormState } from "./components/ExpansionTab.js";
 import { PlatinumTab, type PlatinumFormState } from "./components/PlatinumTab.js";
 import { CheckinTab, type CheckinFormState } from "./components/CheckinTab.js";
+import { EmbedTab, type EmbedFormState } from "./components/EmbedTab.js";
 import { ResultsPanel } from "./components/ResultsPanel.js";
 import { wrapSlidesHtml } from "./utils/wrap-slides-html.js";
 
-type TabId = "qbr" | "new_logo" | "expansion" | "platinum" | "checkin";
+type TabId = "qbr" | "new_logo" | "expansion" | "platinum" | "checkin" | "embed";
 
 const TABS: { id: TabId; label: string }[] = [
   { id: "qbr", label: "QBR" },
@@ -19,6 +20,7 @@ const TABS: { id: TabId; label: string }[] = [
   { id: "expansion", label: "Expansion" },
   { id: "platinum", label: "Platinum" },
   { id: "checkin", label: "Check-in" },
+  { id: "embed", label: "Embed" },
 ];
 
 export default function PMCMonthlyReportPage() {
@@ -226,6 +228,37 @@ export default function PMCMonthlyReportPage() {
     }
   }, [generateReport, track, setDelivery, setCurrentSubjectName]);
 
+  // Embed → Direct Integration - mirrors Flask's generateEmbedBtn POST: one embed PMC, report_type
+  // embed, total units / avg rent / optional property rows, default lookback (12), terminology.
+  // Delivery is the tab's own toggle, but notes always come back (spec) so "presenting" still
+  // drives the Speaker Notes download exactly as it does for the QBR deck.
+  const handleEmbedGenerate = useCallback(async (state: EmbedFormState) => {
+    setDelivery(state.delivery);
+    setCurrentSubjectName(state.pmc_name);
+    const args = {
+      pmc_name: state.pmc_name,
+      report_name: "",
+      lookback_months: 12,
+      deck_mode: "embed" as const,
+      adoption_target: 15,
+      testimonials: [],
+      total_portfolio_units: 0,
+      presenting_mode: state.delivery === "presenting",
+      comparison_months: 1,
+      terminology: state.terminology as "resident" | "household",
+      total_units: parseInt(state.total_units) || 0,
+      avg_rent: parseFloat(state.avg_rent) || 0,
+      properties: state.properties.length > 0 ? state.properties : undefined,
+    };
+    lastArgsRef.current = args;
+    try {
+      await generateReport(args);
+      track("report_generated", { deck_mode: "embed", pmc_name: args.pmc_name });
+    } catch {
+      // Error is in useApi state
+    }
+  }, [generateReport, track, setDelivery, setCurrentSubjectName]);
+
   const handleRetry = useCallback(async () => {
     if (activeTab === "new_logo" && lastProspectArgsRef.current) {
       try {
@@ -242,7 +275,7 @@ export default function PMCMonthlyReportPage() {
     }
   }, [activeTab, generateReport, generateProspectDeck]);
 
-  const deckLabel = activeTab === "qbr" ? "report" : activeTab === "new_logo" ? "prospect deck" : activeTab === "platinum" ? "platinum deck" : activeTab === "checkin" ? "check-in deck" : "expansion deck";
+  const deckLabel = activeTab === "qbr" ? "report" : activeTab === "new_logo" ? "prospect deck" : activeTab === "platinum" ? "platinum deck" : activeTab === "checkin" ? "check-in deck" : activeTab === "embed" ? "embed deck" : "expansion deck";
 
   // Log geocode + upload-parsing diagnostics to browser console for debugging
   useEffect(() => {
@@ -301,7 +334,7 @@ export default function PMCMonthlyReportPage() {
   // in the same error box every other tab shows.
   const currentError = activeTab === "new_logo"
     ? (effectiveProspectData?.error || prospectError)
-    : activeTab === "platinum" || activeTab === "checkin"
+    : activeTab === "platinum" || activeTab === "checkin" || activeTab === "embed"
       ? (effectiveReportData?.error || reportError)
       : reportError;
 
@@ -346,6 +379,9 @@ export default function PMCMonthlyReportPage() {
           )}
           {activeTab === "checkin" && (
             <CheckinTab pmcNames={pmcNames} pmcLoading={pmcLoading} generating={generating} onGenerate={handleCheckinGenerate} />
+          )}
+          {activeTab === "embed" && (
+            <EmbedTab generating={generating} onGenerate={handleEmbedGenerate} />
           )}
         </div>
       </div>
