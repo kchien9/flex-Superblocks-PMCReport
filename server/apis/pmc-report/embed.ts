@@ -44,6 +44,18 @@ export const MARKET_MIN_PROPERTIES = 2;
 
 const EMBED_CACHE_TTL_MS = 6 * 3600 * 1000;
 
+/** The Embed deck's gate messages, verbatim from the Flask spec (§Gates). Flask returns them as
+ * 400 / 404 bodies; Clark's API has no status code to set, so they ride back as `error` (the shape
+ * the Platinum / Check-in decks already use). Constants so the orchestration and the tests read
+ * the same strings. */
+export const EMBED_GATES = {
+  noName: "The Embed deck needs a PMC name.",
+  onePmc: "The Embed deck is one PMC per deck - remove the additional PMCs / property IDs and try again.",
+  unknownPmc: (name: string) => `No embed activity found for: ${name}`,
+  tooEarly: (name: string) => `${name} has under 3 months of embed activity — too early for a trend; try again next month.`,
+  noTotalUnits: (name: string, mspLabel: string) => `Enter ${name}'s total units — ${mspLabel} embed doesn't report unit counts.`,
+} as const;
+
 const DIM = "PRODUCTION.ANALYTICS.DIM_PROPERTIES_PMCS";
 const STATS = "PRODUCTION.ANALYTICS.EMBED_PROPERTY_MONTHLY_STATS";
 const OUTCOMES = "PRODUCTION.ANALYTICS.CUSTOMER_BP_MONTH_OUTCOMES";

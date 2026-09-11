@@ -56,7 +56,7 @@ import {
   resolveEmbedPmc, pullEmbedMonthly, summarizeEmbedMonthly, pullGraduationCurve,
   pullChannelRepeatRates, pullNiroSnapshot, pullSfTotalUnits, embedStatesFromDim,
   applyPropertyUpload, embedUploadRows, embedMarkets, embedProjectionRange,
-  latestEmbedBpMonth, bpSafeCutoff, EMBED_MIN_MONTHS,
+  latestEmbedBpMonth, bpSafeCutoff, EMBED_MIN_MONTHS, EMBED_GATES,
 } from "./embed.js";
 import type { EmbedProperty } from "./embed.js";
 import {
@@ -2202,7 +2202,7 @@ async function generateEmbedDeck(
   const sf = ctx.integrations.snowflake_sso;
   const resolvedRaw = await resolveEmbedPmc(sf, args.pmc_name);
   if (resolvedRaw === null) {
-    return { html: "", empty: false, error: `No embed activity found for: ${args.pmc_name}` };
+    return { html: "", empty: false, error: EMBED_GATES.unknownPmc(args.pmc_name) };
   }
   const display = stripFkaSuffix(resolvedRaw.pmc_display_name);
   const { msp, msp_label: mspLabel } = resolvedRaw;
@@ -2214,7 +2214,7 @@ async function generateEmbedDeck(
   const monthlyRaw = await pullEmbedMonthly(sf, pids, lookback);
   let monthly = summarizeEmbedMonthly(monthlyRaw);
   if (monthly.filter((m) => m.bills_paid > 0).length < EMBED_MIN_MONTHS) {
-    return { html: "", empty: false, error: `${display} has under 3 months of embed activity — too early for a trend; try again next month.` };
+    return { html: "", empty: false, error: EMBED_GATES.tooEarly(display) };
   }
   monthly = monthly.slice(-12);
   const reportingMonth = monthly[monthly.length - 1].bp_month;
@@ -2237,7 +2237,7 @@ async function generateEmbedDeck(
 
   const totalUnits = await embedTotalUnits(ctx, args.total_units, display, resolved);
   if (!totalUnits) {
-    return { html: "", empty: false, error: `Enter ${display}'s total units — ${mspLabel} embed doesn't report unit counts.` };
+    return { html: "", empty: false, error: EMBED_GATES.noTotalUnits(display, mspLabel) };
   }
   const unitsKnown = props.some((p) => p.unit_count !== null && p.unit_count !== undefined);
 
@@ -2661,10 +2661,10 @@ export default api({
     // generateEmbedDeck. Returns before any QBR query fires. Flask's exact gate wording.
     if (deck_mode === "embed") {
       if (!pmc_name.trim()) {
-        return { html: "", empty: false, error: "The Embed deck needs a PMC name." };
+        return { html: "", empty: false, error: EMBED_GATES.noName };
       }
       if ((additional_pmc_names ?? []).some((n) => n.trim())) {
-        return { html: "", empty: false, error: "The Embed deck is one PMC per deck - remove the additional PMCs / property IDs and try again." };
+        return { html: "", empty: false, error: EMBED_GATES.onePmc };
       }
       return generateEmbedDeck(ctx, {
         pmc_name: pmc_name.trim(),
