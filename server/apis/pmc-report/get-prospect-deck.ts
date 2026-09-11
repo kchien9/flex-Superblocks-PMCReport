@@ -70,10 +70,18 @@ function bpSafeCutoff(): string {
   return `${cutoff.getFullYear()}-${String(cutoff.getMonth() + 1).padStart(2, "0")}-01`;
 }
 
-function latestMonth(): string {
-  const now = new Date();
-  const prev = new Date(now.getFullYear(), now.getMonth() - 1, 1);
-  return `${prev.getFullYear()}-${String(prev.getMonth() + 1).padStart(2, "0")}-01`;
+/**
+ * The latest fully-closed BP month = cutoff - 1 month. MUST be derived from the cutoff, not
+ * from today: bpSafeCutoff() rolls to the FOLLOWING month once we're past the 5th, so deriving
+ * from `now` lands a whole month behind the cutoff for ~25 days out of every month, and every
+ * snapshot number on the New Logo deck (pool membership, medians, Platinum rate) then gets
+ * computed against a stale month. Mirrors Flask prospect.pull_peer_benchmark:275-279.
+ */
+export function latestMonth(cutoff: string): string {
+  const [y, m] = cutoff.split("-").map(Number);
+  const prevY = m === 1 ? y - 1 : y;
+  const prevM = m === 1 ? 12 : m - 1;
+  return `${prevY}-${String(prevM).padStart(2, "0")}-01`;
 }
 
 
@@ -340,7 +348,7 @@ export default api({
     const avgRent = avgRentInput || 0;
 
     const cutoff = bpSafeCutoff();
-    const latestMo = latestMonth();
+    const latestMo = latestMonth(cutoff);
 
     ctx.log.info("GetProspectDeck start", { prospect_name, units, states, segment, footprint });
 
