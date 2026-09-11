@@ -3892,7 +3892,12 @@ window['initSlide${slideId}'] = (function() {
       },
       options: {
         responsive: true, maintainAspectRatio: false,
-        layout: { padding: { top: 32, left: 56, right: 16 } },
+        // left was 56 - sized to fit the first point's Rent label when it used to render
+        // sideways ('left' align). That case is gone; this was dead reserved space narrowing
+        // the whole plot area ever since, not just its own margin - confirmed real: the chart
+        // visibly shrank once that padding stopped being spent on anything. Flask fixed this
+        // (generator/slides.py:1683-1689); this was the last remaining 56 on the Clark side.
+        layout: { padding: { top: 32, left: 16, right: 16 } },
         interaction: { mode: 'index', intersect: false },
         plugins: {
           legend: { display: false }, datalabels: {},
