@@ -3094,14 +3094,51 @@ export default api({
     // (a lagging subsidiary doesn't hold the whole report back a month) - "just show everything
     // that's available in any given month... make sure the roll up accounts for the roll up
     // each time."
+    // ── ONE definition of "latest completed month", for the whole request ─────────────────
+    // This deck used to carry TWO, and they disagreed for 110 live PMCs (74 of them >= 100
+    // units): `reportingMonthStr` here was a ROW-level test (any in-network row with
+    // CHARGED_USERS > 0), while `latestCompletedMonth` further down was a MONTH-AGGREGATE test
+    // on billsPaid > 0. The first anchored the retention cohort, MoM retention, regionDetail
+    // and the network zip/geo cache; the second drove the headline, latestRows, the Exec
+    // Summary tiles and by_state's portfolioNar - so one deck could date its By-State
+    // drill-down to a different month than its own Exec Summary and no slide would tie to
+    // another. Live: Villa Serena Communities (7,471 units, 32 properties) built By-State from
+    // a month with 31 properties and ZERO bills while the Exec Summary reported a month with 2
+    // bills and $1,691.
+    //
+    // Flask has exactly one definition - _latest_completed_month (generator/data.py:422-455) -
+    // and calls it at all 8 of its own call sites. Its semantics, reproduced verbatim below:
+    //   * group by BP_MONTH and SUM charged_users (a MONTH aggregate, never a single row),
+    //   * drop the current calendar month outright while BP is still open (day <= 5),
+    //   * take the latest month whose charged_users sum is > 0,
+    //   * fall back to the absolute latest month present when none have billed yet.
+    // charged_users (not bills_paid) is the gate: a month can be flagged in-network, and can
+    // even carry bills, before its billing has actually closed.
+    //
+    // Scoped to `inNetwork` - the same row set monthlyTotals is built from, which is what the
+    // old latestCompletedMonth effectively read - so the one value is correct for both of the
+    // old call-site groups. Computed here, the first point `inNetwork` exists, because the
+    // retention-cohort query below needs it long before monthlyTotals is built.
+    //
+    // Multi-PMC (Task 2) behaviour is unchanged and deliberate: the aggregate spans the FULL
+    // combined set, so a lagging subsidiary doesn't hold the whole report back a month.
     const currentMonthStrForReporting = new Date(today.getFullYear(), today.getMonth(), 1).toISOString().slice(0, 10);
-    const inNetworkBpMonths = allRows
-      .filter((r) => r.IS_IN_NETWORK && r.CHARGED_USERS > 0
-        && !(dayOfMonth <= 5 && r.BP_MONTH === currentMonthStrForReporting))
-      .map((r) => r.BP_MONTH);
-    const reportingMonthStr = inNetworkBpMonths.length > 0
-      ? inNetworkBpMonths[inNetworkBpMonths.length - 1]
-      : new Date(cutoff.getFullYear(), cutoff.getMonth() - 1, 1).toISOString().slice(0, 10);
+    function latestCompletedMonthOf(rows: typeof inNetwork): string | null {
+      const chargedByMonth = new Map<string, number>();
+      for (const r of rows) {
+        if (dayOfMonth <= 5 && r.BP_MONTH === currentMonthStrForReporting) continue;
+        chargedByMonth.set(r.BP_MONTH, (chargedByMonth.get(r.BP_MONTH) ?? 0) + (r.CHARGED_USERS ?? 0));
+      }
+      let latestBilled: string | null = null;
+      let latestAny: string | null = null;
+      for (const [month, charged] of chargedByMonth) {
+        if (latestAny === null || month > latestAny) latestAny = month;
+        if (charged > 0 && (latestBilled === null || month > latestBilled)) latestBilled = month;
+      }
+      return latestBilled ?? latestAny;
+    }
+    const reportingMonthStr = latestCompletedMonthOf(inNetwork)
+      ?? new Date(cutoff.getFullYear(), cutoff.getMonth() - 1, 1).toISOString().slice(0, 10);
 
     // For expansion/new_logo modes, skip expensive queries that are only used by QBR:
     // - yearlyRentBillsRows: Since Inception slide (now QBR + Expansion, see needsSinceInception
@@ -4223,18 +4260,14 @@ export default api({
       // Fall back to property-level NEW_SIGNUPS_COUNT on query failure
     }
 
-    // Latest completed month
-    const currentMonthStr = new Date(today.getFullYear(), today.getMonth(), 1)
-      .toISOString().slice(0, 10);
-
-    const completedMonths = monthlyTotals.filter((m) => {
-      if (dayOfMonth <= 5 && m.month === currentMonthStr) return false;
-      return m.billsPaid > 0;
-    });
-
-    const latestCompletedMonth = completedMonths.length > 0
-      ? completedMonths[completedMonths.length - 1].month
-      : monthlyTotals[monthlyTotals.length - 1]?.month || "";
+    // Latest completed month — the SINGLE definition, computed once from `inNetwork` up beside
+    // reportingMonthStr (see latestCompletedMonthOf there for the rule and for what having had
+    // two of these cost us live). This used to be a second, independent derivation off
+    // monthlyTotals gated on billsPaid > 0, which disagreed with reportingMonthStr for 110
+    // PMCs; the two are now the same value by construction, so the headline, latestRows, the
+    // Exec Summary tiles and by_state can never date themselves differently from the retention
+    // cohort, regionDetail or the geo cache again.
+    const latestCompletedMonth = reportingMonthStr;
 
     // ── Quarter-adds cohorts for the "Q<N> <YYYY> adds" buttons on Adoption Trend + Residents/
     // Units & Rent (Kevin's ask 2026-09-09; spec: flex-pmc-reports docs/superpowers/specs/
@@ -6073,7 +6106,12 @@ export default api({
         partnerSince,
         propertyCount: uniqueProperties.size,
         totalUnits: totalUnitsAll,
-        monthCount: completedMonths.length,
+        // Flask's kpis["month_count"] is len(monthly) (app.py:1021) - the number of months in
+        // the monthly frame, full stop. This read the now-deleted `completedMonths` array (months
+        // with billsPaid > 0), the last remnant of the second latest-completed-month derivation;
+        // monthlyTotals.length is both the Flask definition and equal to it for any PMC that has
+        // billed in every month of its window.
+        monthCount: monthlyTotals.length,
         totalRent,
         totalBills,
         totalSignups,
