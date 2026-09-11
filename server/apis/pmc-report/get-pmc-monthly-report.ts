@@ -2887,8 +2887,20 @@ export default api({
        WHERE PMC_NAME IN (${pmcNamePlaceholders})
          AND BP_MONTH >= DATEADD('month', -?, CURRENT_DATE())
          AND BP_MONTH < ?
-       ORDER BY BP_MONTH, PROPERTY_NAME
-       LIMIT 10000`,
+       -- NO LIMIT, deliberately. This used to end "LIMIT 10000", which - because the sort is
+       -- ASCENDING by BP_MONTH - silently discarded the NEWEST months, not the oldest. Every
+       -- number in the deck sits under these rows (allRows/inNetwork feed monthlyTotals, the
+       -- reporting month, every KPI, engagement, cohorts and the property snapshot), so the cap
+       -- didn't degrade a chart, it made the whole deck quietly wrong for any PMC over the cap:
+       -- 63 PMCs at the default 12-month lookback, 108 at 24. Live-verified damage: RPM Living
+       -- (10,712 rows) reported 6,525 residents / $11.4M / 50,318 units / 12.97% adoption
+       -- against a real 29,202 / $48.2M / 207,670 / 14.06%, and Tricon Residential (495,237
+       -- rows) had its slice end in Nov-2025, dating the entire deck 10 months stale. Flask's
+       -- pull_pmc_data (generator/data.py:196-238) is this same query with no LIMIT and has
+       -- always been correct here; a truncating cap cannot sit under every number in a
+       -- partner-facing deck, so if a row ceiling is ever needed again it has to be an in-SQL
+       -- aggregation (or a loud failure), never a silent ORDER BY + LIMIT slice.
+       ORDER BY BP_MONTH, PROPERTY_NAME`,
       RawRowSchema,
       [...allPmcNames, lookback_months, cutoffStr],
       { label: "Fetch PMC monthly report data (all combined entities)" }
