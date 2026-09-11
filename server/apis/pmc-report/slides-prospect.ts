@@ -5,6 +5,12 @@
 
 import type { SlideResult } from "./slide-renderers.js";
 import { STATE_TO_REGION } from "./peer-matching.js";
+// True median (averages the two middle elements on an even-sized array). The hand-rolled
+// sort(...)[floor(len/2)] this replaces took the UPPER middle element, so every peer-pool
+// median on an even-sized pool printed high - e.g. 14 peers gave months_live 18 where Flask's
+// pandas .median() gives 17.5. peer-benchmark.ts only imports types from this module, so
+// there is no runtime import cycle.
+import { median } from "./peer-benchmark.js";
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
@@ -439,15 +445,11 @@ export function renderPeerPerformance(
   const isOverlap = benchmarks.match_mode === "overlap";
 
   // Compute signups/months from pool
-  const medianSignups = poolDf.length > 0
-    ? poolDf.map(r => r.new_signups).sort((a, b) => a - b)[Math.floor(poolDf.length / 2)]
-    : 0;
+  const medianSignups = median(poolDf.map(r => r.new_signups));
   const avgSignups = poolDf.length > 0
     ? poolDf.reduce((s, r) => s + r.new_signups, 0) / poolDf.length
     : 0;
-  const medianMonths = poolDf.length > 0
-    ? poolDf.map(r => r.months_live).sort((a, b) => a - b)[Math.floor(poolDf.length / 2)]
-    : 0;
+  const medianMonths = median(poolDf.map(r => r.months_live));
   const avgMonths = poolDf.length > 0
     ? poolDf.reduce((s, r) => s + r.months_live, 0) / poolDf.length
     : 0;
@@ -479,7 +481,7 @@ export function renderPeerPerformance(
 
   // Peer table — up to 5 rows closest in size
   let tableRows = "";
-  const ref = prospectUnits > 0 ? prospectUnits : (poolDf.length > 0 ? poolDf.map(r => r.total_units).sort((a, b) => a - b)[Math.floor(poolDf.length / 2)] : 1);
+  const ref = prospectUnits > 0 ? prospectUnits : (poolDf.length > 0 ? median(poolDf.map(r => r.total_units)) : 1);
   const sorted = [...poolDf].sort((a, b) => Math.abs(a.total_units - ref) - Math.abs(b.total_units - ref));
   // In overlap mode, prefer high-coverage peers, then adoption
   const sample = isOverlap
@@ -1154,9 +1156,7 @@ function _renderHighRentCards(slideId: number, peerDf: HighRentPropertyRow[]): S
   if (!peerDf || peerDf.length < 2) return { html: "", js: "" };
 
   const topProps = peerDf.slice(0, 6);
-  const medRent = Math.round(
-    [...topProps].sort((a, b) => a.avg_rent - b.avg_rent)[Math.floor(topProps.length / 2)].avg_rent
-  );
+  const medRent = Math.round(median(topProps.map(r => r.avg_rent)));
   const avgNarPct = topProps.reduce((s, r) => s + r.avg_nar, 0) / topProps.length * 100;
 
   const cardsHtml = topProps.map(row => {
