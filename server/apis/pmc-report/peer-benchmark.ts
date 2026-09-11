@@ -300,7 +300,10 @@ export async function pullPeerBenchmark(
   const baseParams: unknown[] = [
     cutoff,         // pmc_qualified: BP_MONTH < ?
     latestMo,       // pmc_latest: BP_MONTH = ?
-    cutoff,         // pmc_latest: DATEADD('month', -3, ?) — use cutoff as ramp reference
+    latestMo,       // pmc_latest: DATEADD('month', -3, ?) — ramp floor is relative to the
+                    // reported month, not the cutoff. Flask prospect.py:651 passes
+                    // latest_month here; cutoff is one month later, so it admitted peers
+                    // that rolled out at latestMo - 2 (only 2 months ramped).
     cutoff,         // pmc_avg_rent: BP_MONTH < ?
     latestMo,       // pmc_tenure: DATEDIFF(..., ?)
     latestMo,       // pmc_pms: BP_MONTH = ?
@@ -314,7 +317,8 @@ export async function pullPeerBenchmark(
   // pmc_overlap_avg_rent: BP_MONTH < ?, PROPERTY_STATE IN (...)
   const overlapParams: unknown[] = hasStates ? [
     latestMo,  // pmc_overlap_by_state: BP_MONTH = ?
-    cutoff,    // pmc_overlap_by_state: DATEADD('month', -3, ?) — use cutoff as ramp reference
+    latestMo,  // pmc_overlap_by_state: DATEADD('month', -3, ?) — same ramp floor as
+               // pmc_latest above; Flask prospect.py:653 passes latest_month.
     ...states, // pmc_overlap_by_state: PROPERTY_STATE IN (...)
     cutoff,    // pmc_overlap_avg_rent: BP_MONTH < ?
     ...states, // pmc_overlap_avg_rent: PROPERTY_STATE IN (...)
