@@ -11,12 +11,21 @@
  *      window = min(TENURE, 12) calendar months back from the latest DQ month, floor = at
  *      least 3 of those months with total_rent_shielded > 0, else no slide at all. Identical
  *      in Flask (render_delinquency) and Clark (delinquencyWindowMonths + renderDelinquency).
+ *   4. The $10K magnitude escape hatch over that floor (DQ_MAGNITUDE_FLOOR_USD): under 3
+ *      non-zero months but >= $10K in-window, the slide renders CHARTLESS with a stat block.
+ *   5. The trend chart's contiguous calendar-month axis (both repos, as of 2026-09-11).
  */
 import assert from "node:assert/strict";
 
 import { resolveSubjectPortfolioUnits } from "../peer-matching.js";
 import type { SubjectPortfolioRow } from "../peer-matching.js";
-import { delinquencyWindowMonths, monthFull, renderDelinquency } from "../slide-renderers.js";
+import {
+  DQ_MAGNITUDE_FLOOR_USD,
+  delinquencyWindowMonths,
+  dqPeriodLabel,
+  monthFull,
+  renderDelinquency,
+} from "../slide-renderers.js";
 
 let passed = 0;
 function test(name: string, fn: () => void): void {
@@ -170,8 +179,9 @@ test("AJH regression: the old row-count window (3) hid the slide", () => {
   assert.equal(r.js, "");
 });
 
-test("the 3-non-zero-month floor hides a sparse PMC even at a full 12-month window", () => {
-  // Adara Communities' live shape (2 non-zero months) - confirmed skipping in Flask too.
+test("the 3-non-zero-month floor hides a sparse SMALL-DOLLAR PMC at a full 12-month window", () => {
+  // 2 non-zero months totalling $4,529.85 - under the count floor AND under the $10K magnitude
+  // floor, so still no slide at all.
   const twoMonths = AJH_DQ.slice(0, 2);
   assert.equal(renderDelinquency({ slideId: 26, months: twoMonths, windowMonths: 12 }).html, "");
   assert.equal(renderDelinquency({ slideId: 26, months: [], windowMonths: 12 }).html, "");
@@ -207,6 +217,117 @@ test("the headline sum excludes out-of-window months, matching its own label", (
   const r = renderDelinquency({ slideId: 26, months: rows, windowMonths: 12 });
   assert.match(r.html, /Trailing 12 Months/);
   assert.match(r.html, /\$11K across 11 resident payments in the last 12 months/);
+});
+
+// ─── 4. Delinquency magnitude escape hatch: the $10K three-way rule ─────────
+// Under 3 non-zero months the count floor alone hid 26 PMCs with >= $10K shielded in the
+// trailing 12 months (Arcan Capital $65,328 over 2 months, Valor Residential $22,932 in ONE).
+// Above DQ_MAGNITUDE_FLOOR_USD the slide renders with a stat block and NO time series; below it,
+// still no slide. Identical rule and identical copy in Flask.
+
+test("two months over the magnitude floor render MAGNITUDE MODE with the exact sentence", () => {
+  // Adara Communities' live shape: 2026-07 $3,614.36 / 3 residents + 2026-08 $25,466.21 / 16
+  // = $29,080.57 across 19 resident payments.
+  const r = renderDelinquency({
+    slideId: 26,
+    months: [
+      { month: "2026-07-01", totalRentShielded: 3614.36, residentsShielded: 3 },
+      { month: "2026-08-01", totalRentShielded: 25466.21, residentsShielded: 16 },
+    ],
+    windowMonths: 12,
+  });
+  assert.notEqual(r.html, "");
+  assert.ok(r.html.includes("Flex guaranteed $29K across 19 resident payments in Jul–Aug 2026."));
+  // Magnitude mode is CHARTLESS - no canvas, no Chart.js init, no time series at all.
+  assert.equal(r.js, "");
+  assert.ok(!r.html.includes("dqchart") && !r.html.includes("<canvas"));
+  assert.ok(!r.html.includes("Trailing"));
+  // Keeps the slide's own label and the grey-panel eyebrow.
+  assert.ok(r.html.includes("Delinquency Protection") && r.html.includes("Rent Guaranteed by Flex"));
+});
+
+test("a single month over the magnitude floor uses a one-month period label", () => {
+  // Valor Residential's live shape: $22,932.40 / 16 residents in a SINGLE month.
+  const r = renderDelinquency({
+    slideId: 26,
+    months: [{ month: "2026-08-01", totalRentShielded: 22932.40, residentsShielded: 16 }],
+    windowMonths: 12,
+  });
+  assert.notEqual(r.html, "");
+  assert.equal(r.js, "");
+  assert.ok(r.html.includes("Flex guaranteed $23K across 16 resident payments in Aug 2026."));
+});
+
+test("two months UNDER the magnitude floor are still skipped entirely", () => {
+  // Shorelight Real Estate Management's live shape: 2 non-zero months, $9,925 total - just
+  // under the $10,000 floor, so the slide is still skipped entirely.
+  const r = renderDelinquency({
+    slideId: 26,
+    months: [
+      { month: "2026-07-01", totalRentShielded: 4925, residentsShielded: 2 },
+      { month: "2026-08-01", totalRentShielded: 5000, residentsShielded: 2 },
+    ],
+    windowMonths: 12,
+  });
+  assert.equal(r.html, "");
+  assert.equal(r.js, "");
+});
+
+test("the magnitude floor is inclusive at exactly the constant", () => {
+  assert.equal(DQ_MAGNITUDE_FLOOR_USD, 10_000);
+  const at = renderDelinquency({
+    slideId: 26,
+    months: [{ month: "2026-08-01", totalRentShielded: DQ_MAGNITUDE_FLOOR_USD, residentsShielded: 5 }],
+    windowMonths: 12,
+  });
+  const justUnder = renderDelinquency({
+    slideId: 26,
+    months: [{ month: "2026-08-01", totalRentShielded: DQ_MAGNITUDE_FLOOR_USD - 0.01, residentsShielded: 5 }],
+    windowMonths: 12,
+  });
+  assert.notEqual(at.html, "");
+  assert.equal(justUnder.html, "");
+});
+
+test("dqPeriodLabel collapses a shared year only", () => {
+  assert.equal(dqPeriodLabel(["2026-08-01"]), "Aug 2026");
+  assert.equal(dqPeriodLabel(["2026-08-01", "2026-07-01"]), "Jul–Aug 2026");
+  assert.equal(dqPeriodLabel(["2025-12-01", "2026-01-01"]), "Dec 2025–Jan 2026");
+  assert.equal(dqPeriodLabel([]), "");
+});
+
+test("the magnitude floor reads the WINDOW, not the whole frame", () => {
+  // $50K eleven months before the latest DQ month, outside a 3-month window, plus $900 inside
+  // it -> the in-window total is $900, below the floor -> still no slide.
+  const r = renderDelinquency({
+    slideId: 26,
+    months: [
+      { month: "2025-09-01", totalRentShielded: 50000, residentsShielded: 40 },
+      { month: "2026-08-01", totalRentShielded: 900, residentsShielded: 1 },
+    ],
+    windowMonths: 3,
+  });
+  assert.equal(r.html, "");
+});
+
+// ─── 5. Delinquency trend chart: contiguous calendar-month axis ─────────────
+// Clark already built this (it is why Flask was aligned TO Clark, not the reverse). Pinned so
+// nobody "simplifies" it back to plotting only the rows the frame holds.
+
+test("AJH's trend axis is contiguous and zero-fills the eight-month gap", () => {
+  const r = renderDelinquency({ slideId: 26, months: AJH_DQ, windowMonths: 12 });
+  const labels = JSON.parse(r.js.match(/labels: (\[.*?\])/)![1]) as string[];
+  const vals = JSON.parse(r.js.match(/data: (\[[-0-9,\s]*\])/)![1]) as number[];
+  assert.equal(labels.length, 12);
+  assert.equal(vals.length, 12);
+  assert.equal(labels[0], "Aug 2025");
+  assert.equal(labels[11], "Jul 2026");
+  for (const gap of ["Dec 2025", "Jan 2026", "Feb 2026", "Mar 2026", "Apr 2026", "May 2026", "Jun 2026"]) {
+    assert.ok(labels.includes(gap), `${gap} must be on the axis`);
+    assert.equal(vals[labels.indexOf(gap)], 0, `${gap} must be a real zero`);
+  }
+  assert.equal(vals[labels.indexOf("Oct 2025")], 1653);
+  assert.equal(vals[labels.indexOf("Jul 2026")], 1256);
 });
 
 console.log(`\n${passed} tests passed`);

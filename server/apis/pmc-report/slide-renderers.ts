@@ -1775,6 +1775,100 @@ export function delinquencyWindowMonths(tenureMonths: number, dqRowCount: number
   return tenureMonths > 0 ? Math.min(tenureMonths, 12) : dqRowCount;
 }
 
+/**
+ * Magnitude escape hatch for the Delinquency slide's month-count floor (Kevin's call,
+ * 2026-09-11: $10,000). The 3-non-zero-months floor is blind to MAGNITUDE: live, network-wide,
+ * it hid 26 PMCs with >= $10K shielded in the trailing 12 months - Arcan Capital $65,328 over 2
+ * months (47 residents), Resia $55,895 (2mo), Urban Genesis $32,781 (2mo), Adara Communities
+ * $29,081 (2mo, 19 residents), Wogan Group $27,615 (2mo), and Valor Residential $22,932 in a
+ * SINGLE month (16 residents). Meanwhile only 5 PMCs render under the count floor with 3+ months
+ * and under $2K, so the floor isn't actually stopping much junk. Above this threshold the slide
+ * renders WITHOUT a time series (renderDelinquencyMagnitude) - with one or two data points a
+ * trend chart is precisely the misleading thing the floor exists to avoid.
+ * Flask holds the same constant under the same name in generator/slides.py.
+ */
+export const DQ_MAGNITUDE_FLOOR_USD = 10_000;
+
+/**
+ * The {period} clause of the magnitude-mode sentence, from the non-zero months themselves.
+ * One month -> "Aug 2026"; two -> "Jul-Aug 2026" with an EN DASH, chronological, collapsing a
+ * shared year to one printing ("Dec 2025-Jan 2026" when they straddle New Year). Built on
+ * monthLabel, the same helper the chart axis uses. Magnitude mode only ever fires with 1-2
+ * non-zero months, so there is no third case; a longer list still degrades to first-last.
+ * Byte-identical to Flask's _dq_period_label in generator/slides.py.
+ */
+export function dqPeriodLabel(months: string[]): string {
+  const ms = [...months].sort();
+  if (ms.length === 0) return "";
+  if (ms.length === 1) return monthLabel(ms[0]);
+  const first = monthLabel(ms[0]);
+  const last = monthLabel(ms[ms.length - 1]);
+  return first.slice(-4) === last.slice(-4)
+    ? `${first.slice(0, 3)}–${last}`
+    : `${first}–${last}`;
+}
+
+/**
+ * MAGNITUDE MODE for the Delinquency slide: the same label / intro / grey-panel shell as trend
+ * mode, with the chart region replaced by a stat block and NO time series and NO chart JS at
+ * all. Deliberately chartless - with one or two data points a bar "trend" is exactly the
+ * artifact the month-count floor exists to prevent, while the underlying fact (this much rent
+ * guaranteed, this many resident payments, in these months) is worth a slide on its own.
+ *
+ * The headline mirrors trend mode's sentence word for word through the same fmtCurrency, so
+ * $29,081 prints "$29K" the same way $5,786 prints "$6K" there. Byte-identical copy to Flask's
+ * _render_delinquency_magnitude.
+ */
+export function renderDelinquencyMagnitude(input: {
+  slideId: number;
+  amount: number;
+  residents: number;
+  months: string[];
+}): SlideResult {
+  const { slideId, amount, residents, months } = input;
+  const period = dqPeriodLabel(months);
+
+  const html = `
+  <div class="slide" id="slide-${slideId}" style="background:#fff;">
+    <div class="slide-header" style="margin-bottom:16px;flex-shrink:0;">
+      <div class="slide-label">Delinquency Protection</div>
+      <div class="slide-title">Flex guaranteed ${fmtCurrency(amount)} across ${residents.toLocaleString()} resident payments in ${period}.</div>
+      <div style="font-size:13px;color:#524e5b;line-height:1.6;margin-top:8px;">
+        Flex guarantees rent to you <strong>regardless of whether the resident pays</strong>. Every dollar below was money you received even though residents missed their payment to Flex.
+      </div>
+    </div>
+    <!-- Stat block - no time series: too few months to chart a trend -->
+    <div style="flex:1;min-height:0;background:#f7f7f7;border:1px solid #eceaf2;border-radius:14px;padding:16px 20px;display:flex;flex-direction:column;">
+      <div style="font-size:9px;font-weight:600;color:#524e5b;text-transform:uppercase;letter-spacing:0.1em;margin-bottom:10px;flex-shrink:0;">
+        Rent Guaranteed by Flex
+      </div>
+      <div style="flex:1;min-height:0;display:flex;align-items:center;justify-content:center;gap:64px;">
+        <div style="text-align:center;">
+          <div style="font-size:56px;font-weight:700;color:#6A3DB8;letter-spacing:-0.02em;line-height:1;">${fmtCurrency(amount)}</div>
+          <div style="font-size:12px;color:#524e5b;margin-top:10px;">Rent guaranteed to you</div>
+        </div>
+        <div style="text-align:center;">
+          <div style="font-size:56px;font-weight:700;color:#1a9e6a;letter-spacing:-0.02em;line-height:1;">${residents.toLocaleString()}</div>
+          <div style="font-size:12px;color:#524e5b;margin-top:10px;">Resident payments shielded</div>
+        </div>
+      </div>
+      <div style="font-size:11px;color:#a09cb0;text-align:center;flex-shrink:0;padding-top:4px;">
+        ${_e(period)} &middot; too few months of activity to chart a trend.
+      </div>
+    </div>
+  </div>`;
+
+  return { html, js: "" };
+}
+
+/**
+ * Three-way gate (identical rule in Flask's render_delinquency), all keyed off the months inside
+ * the window:
+ *   - 3+ non-zero months            -> TREND MODE: the chart and "in the last 12 months" copy.
+ *   - <3 non-zero months but the windowed total is >= DQ_MAGNITUDE_FLOOR_USD
+ *                                   -> MAGNITUDE MODE: same shell, a stat block, NO chart.
+ *   - otherwise                     -> {html:"", js:""} - no slide at all, not a placeholder.
+ */
 export function renderDelinquency(input: {
   slideId: number;
   months: DelinquencyMonth[];
@@ -1824,8 +1918,20 @@ export function renderDelinquency(input: {
   // "months.length === 0" text-only fallback above AND the old no-floor-at-all case below -
   // one consistent rule, same "return no slide" mechanism every other auto-skipped slide in
   // this codebase already uses.
+  // MAGNITUDE ESCAPE HATCH (Kevin, 2026-09-11) - see DQ_MAGNITUDE_FLOOR_USD above. Below the
+  // month-count floor but at or above the dollar floor, the slide still renders, just with NO
+  // time series: a 2-bar "trend" is the misleading artifact; the FACT ($X across N payments in
+  // these months) is not. Below both floors there is no slide at all, unchanged.
   const realMonths = windowedMonths.filter((m) => m.totalRentShielded > 0);
-  if (realMonths.length < 3) return { html: "", js: "" };
+  if (realMonths.length < 3) {
+    if (lifetimeShielded < DQ_MAGNITUDE_FLOOR_USD) return { html: "", js: "" };
+    return renderDelinquencyMagnitude({
+      slideId,
+      amount: lifetimeShielded,
+      residents: realMonths.reduce((s, m) => s + m.residentsShielded, 0),
+      months: realMonths.map((m) => m.month),
+    });
+  }
 
   // Full CONTIGUOUS calendar-month axis (Kevin's catch) - the old version pushed only the
   // rows `months` happened to contain, silently skipping real zero-DQ months in between (the
