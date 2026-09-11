@@ -82,6 +82,19 @@ function bullet(label: string, value: string, sub = "", color = NETWORK_PURPLE):
 
 // ─── Public ─────────────────────────────────────────────────────────────────
 
+/**
+ * Embed deck (slide 74) only - the subject's OWN embed activity inside this market. Clark mirror of
+ * Flask's `render_market_map(subject_embed=)` kwarg (commit 8281632). When given, the header eyebrow
+ * reads "Competitors on a direct integration in {label}" and a first bullet states their embed
+ * residents here; omitted / null (every other caller) renders exactly as before.
+ */
+export interface SubjectEmbed {
+  paying: number;
+  properties: number;
+  units: number | null;
+  msp_label: string;
+}
+
 export function renderMarketMap(
   slideId: number,
   market: Market,
@@ -90,7 +103,8 @@ export function renderMarketMap(
   networkPins: NetworkPin[],
   prospectUnits: number,
   avgRentInput: number | null,
-  oonUsage: MatchedUsageTotals
+  oonUsage: MatchedUsageTotals,
+  subjectEmbed: SubjectEmbed | null = null
 ): SlideResult {
   const totals = marketTotals(market, summaryByDma);
   const {
@@ -124,8 +138,23 @@ export function renderMarketMap(
     ? `across ${total_pmcs.toLocaleString()} property management companies — ${worstSimilarity.label}`
     : `across ${total_pmcs.toLocaleString()} property management companies`;
 
+  // Embed deck only (subjectEmbed): their own embed residents in this market, first bullet - the
+  // rest of the panel is the DI network around them. Flask slides_prospect.render_market_map's
+  // subject_embed block, strings verbatim.
+  let subjectHtml = "";
+  if (subjectEmbed) {
+    const seUnits = subjectEmbed.units;
+    const sePaying = Math.trunc(subjectEmbed.paying || 0);
+    const seProps = Math.trunc(subjectEmbed.properties || 0);
+    const seSub = seUnits
+      ? `${((sePaying / seUnits) * 100).toFixed(1)}% of your ${Math.trunc(seUnits).toLocaleString()} units here &middot; across ${seProps.toLocaleString()} propert${seProps === 1 ? "y" : "ies"}`
+      : `across ${seProps.toLocaleString()} propert${seProps === 1 ? "y" : "ies"} &middot; unit counts not available via ${escapeHtml(subjectEmbed.msp_label || "PMS")} embed`;
+    subjectHtml = bullet("Your embed today in this market", `${sePaying.toLocaleString()} residents paying`, seSub, PROSPECT_GREEN);
+  }
+
   // Build stats bullets
   let bulletsHtml =
+    subjectHtml +
     bullet(
       "Properties on Flex in this market",
       `${total_properties.toLocaleString()}`,
@@ -198,8 +227,11 @@ export function renderMarketMap(
   }
 
   // Header
+  const eyebrow = subjectEmbed
+    ? `Competitors on a direct integration in ${escapeHtml(market.label)}`
+    : "FLEX IS ALREADY IN YOUR MARKET";
   const headerHtml = `
-    <div style="font-size:14px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:${NETWORK_PURPLE};margin-bottom:10px;">FLEX IS ALREADY IN YOUR MARKET</div>
+    <div style="font-size:14px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:${NETWORK_PURPLE};margin-bottom:10px;">${eyebrow}</div>
     <div style="font-size:32px;font-weight:700;color:#1D1D1D;margin-bottom:14px;">${escapeHtml(market.label)}</div>
     <div style="border-top:2px solid ${NETWORK_PURPLE};margin-bottom:8px;"></div>`;
 
