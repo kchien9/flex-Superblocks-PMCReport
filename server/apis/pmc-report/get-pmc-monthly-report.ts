@@ -4137,6 +4137,49 @@ export default api({
       return map;
     }
 
+    // ── ONE canonical entity list + order, for every per-entity consumer ────────────────────
+    // groupRowsByPmc normalizes ORDER to allPmcNames, which fixed the "a few purple colors"
+    // bug for entities present in every row set. It does not fix MEMBERSHIP: it deletes empty
+    // groups (just above), and the three consumers hand it three DIFFERENT row sets -
+    //
+    //   entityMonthlyData / residentsUnitsEntityMonthlyData  <- inNetwork    (12m, in-network)
+    //   entityBreakdown                                      <- latestRows  (one month)
+    //   entityYearlyData                                     <- entityYearlyRentRows
+    //                                                           (UNBOUNDED, no in-network filter)
+    //
+    // - so an entity in one set and absent from another shifted every LATER entity's array
+    // index, and since each renderer colors entity i with entityColor(i), the same subsidiary
+    // came out a different color on different slides. Exactly the failure the shared palette
+    // exists to prevent, and it survived the first fix because the Asset Living family (the
+    // case it was tested on) happens to have all 8 entities present in all three sets.
+    //
+    // It is reachable on real data. Live (2026-09-11): 278 PMCs have in-network rows inside the
+    // 12-month window but ZERO rows at the latest completed month, and 387 have real rent
+    // history with no latest-month rows. Security Properties is one - 287 in-network rows in
+    // window, last in-network month 2026-07, $19.7M lifetime rent - so a combined report of
+    // "Asset Living" + "Security Properties" + "FPI (An Asset Living Company)" gives FPI index
+    // 2 on Adoption Trend and Since Inception but index 1 on the Exec Summary switcher and
+    // Portfolio Comparison.
+    //
+    // Flask cannot diverge because _pmc_split, _monthly_split_data and _dq_split are all
+    // derived from ONE `_splits` list (app.py:1685-1717), built from the named frames that
+    // survive compute_pmc_kpis - i.e. the entities with real in-network rows in the lookback
+    // window. canonicalEntityNames is that same semantic: allPmcNames order, filtered to those
+    // with in-network rows in the window. Union-padded rather than intersected, for the same
+    // reason Flask keeps such an entity in _splits: it IS part of this report (it has rows in
+    // the window, it contributes to the combined totals, it owns a color), it simply has
+    // nothing to show in one particular view - which must render as empty, not as a shift.
+    const canonicalEntityNames = Array.from(groupRowsByPmc(inNetwork).keys());
+    // Per-canonical-entity row lists, padded with [] and in canonical order. Rows whose
+    // PMC_NAME isn't canonical are dropped - matching Flask, where an entity that didn't
+    // survive compute_pmc_kpis is absent from every split, not just the one it lacks rows for
+    // (this is what keeps the unbounded, unfiltered entityYearlyRentRows from introducing an
+    // entity the other two views have never heard of).
+    function canonicalGroups<T extends { PMC_NAME: string }>(rows: T[]): [string, T[]][] {
+      const map = groupRowsByPmc(rows);
+      return canonicalEntityNames.map((name) => [name, map.get(name) ?? []]);
+    }
+
     // Monthly totals. Factored into a closure (same logic, unchanged) so the Platinum deck can run
     // the exact same per-month aggregation on each tier's rows (Flask: transform_monthly_totals
     // on silver_df / platinum_df) instead of a second, drift-prone copy.
@@ -4205,7 +4248,11 @@ export default api({
     // combined chart's own month axis and treats a missing month as a real gap. A single-PMC
     // report yields a 1-entry array, which the renderer's own "needs 2+" check keeps off the
     // chart, same discipline as Task 9's entityBreakdown and Task 10's entityYearlyData.
-    const entityMonthlyData = Array.from(groupRowsByPmc(inNetwork).entries()).map(([name, rows]) => {
+    // canonicalGroups, not groupRowsByPmc: canonical membership+order for every per-entity
+    // consumer (see canonicalEntityNames above). For THIS consumer the two are identical by
+    // construction - canonical IS derived from inNetwork - but it reads off the shared list so
+    // nothing here can drift from the other two if the canonical rule ever changes.
+    const entityMonthlyData = canonicalGroups(inNetwork).map(([name, rows]) => {
       const emMap = new Map<string, { billsPaid: number; units: number }>();
       for (const row of rows) {
         const existing = emMap.get(row.BP_MONTH) || { billsPaid: 0, units: 0 };
@@ -4227,7 +4274,7 @@ export default api({
     // any gap as 0 (a single-select switcher shows one dataset at a time, so a stable shared
     // axis matters more here than the sparse-honest null gaps Adoption Trend's additive lines
     // use above).
-    const residentsUnitsEntityMonthlyData = Array.from(groupRowsByPmc(inNetwork).entries()).map(([name, rows]) => {
+    const residentsUnitsEntityMonthlyData = canonicalGroups(inNetwork).map(([name, rows]) => {
       const ruMap = new Map<string, { billsPaid: number; units: number; rentPaid: number }>();
       for (const row of rows) {
         const existing = ruMap.get(row.BP_MONTH) || { billsPaid: 0, units: 0, rentPaid: 0 };
@@ -4291,7 +4338,7 @@ export default api({
         if (quarterAxisMin !== null && q.start.slice(0, 7) < quarterAxisMin) continue;
         const combined = buildQuarterAddsSeries(inNetwork, q);
         if (!combined) continue;
-        const entities = Array.from(groupRowsByPmc(inNetwork).entries())
+        const entities = canonicalGroups(inNetwork)
           .map(([name, rows]) => ({ pmcName: name, series: buildQuarterAddsSeries(rows, q) }))
           .filter((e): e is { pmcName: string; series: QuarterAddsSeries } => e.series != null);
         quarters.push({ quarter: q, combined, entities });
@@ -5556,6 +5603,14 @@ export default api({
     // single-PMC report yields a 1-entry array here, which renderExecSummary treats as "no
     // switcher" (needs 2+).
     //
+    // Indexed off canonicalEntityNames (canonicalGroups), NOT off latestRows' own membership:
+    // an entity with in-network rows in the window but none at the latest completed month is
+    // still part of this report and still owns its color slot, so it gets an entry with zeroed
+    // current-month figures rather than being dropped and shifting every later entity's color.
+    // Its `monthly` series is still real (it comes from inNetwork, not latestRows), so its hero
+    // window rent, "N last 3 months" sub-label and sparklines all still say something true -
+    // only the four current-month tile values are zero, which is exactly what's true of it.
+    //
     // Prior-period figures per entity come from the same comparison month (prevMonthStr, i.e.
     // monthlyTotals[latestIdx - cmpIdx].month) the combined prevResidents/prevRent/prevNar/
     // prevPropertyCount are read at, aggregated from the same inNetwork rows monthlyTotals is
@@ -5571,7 +5626,7 @@ export default api({
     // per-entity hero window rent, "N last 3 months" sub-label and sparklines; sparse (only
     // months the entity has rows in), chronological like monthlyTotals.
     const inNetworkByPmc = groupRowsByPmc(inNetwork);
-    const entityBreakdown = Array.from(groupRowsByPmc(latestRows).entries()).map(([name, rows]) => {
+    const entityBreakdown = canonicalGroups(latestRows).map(([name, rows]) => {
       const residents = rows.reduce((s, r) => s + r.BILLS_PAID, 0);
       const rent = rows.reduce((s, r) => s + r.RENT_PAID, 0);
       const units = rows.reduce((s, r) => s + r.PROPERTY_UNIT_COUNT, 0);
@@ -5636,7 +5691,14 @@ export default api({
     // allPmcNames.length > 1 above), so this yields [] here too, and renderSinceInception's own
     // "needs 2+" check keeps the bar unstacked. Same array feeds both QBR's fixed-slide-3 call
     // and Expansion's "since_inception" switch case below.
-    const entityYearlyData = Array.from(groupRowsByPmc(entityYearlyRentRows).entries()).map(([name, rows]) => {
+    // canonicalGroups, not groupRowsByPmc: this is the row set that diverged WORST, because
+    // entityYearlyRentRows is unbounded in time AND carries no IS_IN_NETWORK filter, so it can
+    // both (a) miss an entity the other two views have and (b) contain an entity they don't.
+    // Canonical membership settles both: an in-window entity with no yearly rows gets an empty
+    // record (zero-height stack segments, color slot kept), and an entity with rent history but
+    // no in-network rows in the window is dropped from this view too - which is what Flask
+    // does, since it never survived compute_pmc_kpis into _splits at all.
+    const entityYearlyData = canonicalGroups(entityYearlyRentRows).map(([name, rows]) => {
       const totalRentByYear: Record<number, number> = {};
       const ytdRentByYear: Record<number, number> = {};
       for (const r of rows) {
