@@ -13,6 +13,7 @@ import type {
   MatchedUsageTotals,
 } from "./market-map-data.js";
 import { marketTotals, marketAnnualGuarantee } from "./market-map-data.js";
+import { fmtPct } from "./format-pct.js";
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -24,12 +25,15 @@ function escapeHtml(s: string): string {
     .replace(/"/g, "&quot;");
 }
 
-/** Convert "LOS ANGELES" → "Los Angeles", preserving short words like "of", "the" in lowercase. */
-function titleCase(s: string): string {
-  return s
-    .toLowerCase()
-    .replace(/\b\w/g, (c) => c.toUpperCase());
-}
+// titleCase() removed (Kevin's catch). market.label is a raw Snowflake DMA_NAME from
+// PRODUCTION.SEEDS.SEED_ZIP_CODE_TO_DMA_MAPPING, which is stored ALL CAPS and full of
+// abbreviations, state suffixes, ampersands and parentheses: "BIRMINGHAM (ANN & TUSC)",
+// "CEDAR RAPIDS - WTRLO - IWC&DUB", "ALBANY, GA", "NEW YORK, NY". A naive word-initial
+// title-case mangles every one of those ("Birmingham (ann & Tusc)", "Albany, Ga") AND
+// disagreed with the slide's own header, which already printed the label verbatim via
+// escapeHtml - so the header said "LOS ANGELES" while the bullet under it said
+// "Los Angeles". Flask escapes the label and prints it as-is everywhere
+// (slides_prospect.py:3437, _e(market['label'])); Clark does the same now.
 
 function fmtAbbrev(v: number, decimals = 0): string {
   const trim = (s: string) => {
@@ -138,6 +142,52 @@ export function renderMarketMap(
     ? `across ${total_pmcs.toLocaleString()} property management companies — ${worstSimilarity.label}`
     : `across ${total_pmcs.toLocaleString()} property management companies`;
 
+  // True only when the pins/stats on THIS slide are actually a matched-to-the-prospect
+  // subset (not the tier="all" fallback, which is unfiltered market-wide data wearing the
+  // same shape) - gates every "properties like yours" phrasing below so we never claim a
+  // similarity match that didn't happen. Flask's own derivation, verbatim
+  // (slides_prospect.py:3311): `is_matched = bool(similarity) and not
+  // similarity.get("is_fallback")`. Kevin: don't let an affordable-housing PMC's deck imply
+  // the map is showing them Class A luxury towers just because the label says so.
+  //
+  // Clark evaluates it against worstSimilarity (the most-fallback tier across this slide's
+  // sub_markets) rather than a single similarity object, because a merged multi-DMA market
+  // can resolve a real rent+size match in one DMA and fall back to "all" in another - in
+  // that case the combined numbers on this slide are NOT a matched subset, so the honest
+  // answer is the unqualified wording. Same reason the label above reports the worst tier.
+  const isMatched = worstSimilarity != null && !worstSimilarity.is_fallback;
+
+  // Market-wide adoption, units-weighted across this slide's sub_markets - the comparison
+  // number the adoption bullet prints alongside the matched rate (Flask's
+  // `market_wide["avg_adoption"]`, slides_prospect.py:3363). Rolled up here rather than in
+  // marketTotals because marketTotals returns a MarketSummary and doesn't carry market_wide;
+  // weighting mirrors its own avg_adoption rollup (sum(units * rate) / sum(units)), not a
+  // plain mean of already-weighted rates.
+  const marketWideAdoption = (() => {
+    let units = 0;
+    let weighted = 0;
+    for (const dma of market.sub_markets) {
+      const mw = summaryByDma[dma]?.market_wide;
+      if (!mw) continue;
+      units += mw.total_units || 0;
+      weighted += (mw.total_units || 0) * (mw.avg_adoption || 0);
+    }
+    return units > 0 ? weighted / units : null;
+  })();
+
+  // Flask's branch copy, verbatim (slides_prospect.py:3352, 3362-3363).
+  const propertiesLabel = isMatched
+    ? "Properties like yours on Flex in this market"
+    : "Properties on Flex in this market";
+  const adoptionLabel = isMatched
+    ? "Average adoption rate &mdash; properties like yours"
+    : "Average adoption rate";
+  const adoptionSub = isMatched && marketWideAdoption != null
+    ? `${fmtPct(marketWideAdoption)} market-wide across all property types`
+    : "";
+  /** Flask's `population_phrase` (slides_prospect.py:3312) - used in the "not pictured" note. */
+  const populationPhrase = isMatched ? "properties like yours" : "properties";
+
   // Embed deck only (subjectEmbed): their own embed residents in this market, first bullet - the
   // rest of the panel is the DI network around them. Flask slides_prospect.render_market_map's
   // subject_embed block, strings verbatim.
@@ -147,7 +197,7 @@ export function renderMarketMap(
     const sePaying = Math.trunc(subjectEmbed.paying || 0);
     const seProps = Math.trunc(subjectEmbed.properties || 0);
     const seSub = seUnits
-      ? `${((sePaying / seUnits) * 100).toFixed(1)}% of your ${Math.trunc(seUnits).toLocaleString()} units here &middot; across ${seProps.toLocaleString()} propert${seProps === 1 ? "y" : "ies"}`
+      ? `${fmtPct(sePaying / seUnits)} of your ${Math.trunc(seUnits).toLocaleString()} units here &middot; across ${seProps.toLocaleString()} propert${seProps === 1 ? "y" : "ies"}`
       : `across ${seProps.toLocaleString()} propert${seProps === 1 ? "y" : "ies"} &middot; unit counts not available via ${escapeHtml(subjectEmbed.msp_label || "PMS")} embed`;
     subjectHtml = bullet("Your embed today in this market", `${sePaying.toLocaleString()} residents paying`, seSub, PROSPECT_GREEN);
   }
@@ -156,12 +206,12 @@ export function renderMarketMap(
   let bulletsHtml =
     subjectHtml +
     bullet(
-      "Properties on Flex in this market",
+      propertiesLabel,
       `${total_properties.toLocaleString()}`,
       similaritySubtext
     ) +
     bullet("Active residents splitting rent", `${total_active_users.toLocaleString()}`) +
-    bullet("Average adoption rate", `${(avg_adoption * 100).toFixed(1)}%`) +
+    bullet(adoptionLabel, fmtPct(avg_adoption), adoptionSub) +
     bullet(
       "Rent guaranteed through Flex",
       `${fmtAbbrev(rent_paid_month, 1)}/mo`,
@@ -186,26 +236,29 @@ export function renderMarketMap(
     // really just this market, which read as a contradiction rather than two intentional
     // lenses. See the footnote below for the explicit callout.
     bulletsHtml += bullet(
-      `Your ${escapeHtml(titleCase(market.label))} properties could be guaranteeing`,
+      `Your ${escapeHtml(market.label)} properties could be guaranteeing`,
       `${fmtAbbrev(guarantee.annual_guarantee, 1)}/yr`,
       "",
       PROSPECT_GREEN
     );
-    // "properties like yours in this market," not "this market's average rent" - totals
-    // (marketTotals) is built from pullMarketSummary's already rent+size-similarity-filtered
-    // chosenRow, not the unfiltered market_wide numbers, so this fallback rent already reflects
-    // the comparable peer set, not every property in the market regardless of size/rent fit.
+    // "properties like yours in this market" ONLY when a similarity match actually happened
+    // (Kevin's catch). This was gated on avg_rent_is_market_fallback alone, which says where
+    // the RENT came from (market fallback vs. the caller's input), not whether the market
+    // population was ever matched to the prospect. At tier="all" no matching occurred at all
+    // and totals ARE the unfiltered market_wide numbers, yet the copy still asserted
+    // comparability. Unmatched now falls back to Flask's honest wording, verbatim
+    // (slides_prospect.py:3408, "this market's average rent").
     const rentSource = guarantee.avg_rent_is_market_fallback
-      ? "avg rent of properties like yours in this market"
+      ? (isMatched ? "avg rent of properties like yours in this market" : "this market's average rent")
       : "your average rent input";
     guaranteeFootnoteHtml = `
       <div style="font-size:11px;color:#a09cb0;margin-top:14px;line-height:1.5;">
         Estimated guarantee: your ${prospectUnits.toLocaleString()} units &times; $${guarantee.avg_rent.toLocaleString(undefined, { maximumFractionDigits: 0 })}/mo
-        (${rentSource}) &times; ${(avg_adoption * 100).toFixed(1)}% market adoption rate, annualized.
+        (${rentSource}) &times; ${fmtPct(avg_adoption)} market adoption rate${isMatched ? " (properties like yours)" : ""}, annualized.
         Actual results will vary.
       </div>
       <div style="font-size:11px;color:#a09cb0;margin-top:8px;line-height:1.5;">
-        This reflects your properties in ${escapeHtml(titleCase(market.label))} only, benchmarked against comparable properties in this specific market &mdash;
+        This reflects your properties in ${escapeHtml(market.label)} only, benchmarked against ${isMatched ? "comparable properties" : "all properties"} in this specific market &mdash;
         a different, narrower lens than the portfolio-wide comparison against similar PMCs shown earlier in this deck. Both are real estimates; they're not meant to add up to the same number.
       </div>`;
   }
@@ -239,7 +292,7 @@ export function renderMarketMap(
   const pinsNotPictured = Math.max(0, total_properties - networkPins.length);
   const notPicturedHtml = pinsNotPictured > 0
     ? `<div style="margin-top:6px;padding-top:6px;border-top:1px solid rgba(0,0,0,0.08);color:#6b7280;">
-        Showing ${networkPins.length.toLocaleString()} of ${total_properties.toLocaleString()} properties &mdash;
+        Showing ${networkPins.length.toLocaleString()} of ${total_properties.toLocaleString()} ${populationPhrase} &mdash;
         <strong style="color:#1D1D1D;">${pinsNotPictured.toLocaleString()} more</strong> not pictured
       </div>`
     : "";
@@ -261,7 +314,7 @@ export function renderMarketMap(
       <div id="map-${slideId}" style="position:absolute;inset:0;"></div>
       <div style="position:absolute;bottom:16px;left:16px;z-index:1000;background:rgba(255,255,255,0.92);border-radius:8px;padding:10px 14px;font-size:11px;color:#1D1D1D;box-shadow:0 2px 8px rgba(0,0,0,0.12);">
         <div style="display:flex;align-items:center;gap:7px;margin-bottom:5px;"><span style="width:9px;height:9px;border-radius:50%;background:${PROSPECT_GREEN};display:inline-block;"></span>${prospectLabel}</div>
-        <div style="display:flex;align-items:center;gap:7px;margin-bottom:5px;"><span style="width:9px;height:9px;border-radius:50%;background:${NETWORK_PURPLE};display:inline-block;"></span>Flex network</div>
+        <div style="display:flex;align-items:center;gap:7px;margin-bottom:5px;"><span style="width:9px;height:9px;border-radius:50%;background:${NETWORK_PURPLE};display:inline-block;"></span>${isMatched ? "Properties like yours in Flex network" : "Flex network"}</div>
         <div style="display:flex;align-items:center;gap:7px;${oonUsage.matched_count > 0 ? "margin-bottom:5px;" : ""}"><span style="width:9px;height:9px;border-radius:50%;background:${NEW_HIGHLIGHT};display:inline-block;"></span>New to Flex this year</div>
         ${oonUsage.matched_count > 0 ? `<div style="display:flex;align-items:center;gap:7px;"><span style="width:9px;height:9px;border-radius:50%;background:${PROSPECT_GREEN};border:2px solid ${OON_USAGE_HIGHLIGHT_RING};display:inline-block;"></span>Residents using Flex on their own</div>` : ""}
         ${notPicturedHtml}
