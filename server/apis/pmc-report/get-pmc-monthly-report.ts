@@ -37,7 +37,6 @@ import {
   renderExpansionMetrosight,
   renderExpansionGap,
   renderExpansionCaseClose,
-  renderAffordableHousing,
 } from "./expansion-renderers.js";
 import {
   type NetworkPoolProperty,
@@ -81,6 +80,10 @@ import { renderMarketMap } from "./market-map-slides.js";
 import type { SubjectEmbed } from "./market-map-slides.js";
 import { buildEmbedSpeakerNotesHtml } from "./speaker-notes.js";
 import type { Benchmarks } from "./slides-prospect.js";
+// The faithful port of Flask's render_affordable_housing_slide (generator/slides.py:8408) -
+// see the "high_rent" / evidence_type === "affordable" case below for why the Expansion deck
+// now calls THIS one instead of expansion-renderers' renderAffordableHousing.
+import { renderAffordableHousingSlide } from "./slides-prospect.js";
 
 const SNOWFLAKE_SSO = "d38ee94a-4e93-46f5-ab44-c65a99b3aea5";
 // "Census Geocoder" REST API integration (the same one GetProspectDeck declares) - only the
@@ -6508,7 +6511,21 @@ export default api({
 
           case "high_rent": {
             if (evidence_type === "affordable") {
-              const r = renderAffordableHousing({ slideId: slideNum, pmcName: pmcDisplayName, propertySnapshot: expRentBucketProps });
+              // renderAffordableHousingSlide (slides-prospect.ts), NOT expansion-renderers'
+              // renderAffordableHousing. This call used to reach the latter, which cites a
+              // study Flex cannot substantiate: "a 2024 survey of 3,200+ Flex users",
+              // "n=3,247 respondents in LIHTC / Section 8 / workforce housing", and - worse -
+              // relabels Flask's 89% "PMs recommend continuing" as 89% of RESIDENTS who
+              // "would recommend Flex to a neighbor". None of those numbers or that framing
+              // exist anywhere in Flask. Flask's own slide (render_affordable_housing_slide,
+              // generator/slides.py:8408) cites the real partner study - "40,000+ residents
+              // across 200+ affordable properties" - and slides-prospect.ts:1216 is already
+              // its faithful port, used by the prospect deck (get-prospect-deck.ts:688).
+              // One renderer, the substantiated one, for both decks.
+              //
+              // expansion-renderers.renderAffordableHousing is now unreferenced and should be
+              // DELETED - left in place only because another agent is currently in that file.
+              const r = renderAffordableHousingSlide(slideNum);
               pushSlide(sid, r);
             } else {
               // residentRents/alltimeResidentRents were missing here (Kevin's ask) - QBR's own
