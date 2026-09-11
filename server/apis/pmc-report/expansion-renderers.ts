@@ -4,6 +4,9 @@
  * from the Flask source generator/slides.py.
  */
 
+import { renderAffordableHousingSlide } from "./slides-prospect.js";
+import { fmtPct } from "./format-pct.js";
+
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
 function _e(s: string): string {
@@ -903,41 +906,27 @@ export interface AffordableHousingInput {
   }>;
 }
 
+/**
+ * @deprecated Call `renderAffordableHousingSlide(slideId)` from ./slides-prospect.js instead -
+ * that is the faithful port of Flask's `render_affordable_housing_slide`
+ * (generator/slides.py:8408) and the only version whose numbers can be sourced.
+ *
+ * This renderer's own markup has been REMOVED, not just deprecated. It cited a "2024 survey of
+ * 3,200+ Flex users" and a "Flex Resident Impact Survey, Q3 2024 (n=3,247 respondents in LIHTC /
+ * Section 8 / workforce housing)" - neither of which exists. Flask's slide cites seven stats
+ * from the Flex affordable housing PARTNER study, framed as "40,000+ residents across 200+
+ * affordable properties," and its 89% figure is "PMs recommend continuing," not residents who
+ * "would recommend Flex to a neighbor." A fabricated sample size and a relabeled statistic on a
+ * partner-facing slide is not a copy nit; it is an unsubstantiated claim the deck cannot defend,
+ * so it does not get to keep rendering while a call site is repointed.
+ *
+ * The function survives only as a thin forwarder because get-pmc-monthly-report.ts:6399 still
+ * imports it (a concurrent change is repointing that call site at the faithful export). Once
+ * that lands, delete this and `AffordableHousingInput` outright - nothing else references
+ * either. `pmcName` / `propertySnapshot` are intentionally unused: the faithful slide is static
+ * and takes no PMC data, which is also what removed the separate "average rent of $0/mo"
+ * zero-value copy bug this renderer had.
+ */
 export function renderAffordableHousing(input: AffordableHousingInput): SlideResult {
-  const { slideId, pmcName, propertySnapshot } = input;
-  const pmc = _e(pmcName);
-
-  const totalBills = propertySnapshot.reduce((s, p) => s + p.billsPaid, 0);
-  const totalRent = propertySnapshot.reduce((s, p) => s + p.rentPaid, 0);
-  const avgRent = totalBills > 0 ? Math.round(totalRent / totalBills) : 0;
-
-  const html = `
-  <div class="slide" id="slide-${slideId}" style="background:#fff;flex-direction:column;padding:40px 56px 32px;overflow:hidden;">
-    <div class="slide-header" style="margin-bottom:24px;">
-      <div style="font-size:9px;letter-spacing:0.18em;text-transform:uppercase;color:#6A3DB8;font-weight:600;margin-bottom:10px;">AFFORDABLE HOUSING EVIDENCE</div>
-      <div style="font-size:26px;font-weight:700;color:#1d1d1d;line-height:1.2;letter-spacing:-0.02em;margin-bottom:6px;">Flex works hardest for residents who need it most</div>
-      <div style="font-size:12px;color:#9ca3af;line-height:1.5;">At an average rent of ${fmtCurrency(avgRent)}/mo, ${pmc}'s residents are exactly who Flex was designed to serve.</div>
-    </div>
-
-    <div style="flex:1;display:grid;grid-template-columns:1fr 1fr;gap:20px;align-content:start;">
-      <div style="background:#f8f7ff;border:1px solid #ede9fe;border-radius:10px;padding:24px;">
-        <div style="font-size:48px;font-weight:700;color:#6A3DB8;letter-spacing:-0.03em;line-height:1;">73%</div>
-        <div style="font-size:13px;font-weight:600;color:#1d1d1d;margin-top:12px;">of residents said Flex helped them stay housed</div>
-        <div style="font-size:11px;color:#6b7280;margin-top:8px;line-height:1.5;">In a 2024 survey of 3,200+ Flex users in affordable housing, nearly three-quarters reported that Flex directly prevented them from falling behind on rent or facing eviction proceedings.</div>
-      </div>
-      <div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:10px;padding:24px;">
-        <div style="font-size:48px;font-weight:700;color:#15803d;letter-spacing:-0.03em;line-height:1;">89%</div>
-        <div style="font-size:13px;font-weight:600;color:#1d1d1d;margin-top:12px;">would recommend Flex to a neighbor</div>
-        <div style="font-size:11px;color:#6b7280;margin-top:8px;line-height:1.5;">Satisfaction is highest among residents paying under $1,200/mo. The value of payment flexibility increases as the gap between paycheck timing and rent due date grows more consequential.</div>
-      </div>
-    </div>
-
-    <div style="margin-top:auto;padding-top:16px;border-top:1px solid #f0edff;">
-      <div style="font-size:11px;color:#9ca3af;line-height:1.5;">
-        Source: Flex Resident Impact Survey, Q3 2024 (n=3,247 respondents in LIHTC / Section 8 / workforce housing). Your residents aren't just using a payment tool — they're using a housing stability tool.
-      </div>
-    </div>
-  </div>`;
-
-  return { html, js: "" };
+  return renderAffordableHousingSlide(input.slideId);
 }
