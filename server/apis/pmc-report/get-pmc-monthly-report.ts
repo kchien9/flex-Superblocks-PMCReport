@@ -49,6 +49,9 @@ import {
   rollingPeerMedianSql,
   stageBenchmarkSql,
 } from "./peer-matching.js";
+// The deck's single set of number formatters - see formatters.ts for why they live in one
+// place now (three drifted copies, e.g. 999,999,000 -> "$1000.0M" here vs Flask's "$1.0B").
+import { fmtCurrency, fmtPct, fmtPct100, fmtPp } from "./formatters.js";
 import { peerCriteriaLabel, splitTierRows, platinumCounterfactual, PLATINUM_MIN_PROPERTIES } from "./platinum.js";
 import type { PeerRateByMonth } from "./platinum.js";
 import { parseCheckinMonth, checkinLookback, checkinProjectionEnd, checkinSummary, renderCheckinCover, renderAdoptionCheckin } from "./checkin.js";
@@ -325,10 +328,10 @@ function _e(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 
-function fmtPct(value: number): string {
-  const s = (value * 100).toFixed(1);
-  return s.endsWith(".0") ? s.slice(0, -2) + "%" : s + "%";
-}
+// fmtPct / fmtCurrency / fmtPct100 / fmtPp now come from ./formatters.js - ONE implementation
+// each, shared with the other renderer modules (see that file's header for the three-way
+// divergence this replaced, e.g. 999,999,000 printing here as "$1000.0M" against Flask's
+// "$1.0B"). This file's own local copies are gone.
 
 // Resident/household terminology toggle (Kevin's ask, 2026-08-19) — applied once to a fully-
 // assembled HTML document (deck or speaker notes), not threaded through every render
@@ -352,24 +355,6 @@ function applyTerminology(html: string, terminology: string | undefined): string
     out = out.replace(new RegExp(`\\b${src}\\b`, "g"), dst);
   }
   return out;
-}
-
-function fmtCurrency(v: number): string {
-  // $X.XXB tier (Kevin's catch on the 8-entity combined deck: lifetime rent printed as
-  // "$2210.5M"). Same tier added to every other currency formatter in this deck, TS and the
-  // embedded Chart.js JS alike, so text, ticks, labels and tooltips agree.
-  if (v >= 1_000_000_000) return `$${(v / 1_000_000_000).toFixed(2)}B`;
-  if (v >= 1_000_000) {
-    let s = (v / 1_000_000).toFixed(2).replace(/0+$/, "");
-    if (s.endsWith(".")) s += "0";
-    return `$${s}M`;
-  }
-  if (v >= 1_000) {
-    const k = Math.round(v / 1_000);
-    if (k >= 1000) return "$1.0M";
-    return `$${k}K`;
-  }
-  return `$${Math.round(v).toLocaleString()}`;
 }
 
 function rentWindowLabel(opts: { partnerSince: string | null; lookbackMonths: number; coversFullTenure: boolean }): string {
@@ -516,9 +501,13 @@ function renderExecSummary(d: ExecSummaryInput): { html: string; js: string } {
     const pct = (delta / prev) * 100;
     const isUp = delta > 0;
     // Format the text first so we can detect rounded-to-zero
+    // fmtPct100 / fmtPp, not .toFixed(1): Kevin's rule (shipped in Flask as _fmt_pct100 /
+    // _fmt_pp, slides.py:60-69) is no bare trailing ".0" on any percentage the deck PRINTS.
+    // These pills were the last inline ":.1f" in this file, so a clean +2% move rendered
+    // "+2.0%" here while the identical number read "+2%" everywhere else in the deck.
     let txt: string;
-    if (fmt === "pct") txt = `${Math.abs(pct).toFixed(1)}%`;
-    else if (fmt === "pp") txt = `${(Math.abs(delta) * 100).toFixed(1)}pp`;
+    if (fmt === "pct") txt = fmtPct100(Math.abs(pct));
+    else if (fmt === "pp") txt = fmtPp(Math.abs(delta) * 100);
     else if (fmt === "currency") txt = fmtCurrency(Math.abs(delta));
     else txt = Math.abs(Math.round(delta)).toLocaleString("en-US");
     // "No change" handling: if the formatted text would display as 0, show grey "No change" instead
@@ -617,7 +606,7 @@ function renderExecSummary(d: ExecSummaryInput): { html: string; js: string } {
     const pctDelta = (delta / prevRent) * 100;
     const sign = delta >= 0 ? "+" : "\u2212";
     const col = delta >= 0 ? "#6dffca" : "#ffaaaa";
-    return `<div class="exec-delta" style="display:inline-block;background:rgba(255,255,255,0.12);color:${col};font-size:10px;font-weight:700;border-radius:6px;padding:3px 9px;margin-top:8px;">${sign}${Math.abs(pctDelta).toFixed(1)}% ${_vs}</div>`;
+    return `<div class="exec-delta" style="display:inline-block;background:rgba(255,255,255,0.12);color:${col};font-size:10px;font-weight:700;border-radius:6px;padding:3px 9px;margin-top:8px;">${sign}${fmtPct100(Math.abs(pctDelta))} ${_vs}</div>`;
   }
   const heroPill = heroRentPill(d.currentRent, d.prevRent);
 
