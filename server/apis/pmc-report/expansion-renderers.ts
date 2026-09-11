@@ -674,6 +674,19 @@ export function renderExpansionCaseClose(input: ExpansionCaseCloseInput): SlideR
 
   // Opportunity bar
   const oppNiro = hasNiroActivity ? " There's already proven demand at properties not yet on Flex." : "";
+  // "+$0/mo waiting" is not an opportunity, it's a typo-looking dead slot - and it renders for
+  // real: gapRentMo is floor(gapUnits * currentNar) * avgRent, so it's exactly 0 for a fully
+  // enrolled portfolio (the nearFull case this deck explicitly supports) and for any portfolio
+  // whose remaining units round to under one projected payer. Suppress the dollar phrase in that
+  // case instead of printing a zero, and say the true thing when the reason is full enrollment.
+  // The middle of the bar already states the enrollment split, so nothing is lost. Kept
+  // byte-identical to Flask (generator/slides.py:9841) - this was a shared defect, not a port
+  // defect, and both repos change together.
+  const oppValue = gapRentMo > 0
+    ? `+${fmtCurrency(gapRentMo)}/mo waiting${oppNiro}`
+    : gapUnits === 0
+      ? `Fully enrolled${oppNiro}`
+      : oppNiro.trim();
   const oppHtml = `
     <div style="background:#2C194D;border-radius:10px;padding:16px 24px;display:flex;
                 align-items:center;justify-content:space-between;gap:16px;flex-shrink:0;margin-top:4px;">
@@ -684,7 +697,7 @@ export function renderExpansionCaseClose(input: ExpansionCaseCloseInput): SlideR
         ${enrollPct}% of your portfolio on Flex &nbsp;·&nbsp; ${100 - enrollPct}% still to go
       </div>
       <div style="font-size:13px;font-weight:700;color:#a78bfa;flex-shrink:0;white-space:nowrap;">
-        +${fmtCurrency(gapRentMo)}/mo waiting${oppNiro}
+        ${oppValue}
       </div>
     </div>`;
 
@@ -795,8 +808,16 @@ export function renderExpansionMetrosight(input: ExpansionMetrosightInput): Slid
     return `<div style="display:contents;">${iconHtml}${curCell}${arrow}${gap}</div>`;
   }
 
+  // "AT FULL ADOPTION", not "ALREADY DELIVERING" (Kevin's catch, live-verified on AJH). Every
+  // number in this column applies MetroSight's per-100-UNIT effects to flexUnits - all enrolled
+  // units - but only the units with a paying resident can produce any of those effects today.
+  // AJH has 1,232 enrolled units and 22 payers, so the column claimed "~37 fewer past-due
+  // payments/mo" as something already happening off 22 people. The math is a legitimate
+  // full-adoption projection, which is what the subtitle below already says ("Projections apply
+  // MetroSight estimates to portfolio size"); only the header asserted it was realized. Same
+  // wording in Flask (generator/slides.py:9992) - shared defect, both repos change together.
   const colHeaders = `<div></div>
-    <div style="font-size:9px;font-weight:600;letter-spacing:0.10em;color:#6A3DB8;text-transform:uppercase;padding-bottom:4px;">ALREADY DELIVERING · ${flexUnits.toLocaleString("en-US")} ENROLLED</div>`
+    <div style="font-size:9px;font-weight:600;letter-spacing:0.10em;color:#6A3DB8;text-transform:uppercase;padding-bottom:4px;">AT FULL ADOPTION · ${flexUnits.toLocaleString("en-US")} ENROLLED</div>`
     + (showGap
       ? `<div></div><div style="font-size:9px;font-weight:600;letter-spacing:0.10em;color:#15803d;text-transform:uppercase;padding-bottom:4px;">EXPANDING ADDS · ${gapUnits.toLocaleString("en-US")} REMAINING</div>`
       : "");
