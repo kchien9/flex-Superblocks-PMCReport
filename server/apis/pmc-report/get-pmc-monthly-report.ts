@@ -1,4 +1,4 @@
-import { api, z, snowflake } from "@superblocksteam/sdk-api";
+import { api, z, snowflake, restApiIntegration } from "@superblocksteam/sdk-api";
 import {
   renderMetrosightEvidence,
   renderResidentsUnitsCombo,
@@ -50,8 +50,40 @@ import type { PeerRateByMonth } from "./platinum.js";
 import { parseCheckinMonth, checkinLookback, checkinProjectionEnd, checkinSummary, renderCheckinCover, renderAdoptionCheckin } from "./checkin.js";
 import { applyGeoRules, buildGeoLookups, cachedNetworkZipGeo, UNKNOWN_REGION } from "./geo-regions.js";
 import type { NetworkZipGeoRow, RegionDetailRow } from "./geo-regions.js";
+// Embed → DI deck (deck_mode "embed"): its own data layer + slides, plus the shared peer benchmark
+// (Platinum floor) and market-map pipeline the New Logo deck uses.
+import {
+  resolveEmbedPmc, pullEmbedMonthly, summarizeEmbedMonthly, pullGraduationCurve,
+  pullChannelRepeatRates, pullNiroSnapshot, pullSfTotalUnits, embedStatesFromDim,
+  applyPropertyUpload, embedUploadRows, embedMarkets, embedProjectionRange,
+  latestEmbedBpMonth, bpSafeCutoff, EMBED_MIN_MONTHS,
+} from "./embed.js";
+import type { EmbedProperty } from "./embed.js";
+import {
+  renderEmbedCover, renderEmbedToday, renderEmbedGraduation, renderEmbedProjection,
+  renderEmbedVisibility, renderEmbedNextSteps,
+} from "./slides-embed.js";
+import type { EmbedCtx } from "./slides-embed.js";
+import { pullPeerBenchmark, pullPeerPlatinumRate } from "./peer-benchmark.js";
+import { geocodeAddressesConcurrent } from "./market-map-geocode.js";
+import type { CensusGeocoderClient } from "./market-map-geocode.js";
+import {
+  assignMarkets, pullMarketSummary, fetchRelevantNetworkPins, filterProspectPinsForMarket,
+  filterPinsNearAny,
+} from "./market-map-data.js";
+import type { Market, MarketSummary, SimilarityInfo, ProspectPin, NetworkPin } from "./market-map-data.js";
+import { renderMarketMap } from "./market-map-slides.js";
+import type { SubjectEmbed } from "./market-map-slides.js";
+import { buildEmbedSpeakerNotesHtml } from "./speaker-notes.js";
+import type { Benchmarks } from "./slides-prospect.js";
 
 const SNOWFLAKE_SSO = "d38ee94a-4e93-46f5-ab44-c65a99b3aea5";
+// "Census Geocoder" REST API integration (the same one GetProspectDeck declares) - only the
+// Embed deck's market-map slides use it here.
+const CENSUS_GEOCODER_ID = "3d0e85c7-61d4-402f-bf97-64a3428c15a4";
+
+/** { html, js } - slide-renderers.ts's SlideResult, restated locally for the embed pushSlide. */
+interface SlideResultLike { html: string; js: string }
 
 // ─── Shared row shape for the property-pool peer-matching query below ───
 type NetworkPoolRow = { PMC_NAME: string; PROPERTY_NAME: string; PROPERTY_STATE: string | null; PROPERTY_UNIT_COUNT: number; RENT_PAID_AMOUNT: number | null; BILLS_PAID_COUNT: number | null; ROLLOUT_MONTH: string | null; T12_CONNECTIONS: number | null; MEDIAN_RENTER_INCOME: number | null };
@@ -1682,6 +1714,11 @@ function buildDeckHtml(params: {
 </style>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"><\/script>
 <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2.2.0/dist/chartjs-plugin-datalabels.min.js"><\/script>
+<!-- Leaflet: the Embed deck's market-map slides (74) render inside this shell, where the New Logo
+     deck's slides are wrapped client-side by wrap-slides-html.ts instead. Mirrors Flask adding
+     Leaflet to the shared deck_base.html. Inert for every other deck mode. -->
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"><\/script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"><\/script>
 <style>
@@ -2100,6 +2137,327 @@ function buildDeckHtml(params: {
 </html>`;
 }
 
+// ─── Embed → DI deck (deck_mode "embed") ───────────────────────────────────────
+// Clark mirror of Flask app.py `_embed_total_units` / `_generate_embed` (spec:
+// flex-pmc-reports docs/superpowers/specs/2026-09-10-embed-deck-design.md). None of the QBR
+// pipeline applies - an embed-only PMC has no PROPERTY_BP_MONTH_STATS rows under its own name
+// (everything lives under PMC 2476), so this runs as an early return before the rows query and
+// resolves the PMC through generator/embed.py's Clark port instead.
+
+/** `EMBED_SLIDE_ORDER = [70, 71, 72, 73, 74, 75, 76]` (Flask); string-keyed here like every other
+ * fixed-order Clark deck. 74 is the per-DMA market map, 72 self-gates without a cohort. */
+const EMBED_SLIDE_ORDER = ["cover", "embed_today", "graduation", "projection", "market", "visibility", "next_steps"] as const;
+
+interface EmbedDeckCtx {
+  integrations: {
+    snowflake_sso: { query<T>(sql: string, schema: z.ZodType<T>, params?: unknown[], meta?: { label?: string }): Promise<T[]> };
+    census: CensusGeocoderClient;
+  };
+  log: {
+    info(message: string, meta?: Record<string, unknown>): void;
+    warn(message: string, meta?: Record<string, unknown>): void;
+    error(message: string, meta?: Record<string, unknown>): void;
+  };
+}
+
+export interface EmbedDeckArgs {
+  pmc_name: string;
+  total_units: number;
+  avg_rent: number | null;
+  /** Optional New Logo-shaped property rows ({header: cell}) - address/units overrides only. */
+  properties: Record<string, unknown>[] | undefined;
+  lookback_months: number;
+  terminology: "resident" | "household" | undefined;
+}
+
+/**
+ * Total-units resolution for the Embed deck, first hit wins: the request body (the tab's
+ * prefilled/edited input) -> the SF account whose name matches the resolved display name exactly
+ * -> the MSP embed list's unit total (yardi / mri / zego) -> the sum of REAL dim unit counts ->
+ * null (400 gate). Flask `_embed_total_units`.
+ */
+async function embedTotalUnits(
+  ctx: EmbedDeckCtx,
+  bodyUnits: number,
+  pmcDisplayName: string,
+  resolved: { list_unit_total: number | null; properties: EmbedProperty[] },
+): Promise<number | null> {
+  const n = Math.trunc(Number(bodyUnits) || 0);
+  if (n > 0) return n;
+  try {
+    const sf = await pullSfTotalUnits(ctx.integrations.snowflake_sso, pmcDisplayName);
+    if (sf) return sf;
+  } catch (e) {
+    ctx.log.warn("embed: SF total-units lookup failed", { pmc: pmcDisplayName, error: e instanceof Error ? e.message : String(e) });
+  }
+  if (resolved.list_unit_total) return Math.trunc(resolved.list_unit_total);
+  const real = resolved.properties.map((p) => p.unit_count).filter((u): u is number => u !== null && u !== undefined);
+  return real.length > 0 ? real.reduce((a, b) => a + b, 0) : null;
+}
+
+async function generateEmbedDeck(
+  ctx: EmbedDeckCtx,
+  args: EmbedDeckArgs,
+): Promise<{ html: string; empty: boolean; error?: string; notes_html?: string }> {
+  const sf = ctx.integrations.snowflake_sso;
+  const resolvedRaw = await resolveEmbedPmc(sf, args.pmc_name);
+  if (resolvedRaw === null) {
+    return { html: "", empty: false, error: `No embed activity found for: ${args.pmc_name}` };
+  }
+  const display = stripFkaSuffix(resolvedRaw.pmc_display_name);
+  const { msp, msp_label: mspLabel } = resolvedRaw;
+  const props = applyPropertyUpload(resolvedRaw.properties, args.properties);
+  const resolved = { ...resolvedRaw, properties: props };
+  const pids = props.map((p) => p.property_public_id);
+
+  const lookback = Math.max(3, Math.min(Math.trunc(args.lookback_months || 12), 24));
+  const monthlyRaw = await pullEmbedMonthly(sf, pids, lookback);
+  let monthly = summarizeEmbedMonthly(monthlyRaw);
+  if (monthly.filter((m) => m.bills_paid > 0).length < EMBED_MIN_MONTHS) {
+    return { html: "", empty: false, error: `${display} has under 3 months of embed activity — too early for a trend; try again next month.` };
+  }
+  monthly = monthly.slice(-12);
+  const reportingMonth = monthly[monthly.length - 1].bp_month;
+  const latest = monthly[monthly.length - 1];
+  // "Residents paying" = BILLS_PAID, the same basis as every adoption number this deck is compared
+  // against (platinum_median_nar, the graduation curve, pullMarketSummary and the review /
+  // Platinum / Check-in decks are all bills ÷ units). CHARGED_USERS is wider - every Flex customer
+  // at those buildings, any channel, incl. residents who found Flex directly - so it is carried
+  // separately as flexCustomers, never as "paying".
+  const paying = Math.trunc(latest.bills_paid);
+  const rentPaid = Number(latest.rent_paid);
+  const flexCustomers = Math.trunc(latest.charged_users);
+  const propertyPaying: Record<string, number> = {};
+  const propertyRent: Record<string, number> = {};
+  for (const r of monthlyRaw) {
+    if (r.bp_month !== reportingMonth) continue;
+    propertyPaying[r.property_public_id] = (propertyPaying[r.property_public_id] ?? 0) + r.bills_paid;
+    propertyRent[r.property_public_id] = (propertyRent[r.property_public_id] ?? 0) + r.rent_paid;
+  }
+
+  const totalUnits = await embedTotalUnits(ctx, args.total_units, display, resolved);
+  if (!totalUnits) {
+    return { html: "", empty: false, error: `Enter ${display}'s total units — ${mspLabel} embed doesn't report unit counts.` };
+  }
+  const unitsKnown = props.some((p) => p.unit_count !== null && p.unit_count !== undefined);
+
+  // Platinum floor: pullPeerBenchmark on the dim-derived states (unit-share, or property-count
+  // share when units are placeholders), size = totalUnits, footprint from the state count (same
+  // buckets as the New Logo deck). platinum_median_nar when present, else the plain DI median.
+  const statesSummary = embedStatesFromDim(props);
+  const states = statesSummary.included;
+  const nStates = states.length;
+  const footprint = nStates <= 1 ? "single" : nStates <= 4 ? "regional" : nStates <= 9 ? "multi" : "national";
+  const avgRentIn = Number(args.avg_rent) > 0 ? Number(args.avg_rent) : null;
+  const cutoff = bpSafeCutoff();
+  // Flask's pull_peer_benchmark measures at bp_safe_cutoff - 1 month (the reporting BP month), not
+  // the previous calendar month GetProspectDeck's own latestMonth() uses.
+  const latestMo = latestEmbedBpMonth();
+  let benchmarks: Partial<Benchmarks> = {};
+  let peerPmcNames: string[] = [];
+  try {
+    const peer = await pullPeerBenchmark(sf, {
+      pms: mspLabel, states, segment: "SMB", affordable: false, mixed: false, isSfr: false,
+      units: Math.trunc(totalUnits), footprint, avgRent: avgRentIn ?? 0, cutoff, latestMo,
+    }, ctx.log);
+    if (!peer.error) {
+      benchmarks = peer.benchmarks;
+      peerPmcNames = peer.peerPmcNames;
+    } else {
+      ctx.log.warn("embed: peer benchmark unavailable", { pmc: display, error: peer.error });
+    }
+  } catch (e) {
+    ctx.log.warn("embed: pullPeerBenchmark failed", { pmc: display, error: e instanceof Error ? e.message : String(e) });
+  }
+  if (Object.keys(benchmarks).length > 0) {
+    const plat = await pullPeerPlatinumRate(sf, latestMo, peerPmcNames, ctx.log);
+    if (plat) {
+      benchmarks = { ...benchmarks, platinum_median_nar: plat.platinum_median_nar, platinum_peer_count: plat.platinum_peer_count, platinum_scope: plat.platinum_scope };
+    }
+  }
+  let floorRate: number;
+  let floorLabel: string;
+  if (benchmarks.platinum_median_nar !== undefined && benchmarks.platinum_median_nar !== null) {
+    floorRate = Number(benchmarks.platinum_median_nar);
+    floorLabel = benchmarks.platinum_scope === "network" ? "Platinum properties across Flex" : "similar PMCs' opted-in properties";
+  } else if (benchmarks.median_nar !== undefined && benchmarks.median_nar !== null) {
+    floorRate = Number(benchmarks.median_nar);
+    floorLabel = "similar PMCs on Flex (direct integration)";
+  } else {
+    floorRate = 0.0;
+    floorLabel = "no comparable peer pool at this size";
+  }
+  const avgRent = avgRentIn ?? Number(benchmarks.median_avg_rent ?? 0);
+  const avgRentSource: "input" | "peer" = avgRentIn ? "input" : "peer";
+
+  let cohort = null;
+  try {
+    cohort = await pullGraduationCurve(sf, msp);
+  } catch (e) {
+    ctx.log.warn("embed: pullGraduationCurve failed - slide 72 omitted", { msp, error: e instanceof Error ? e.message : String(e) });
+  }
+  let repeat = null;
+  try {
+    repeat = await pullChannelRepeatRates(sf, 6);
+  } catch (e) {
+    ctx.log.warn("embed: pullChannelRepeatRates failed", { error: e instanceof Error ? e.message : String(e) });
+  }
+  let niro = null;
+  try {
+    niro = await pullNiroSnapshot(sf, display);
+  } catch (e) {
+    ctx.log.warn("embed: pullNiroSnapshot failed", { pmc: display, error: e instanceof Error ? e.message : String(e) });
+  }
+  const ceilingRate = cohort ? Number(cohort.after_rate) : null;
+
+  const embedCtx: EmbedCtx = {
+    pmc_name: display, msp, msp_label: mspLabel,
+    reporting_month: reportingMonth, property_count: props.length,
+    paying, bills_paid: paying, rent_paid: rentPaid, flex_customers: flexCustomers,
+    total_units: Math.trunc(totalUnits), units_known: unitsKnown,
+    adoption: paying / Math.trunc(totalUnits),
+    monthly,
+    floor_rate: floorRate, floor_label: floorLabel,
+    ceiling_rate: ceilingRate, cohort, repeat, niro,
+    avg_rent: avgRent, avg_rent_source: avgRentSource,
+    range: embedProjectionRange(paying, Math.trunc(totalUnits), floorRate, ceilingRate, avgRent),
+    properties: props, property_paying: propertyPaying, property_rent: propertyRent,
+    lookback_months: lookback,
+  };
+
+  // Slide 74: the dim rows through the shared market-map pipeline; markets are DMAs with >= 2 of
+  // THEIR properties (embed.ts embedMarkets, ranked by their units), each slide carrying their own
+  // embed activity in that DMA via renderMarketMap's subjectEmbed. Best-effort: any failure drops
+  // the market slides only.
+  const marketItems: { market: Market; summaryByDma: Record<string, MarketSummary>; prospectPins: ProspectPin[]; networkPins: NetworkPin[]; units: number; subject: SubjectEmbed }[] = [];
+  try {
+    const uploadRows = embedUploadRows(props);
+    const { results: geoResults } = await geocodeAddressesConcurrent(uploadRows.map((r) => r.address), ctx.integrations.census);
+    const withGeo = uploadRows.map((r) => ({ ...r, ...(geoResults[r.address] || {}) }));
+    const geocoded = await assignMarkets(withGeo, sf);
+    // assignMarkets drops the extra key from its output, so the pid stays index-aligned here.
+    const pidByIndex = uploadRows.map((r) => r.property_public_id);
+    const markets = embedMarkets(geocoded);
+    if (markets.length > 0) {
+      const yearStart = `${new Date().getFullYear()}-01-01`;
+      const allDmas = [...new Set(markets.flatMap((m) => m.sub_markets))];
+      const summaryByDma: Record<string, MarketSummary> = {};
+      const similarityByDma: Record<string, SimilarityInfo | null> = {};
+      const knownUnits = props.map((p) => p.unit_count).filter((u): u is number => u !== null && u !== undefined);
+      const avgUnitsPerProperty = knownUnits.length > 0 ? knownUnits.reduce((a, b) => a + b, 0) / knownUnits.length : 0;
+      const effectiveRentForMap = avgRentIn ?? Number(benchmarks.median_avg_rent ?? 0);
+      for (const dma of allDmas) {
+        summaryByDma[dma] = await pullMarketSummary(dma, latestMo, yearStart, sf, { avgRent: effectiveRentForMap, avgUnitsPerProperty });
+        similarityByDma[dma] = summaryByDma[dma]?.similarity ?? null;
+      }
+      for (const market of markets) {
+        const inMarket = geocoded
+          .map((p, i) => ({ p, pid: pidByIndex[i] }))
+          .filter(({ p }) => market.sub_markets.includes(p.dma));
+        const rawProspectPins: ProspectPin[] = inMarket.map(({ p }) => ({ property_name: p.property_name, lat: p.lat, lon: p.lon }));
+        const networkPins = await fetchRelevantNetworkPins(market.sub_markets, latestMo, yearStart, rawProspectPins, sf, similarityByDma);
+        const prospectPins = filterProspectPinsForMarket(rawProspectPins, networkPins);
+        const filteredNetworkPins = prospectPins.length > 0
+          ? (filterPinsNearAny(networkPins, prospectPins) as NetworkPin[])
+          : networkPins;
+        const dmaPids = inMarket.map(({ pid }) => pid);
+        const dmaUnits = props.filter((p) => dmaPids.includes(p.property_public_id)).map((p) => p.unit_count);
+        const realUnits = dmaUnits.filter((u): u is number => u !== null && u !== undefined);
+        marketItems.push({
+          market,
+          summaryByDma,
+          prospectPins,
+          networkPins: filteredNetworkPins.slice(0, 300),
+          units: market.prospect_units,
+          subject: {
+            paying: dmaPids.reduce((a, pid) => a + Math.trunc(propertyPaying[pid] ?? 0), 0),
+            properties: dmaPids.length,
+            // Flask: a market says "unit counts not available" unless EVERY property in it has one.
+            units: realUnits.length > 0 && realUnits.length === dmaPids.length ? realUnits.reduce((a, b) => a + b, 0) : null,
+            msp_label: mspLabel,
+          },
+        });
+      }
+    }
+  } catch (e) {
+    ctx.log.warn("embed: market map skipped", { pmc: display, error: e instanceof Error ? e.message : String(e) });
+  }
+
+  const slideHtmls: string[] = [];
+  const slideJsList: string[] = [];
+  const renderedKeys: string[] = [];
+  let slideCounter = 0;
+  const pushSlide = (key: string, result: SlideResultLike) => {
+    if (!result.html) return;
+    slideCounter++;
+    slideHtmls.push(result.html);
+    renderedKeys.push(key);
+    if (result.js) slideJsList.push(result.js);
+  };
+  for (const key of EMBED_SLIDE_ORDER) {
+    switch (key) {
+      case "cover": pushSlide(key, renderEmbedCover(slideCounter + 1, embedCtx)); break;
+      case "embed_today": pushSlide(key, renderEmbedToday(slideCounter + 1, embedCtx)); break;
+      case "graduation": pushSlide(key, renderEmbedGraduation(slideCounter + 1, embedCtx)); break;
+      case "projection": pushSlide(key, renderEmbedProjection(slideCounter + 1, embedCtx)); break;
+      case "market":
+        for (const item of marketItems) {
+          pushSlide(key, renderMarketMap(
+            slideCounter + 1, item.market, item.summaryByDma, item.prospectPins, item.networkPins,
+            item.units, avgRentIn, { matched_count: 0, residents: 0, ytd_rent: 0 }, item.subject,
+          ));
+        }
+        break;
+      case "visibility": pushSlide(key, renderEmbedVisibility(slideCounter + 1, embedCtx)); break;
+      case "next_steps": pushSlide(key, renderEmbedNextSteps(slideCounter + 1, embedCtx)); break;
+    }
+  }
+
+  // Flask base_name: "{PMC}_embed_to_DI" (spaces / slashes -> "_", 30-char cap).
+  const safePmc = display.replace(/ /g, "_").replace(/\//g, "_").slice(0, 30);
+  const html = applyTerminology(buildDeckHtml({
+    slides: slideHtmls.join("\n"),
+    pmc_name: display,
+    report_month: monthOnly(reportingMonth),
+    report_year: yearOnly(reportingMonth),
+    slide_count: slideHtmls.length,
+    pdf_filename: `${safePmc}_embed_to_DI.pdf`,
+    extra_js: slideJsList.filter(Boolean).join("\n"),
+  }), args.terminology);
+
+  // Speaker notes always (spec) - 3-line script per slide, every number from this same ctx.
+  let notesHtml: string | undefined;
+  try {
+    notesHtml = applyTerminology(
+      buildEmbedSpeakerNotesHtml(renderedKeys, {
+        pmcName: display,
+        reportingMonth,
+        monthsSinceLaunch: 0,
+        embed: {
+          pmcName: display, mspLabel, msp, reportingMonth,
+          propertyCount: props.length, paying, flexCustomers, rentPaid,
+          adoption: embedCtx.adoption, totalUnits: Math.trunc(totalUnits), unitsKnown,
+          floorRate, floorLabel, ceilingRate, avgRentSource,
+          range: {
+            today: embedCtx.range.today, floorGain: embedCtx.range.floor_gain, ceilingGain: embedCtx.range.ceiling_gain,
+            rentLo: embedCtx.range.rent_lo, rentHi: embedCtx.range.rent_hi, floorAlreadyHere: embedCtx.range.floor_already_here,
+          },
+          repeat: repeat ? { embed: repeat.embed, di: repeat.di } : null,
+          niro: niro ? { niroUnits: niro.niro_units, niroRate: niro.niro_rate } : null,
+        },
+        embedCohort: cohort
+          ? { properties: cohort.properties, units: cohort.units, pmcs: cohort.pmcs, beforeRate: cohort.before_rate, afterRate: cohort.after_rate, scope: cohort.scope }
+          : null,
+      }),
+      args.terminology,
+    );
+  } catch (e) {
+    console.warn(`[PMC Report] embed speaker notes generation failed for ${display}: ${e instanceof Error ? e.message : String(e)}`);
+  }
+
+  return { html, empty: false, notes_html: notesHtml };
+}
+
 // --- Main API ---
 
 export default api({
@@ -2108,6 +2466,9 @@ export default api({
 
   integrations: {
     snowflake_sso: snowflake(SNOWFLAKE_SSO),
+    // Embed deck only (deck_mode "embed") - geocodes the resolved embed properties for slide 74's
+    // market maps. Every other deck mode ignores it.
+    census: restApiIntegration(CENSUS_GEOCODER_ID),
   },
 
   input: z.object({
@@ -2125,7 +2486,19 @@ export default api({
     // deck, fixed 4-slide order, its own early-return branch below.
     // "checkin" = the one-slide Adoption Check-in (Flask report_type "checkin", 013c659) - one PMC,
     // cover + wedge slide, requires checkin_date below.
-    deck_mode: z.enum(["qbr", "new_logo", "expansion", "platinum", "checkin"]).default("qbr"),
+    // "embed" = the Embed → Direct Integration deck (Flask report_type "embed", spec
+    // docs/superpowers/specs/2026-09-10-embed-deck-design.md) - one embed-only PMC, slides 70-76,
+    // resolved through embed.ts instead of the QBR rows query (its properties live under the
+    // internal placeholder PMC 2476). Takes total_units / avg_rent / properties below.
+    deck_mode: z.enum(["qbr", "new_logo", "expansion", "platinum", "checkin", "embed"]).default("qbr"),
+    // Embed deck only. total_units: the tab prefills it from the SF account search, and the
+    // resolution chain in embedTotalUnits falls back to SF -> the MSP embed list total -> the sum
+    // of real dim unit counts. properties: optional New Logo-shaped rows ({header: cell}) used
+    // only to override address / city / state / zip / units by property name. All plain optional -
+    // same call-site-required gotcha as every other optional field in this schema.
+    total_units: z.number().int().optional(),
+    avg_rent: z.number().optional(),
+    properties: z.array(z.record(z.string(), z.unknown())).optional(),
     // Check-in deck only: the working session / prior review being measured from, ISO YYYY-MM-DD,
     // snapped server-side to its BP month. Plain optional - same call-site-required gotcha as the
     // other optional fields in this schema.
@@ -2243,7 +2616,7 @@ export default api({
     }).optional(),
   }),
 
-  async run(ctx, { pmc_name, additional_pmc_names, report_name, lookback_months, deck_mode, adoption_target, testimonials, total_portfolio_units, expansion_slides, presenting_mode, comparison_months, sparklines, period_comparison, terminology, hidden_kpi_tiles, show_adoption_portfolio_avg, show_adoption_peer_median, show_engagement_observed, show_engagement_portfolio_avg, show_engagement_peer_median, imported_slides, hide_d2c, checkin_date }) {
+  async run(ctx, { pmc_name, additional_pmc_names, report_name, lookback_months, deck_mode, adoption_target, testimonials, total_portfolio_units, expansion_slides, presenting_mode, comparison_months, sparklines, period_comparison, terminology, hidden_kpi_tiles, show_adoption_portfolio_avg, show_adoption_peer_median, show_engagement_observed, show_engagement_portfolio_avg, show_engagement_peer_median, imported_slides, hide_d2c, checkin_date, total_units, avg_rent, properties }) {
     // Single resolved list every downstream query/array-builder reads from - pmc_name first
     // (the "primary" entity), then whatever else is being combined in. Replaces the old
     // old `hasSecondPmc ? [pmc_name, secondPmcName] : [pmc_name]` ternary pattern repeated at 4 call sites below.
@@ -2281,6 +2654,26 @@ export default api({
       // Widened in place so every downstream window (rows query, rolling peer median, DQ, ...)
       // reads the same one value, exactly as Flask reassigns `lookback`.
       lookback_months = checkinLookback(checkinMonth, lookback_months);
+    }
+
+    // Embed → DI deck: one embed-only PMC, resolved through embed.ts (its rows live under PMC
+    // 2476, so the standard rows query below finds nothing). Everything lives in
+    // generateEmbedDeck. Returns before any QBR query fires. Flask's exact gate wording.
+    if (deck_mode === "embed") {
+      if (!pmc_name.trim()) {
+        return { html: "", empty: false, error: "The Embed deck needs a PMC name." };
+      }
+      if ((additional_pmc_names ?? []).some((n) => n.trim())) {
+        return { html: "", empty: false, error: "The Embed deck is one PMC per deck - remove the additional PMCs / property IDs and try again." };
+      }
+      return generateEmbedDeck(ctx, {
+        pmc_name: pmc_name.trim(),
+        total_units: total_units ?? 0,
+        avg_rent: avg_rent ?? null,
+        properties,
+        lookback_months,
+        terminology,
+      });
     }
 
     // Compute bp_safe_cutoff

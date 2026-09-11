@@ -1,5 +1,6 @@
 import { api, z, snowflake } from "@superblocksteam/sdk-api";
 import { PMC_PRESETS } from "./pmc-presets.js";
+import { listEmbedPmcs } from "./embed.js";
 
 const SNOWFLAKE_SSO = "d38ee94a-4e93-46f5-ab44-c65a99b3aea5";
 
@@ -65,13 +66,23 @@ export default api({
   },
 
   input: z.object({
-    // "platinum" -> the Platinum deck's silver-only picker (see silverPmcNamesSql). Omitted ->
-    // the default 12-month-active list, unchanged.
-    mode: z.enum(["platinum"]).optional(),
+    // "platinum" -> the Platinum deck's silver-only picker (see silverPmcNamesSql).
+    // "embed" -> the Embed deck's picker: every embed-only PMC (Yardi / AppFolio / MRI / Zego
+    // lists + the legacy dim-name path) with BILLS_PAID > 0 in the last 12 BP months, junk names
+    // dropped (embed.ts listEmbedPmcs; Flask /pmcs?mode=embed). Omitted -> the default
+    // 12-month-active list, unchanged.
+    mode: z.enum(["platinum", "embed"]).optional(),
   }),
 
   output: z.object({
     pmcNames: z.array(z.string()),
+    // Embed mode only: the same names with their MSP badge and property count, so the picker can
+    // label each row (Flask's `embed_pmcs`). Absent for every other mode.
+    embedPmcs: z.array(z.object({
+      name: z.string(),
+      msp: z.string(),
+      property_count: z.number(),
+    })).optional(),
     // Known multi-PMC "family" presets (e.g. Asset Living's subsidiaries) — surfaced here so
     // the client can offer a one-click "Load {family}" button without a second round trip.
     // Static config, not Snowflake-derived, but this endpoint is already fetched once per form
@@ -89,6 +100,10 @@ export default api({
         { label: "Fetch PMC names with >= 3 silver properties at the latest completed BP month (Platinum deck picker)" }
       );
       return { pmcNames: silverRows.map((r) => r.PMC_NAME), presets: PMC_PRESETS };
+    }
+    if (mode === "embed") {
+      const rows = await listEmbedPmcs(ctx.integrations.snowflake_sso);
+      return { pmcNames: rows.map((r) => r.name), embedPmcs: rows, presets: PMC_PRESETS };
     }
     const rows = await ctx.integrations.snowflake_sso.query(
       `SELECT DISTINCT PMC_NAME

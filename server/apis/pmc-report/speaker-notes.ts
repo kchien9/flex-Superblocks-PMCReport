@@ -988,9 +988,188 @@ export function buildCheckinSpeakerNotesHtml(
   return buildScriptNotesHtml(slideKeysInOrder, CHECKIN_SLIDE_TITLES, (key) => getNotesForCheckinSlide(key, k), k, propertySnapshot);
 }
 
+// ── Embed → DI deck - 3-line script per slide ────────────────────────────────
+// Clark mirror of Flask generator/speaker_notes.py _notes_embed_* (spec:
+// docs/superpowers/specs/2026-09-10-embed-deck-design.md). Every number comes from the same ctx
+// the slides read - nothing hardcoded. Titles are Flask's SLIDE_TITLES 70-76.
+
+export const EMBED_SLIDE_TITLES: Record<string, string> = {
+  cover: "Embed → Direct Integration",
+  embed_today: "Your Embed Today",
+  graduation: "Same Properties, Before and After DI",
+  projection: "What It Could Be for You",
+  market: "Your Market",
+  visibility: "What You'd See",
+  next_steps: "Next Steps",
+};
+
+/** The subset of the embed ctx / cohort the scripts read (structural, so speaker-notes.ts doesn't
+ * import embed.ts). Mirrors Flask's `kpis["embed"]` (the ctx minus its frames) and
+ * `kpis["embed_cohort"]` (pull_graduation_curve's result minus the curve). */
+export interface EmbedNotesData {
+  pmcName: string;
+  mspLabel: string;
+  msp: string;
+  reportingMonth: string | null;
+  propertyCount: number;
+  paying: number;
+  flexCustomers: number;
+  rentPaid: number;
+  adoption: number;
+  totalUnits: number;
+  unitsKnown: boolean;
+  floorRate: number;
+  floorLabel: string;
+  ceilingRate: number | null;
+  avgRentSource: "input" | "peer";
+  range: { today: number; floorGain: number; ceilingGain: number; rentLo: number; rentHi: number; floorAlreadyHere: boolean };
+  repeat: { embed: number; di: number } | null;
+  niro: { niroUnits: number; niroRate: number } | null;
+}
+
+export interface EmbedNotesCohort {
+  properties: number;
+  units: number;
+  pmcs: number;
+  beforeRate: number;
+  afterRate: number;
+  scope: "same_msp" | "all";
+}
+
+export interface EmbedNotesKpis {
+  pmcName: string;
+  reportingMonth: string | null;
+  monthsSinceLaunch: number;
+  embed: EmbedNotesData;
+  embedCohort: EmbedNotesCohort | null;
+}
+
+function notesEmbedCover(k: EmbedNotesKpis): string[] {
+  const e = k.embed;
+  return [
+    `Open with the one sentence, verbatim: Flex is already working at ${e.pmcName}. Here's what it looks like turned all the way on.`,
+    `Frame it: ${kStr(e.paying)} residents paying across ${Math.trunc(e.propertyCount).toLocaleString()} ${e.mspLabel} embed properties in the ${monthStr(e.reportingMonth)} BP month - found Flex on their own, no integration, no marketing.`,
+    "The objection you're pre-empting is 'it already works' - agree with it, then show what the same buildings look like on a direct integration.",
+  ];
+}
+
+function notesEmbedToday(k: EmbedNotesKpis): string[] {
+  const e = k.embed;
+  return [
+    `Left tiles are their embed month: ${Math.trunc(e.paying).toLocaleString()} residents paying through the embed, ${Math.trunc(e.propertyCount).toLocaleString()} properties live, ${Math.trunc(e.flexCustomers).toLocaleString()} Flex customers at these buildings in total (any channel, incl. residents who found Flex directly), $${kStr(e.rentPaid)} in rent.`,
+    `Adoption is portfolio-level: ${pctStr(e.adoption)} of their ${Math.trunc(e.totalUnits).toLocaleString()} units`
+      + (e.unitsKnown ? "" : ` - ${e.mspLabel} embed doesn't report per-property unit counts, say so before they ask`) + ".",
+    "The solid line is residents paying through the embed by BP month - the same 'residents paying' every other Flex deck uses, so it is comparable to the peer and cohort numbers coming up; the dashed line is every Flex customer at these buildings. Point at the trend, then move on - this slide is the baseline, not the argument.",
+  ];
+}
+
+function notesEmbedGraduation(k: EmbedNotesKpis): string[] {
+  const e = k.embed;
+  const c = k.embedCohort;
+  if (!c) {
+    return [
+      "The cohort slide is omitted on this deck (the graduation pull failed this run) - lean on the peer floor on the next slide.",
+      "If asked: network-wide, properties that moved from embed to a direct integration roughly 2.5-3x their adoption within two quarters.",
+      "Re-run the deck next month for the chart.",
+    ];
+  }
+  const scope = c.scope === "same_msp"
+    ? `${e.mspLabel} embed properties only`
+    : "all PMS embeds (their MSP's cohort is under 300 properties)";
+  return [
+    `This is the evidence they can't dismiss: ${Math.trunc(c.properties).toLocaleString()} properties / ${Math.trunc(c.units).toLocaleString()} units that were on embed like theirs and switched. Same buildings, same residents.`,
+    `Read the pair: ${pctStr(c.beforeRate)} → ${pctStr(c.afterRate)} - the 3 months before go-live vs months 4-6 on DI. Cohort scope: ${scope}.`,
+    "Grey is embed, purple is DI, the marker is go-live. Ask: 'What would that ratio mean on your units?' - the next slide answers it.",
+  ];
+}
+
+function notesEmbedProjection(k: EmbedNotesKpis): string[] {
+  const e = k.embed;
+  const r = e.range;
+  const lo = Math.trunc(r.floorGain || 0);
+  const hi = Math.trunc(r.ceilingGain || 0);
+  const gain = hi !== lo ? `+${lo.toLocaleString()} to +${hi.toLocaleString()}` : `+${hi.toLocaleString()}`;
+  const notes = [
+    `Three bars: today (${Math.trunc(r.today || 0).toLocaleString()}), the Platinum peer floor (${pctStr(e.floorRate)} x ${Math.trunc(e.totalUnits).toLocaleString()} units, ${e.floorLabel})`
+      + (e.ceilingRate !== null && e.ceilingRate !== undefined
+        ? `, and what switchers reached (${pctStr(e.ceilingRate)} x units).`
+        : " - floor only, the cohort pull failed this run."),
+    `Land the range: ${gain} more residents paying through Flex, ≈ $${kStr(r.rentLo || 0)}–$${kStr(r.rentHi || 0)}/mo in rent`
+      + (e.avgRentSource === "input" ? " at their avg rent." : " at the peer-median rent - ask for their real number.")
+      + (r.floorAlreadyHere ? " The floor is already behind them - the range starts at today." : ""),
+  ];
+  // Continuity rate (pullChannelRepeatRates): of this month's payers, the share who also paid last
+  // month - the same numbers slide 73's "Residents stick" line prints.
+  const rep = e.repeat;
+  const niroTail = e.niro
+    ? ` They also have ${Math.trunc(e.niro.niroUnits).toLocaleString()} units already in network without an integration at ${pctStr(e.niro.niroRate)}`
+    : "";
+  if (rep && rep.di !== undefined && rep.di !== null && rep.embed !== undefined && rep.embed !== null) {
+    notes.push(`Residents stick: ${Math.round(rep.di * 100)}% vs ${Math.round(rep.embed * 100)}% of this month's payers also paid last month - DI residents come back month after month; on embed roughly 1 in 5 paying residents each month is new or returning, so it churns and refills instead of compounding.`
+      + (niroTail ? `${niroTail} - same argument.` : ""));
+  } else {
+    notes.push("Mechanism, one line: on a direct integration residents keep paying month after month; embed plateaus because nobody re-invites them."
+      + (niroTail ? `${niroTail}.` : ""));
+  }
+  return notes;
+}
+
+function notesEmbedMarket(k: EmbedNotesKpis): string[] {
+  const e = k.embed;
+  return [
+    "One slide per market where they have 2+ properties, ranked by their units. Green pins are their embed properties; purple is the Flex network on a direct integration.",
+    "The first bullet is THEIR embed activity in that market; the rest is what DI PMCs around them are doing. Copy is 'competitors on a direct integration' - name nobody.",
+    `If a market they care about is missing, it has fewer than 2 of their ${e.mspLabel} embed properties - offer to re-run with their property list uploaded.`,
+  ];
+}
+
+function notesEmbedVisibility(k: EmbedNotesKpis): string[] {
+  const e = k.embed;
+  return [
+    `Left is literally everything anyone can see about them on embed: ${e.mspLabel} embed, ${Math.trunc(e.propertyCount).toLocaleString()} properties, `
+      + (e.unitsKnown ? "unit counts from their list" : "no unit counts") + ", no resident view, no Property Hub.",
+    "Right is their own data where we have it - three sample properties, paying residents and rent are real; dashes are what embed cannot show.",
+    "Land it: Property Hub gives them resident-level visibility, marketing tools and the on-ledger rent guarantee - none of which exists on embed.",
+  ];
+}
+
+function notesEmbedNextSteps(k: EmbedNotesKpis): string[] {
+  const e = k.embed;
+  return [
+    `Step one is a toggle in ${e.mspLabel}, not a rollout - no development, no resident-facing change until marketing is switched on.`,
+    "We already have their property list from embed; they confirm units and additions, we do the rest.",
+    "Properties typically go live within 24-48 hours of completing setup. Close on a date.",
+  ];
+}
+
+export function getNotesForEmbedSlide(key: string, k: EmbedNotesKpis): string[] {
+  try {
+    switch (key) {
+      case "cover": return notesEmbedCover(k);
+      case "embed_today": return notesEmbedToday(k);
+      case "graduation": return notesEmbedGraduation(k);
+      case "projection": return notesEmbedProjection(k);
+      case "market": return notesEmbedMarket(k);
+      case "visibility": return notesEmbedVisibility(k);
+      case "next_steps": return notesEmbedNextSteps(k);
+      default: return [];
+    }
+  } catch {
+    return [];
+  }
+}
+
+export function buildEmbedSpeakerNotesHtml(
+  slideKeysInOrder: string[],
+  k: EmbedNotesKpis,
+  propertySnapshot?: PropertyReferenceRow[],
+): string {
+  return buildScriptNotesHtml(slideKeysInOrder, EMBED_SLIDE_TITLES, (key) => getNotesForEmbedSlide(key, k), k, propertySnapshot);
+}
+
 /** The buildSpeakerNotesHtml page shell ("Flex · Speaker Notes" / "{month} Business Review"), for
- * the fixed-order decks whose scripts are string-keyed (Platinum, Check-in). Flask's branches for
- * both call the ordinary build_speaker_notes_html, so the shell is that one. */
+ * the fixed-order decks whose scripts are string-keyed (Platinum, Check-in, Embed). Flask's
+ * branches for all three call the ordinary build_speaker_notes_html, so the shell is that one. */
 function buildScriptNotesHtml(
   slideKeysInOrder: string[],
   titles: Record<string, string>,

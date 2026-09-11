@@ -891,6 +891,39 @@ export async function pullNiroSnapshot(
   return { niro_units: units, niro_rate: bills / units, niro_properties: Math.trunc(rows[0].PROPERTIES ?? 0) };
 }
 
+// ─── Salesforce total units ────────────────────────────────────────────────────
+
+const SF_ACCOUNT = "EXTERNAL_DATA.POLYTOMIC.SALESFORCE_ACCOUNT";
+
+const SfUnitsSchema = z.object({ TOTAL_UNITS: z.coerce.number().nullable() });
+
+/**
+ * TOTAL_COMPANY_UNITS__C for the SF account whose name matches the resolved display name exactly
+ * (case-insensitive) - the second link in the Embed deck's total-units chain (Flask
+ * `_embed_total_units`, which filters `search_sf_accounts(name)` down to an exact name match).
+ * Same account filters as search-prospect-accounts.ts (Prospect OR Partner, PMC, not Deep SMB).
+ * null when there is no exact match with a positive unit count.
+ */
+export async function pullSfTotalUnits(sf: SnowflakeClient, pmcDisplayName: string): Promise<number | null> {
+  const sql = `
+        SELECT a.TOTAL_COMPANY_UNITS__C AS TOTAL_UNITS
+        FROM ${SF_ACCOUNT} a
+        WHERE a.ISDELETED = FALSE
+          AND a.ACCOUNT_STATUS__C IN ('Prospect', 'Partner')
+          AND a.TYPE = 'PMC'
+          AND (a.SALES_SEGMENT__C IS NULL OR a.SALES_SEGMENT__C != 'Deep SMB')
+          AND UPPER(TRIM(a.NAME)) = UPPER(TRIM(?))
+          AND a.TOTAL_COMPANY_UNITS__C > 0
+        ORDER BY a.TOTAL_COMPANY_UNITS__C DESC
+        LIMIT 1
+    `;
+  const rows = await sf.query(sql, SfUnitsSchema, [pmcDisplayName], {
+    label: "Pull SF TOTAL_COMPANY_UNITS__C for the embed PMC (exact name match)",
+  });
+  const units = rows.length > 0 ? Math.trunc(rows[0].TOTAL_UNITS ?? 0) : 0;
+  return units > 0 ? units : null;
+}
+
 // ─── Pure helpers (no Snowflake) ───────────────────────────────────────────────
 
 /**
