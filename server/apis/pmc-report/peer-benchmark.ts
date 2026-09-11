@@ -40,7 +40,6 @@ export const PeerBenchmarkRow = z.object({
   DQ_SHIELDED_MO: z.coerce.number().nullable(),
   PRIMARY_STATE: z.string().nullable(),
   STATE_COUNT: z.coerce.number(),
-  NEW_RESIDENTS: z.coerce.number().nullable(),
 });
 
 export function median(arr: number[]): number {
@@ -198,7 +197,9 @@ export async function pullPeerBenchmark(
           COUNT(DISTINCT t.PROPERTY_STATE) AS state_count,
           SUM(t.BILLS_PAID_COUNT)::FLOAT / NULLIF(SUM(t.PROPERTY_UNIT_COUNT), 0) AS current_adoption,
           SUM(t.RENT_PAID_AMOUNT) AS current_monthly_rent,
-          SUM(t.NEW_SIGNUPS_COUNT) AS new_signups,
+          -- NOTE: deliberately no SUM(t.NEW_SIGNUPS_COUNT) here. The slide's "New Paying
+          -- Residents" number comes from pmc_new_residents (first-ever payment per customer);
+          -- the raw per-property event count double-counts intra-PMC property transfers.
           SUM(t.PROPERTY_UNIT_COUNT) AS total_units,
           COUNT(DISTINCT t.PROPERTY_PUBLIC_ID) AS property_count
         FROM ${TBL} t
@@ -275,14 +276,17 @@ export async function pullPeerBenchmark(
         COALESCE(ar.avg_rent, 0) AS AVG_RENT,
         COALESCE(l.current_adoption, 0) AS CURRENT_ADOPTION,
         COALESCE(l.current_monthly_rent, 0) AS CURRENT_MONTHLY_RENT,
-        COALESCE(l.new_signups, 0) AS NEW_SIGNUPS,
+        -- "New Paying Residents / Month" on the slide: residents whose FIRST-EVER payment to
+        -- this PMC landed in latestMo, not the raw per-property NEW_SIGNUPS_COUNT event count
+        -- (which double-counts intra-PMC property transfers). That is the whole reason
+        -- pmc_new_residents exists. Flask prospect.py:634 selects only this.
+        COALESCE(nr.new_residents, 0) AS NEW_SIGNUPS,
         COALESCE(ten.months_live, 0) AS MONTHS_LIVE,
         pm.PMS,
         COALESCE(l.property_count, 0) AS PROPERTY_COUNT,
         COALESCE(dq.dq_shielded_mo, 0) AS DQ_SHIELDED_MO,
         ps.primary_state AS PRIMARY_STATE,
-        COALESCE(l.state_count, 1) AS STATE_COUNT,
-        COALESCE(nr.new_residents, 0) AS NEW_RESIDENTS
+        COALESCE(l.state_count, 1) AS STATE_COUNT
         ${overlapSelect}
       FROM pmc_qualified q
       LEFT JOIN pmc_latest l ON q.PMC_NAME = l.PMC_NAME
