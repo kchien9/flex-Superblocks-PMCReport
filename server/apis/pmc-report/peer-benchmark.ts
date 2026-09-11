@@ -145,7 +145,14 @@ export async function pullPeerBenchmark(
           PMC_NAME,
           SUM(state_units) AS overlap_units,
           SUM(state_property_count) AS overlap_property_count,
-          LISTAGG(IFF(state_bills_paid > 0, PROPERTY_STATE, NULL), ', ')
+          -- State coverage counts states where the peer HAS PROPERTIES, not states where it
+          -- already has bills paid. The previous IFF(state_bills_paid > 0, ...) dropped
+          -- (PMC, state) pairs with properties but no bills yet - 28 such pairs in CA/WA
+          -- alone at Sep 2026 - which under-counted coverage and wrongly failed the
+          -- coverage >= len(states) gate on Tiers 1/2 and minCoverage on Tier 3. Flask
+          -- (prospect.py:338) is LISTAGG(DISTINCT t.PROPERTY_STATE, ...) with the bills-paid
+          -- floor applied only once, at PMC level in the HAVING below.
+          LISTAGG(PROPERTY_STATE, ', ')
             WITHIN GROUP (ORDER BY PROPERTY_STATE) AS overlap_states,
           SUM(state_rent_paid) AS overlap_monthly_rent,
           SUM(state_bills_paid)::FLOAT / NULLIF(SUM(state_units), 0) AS overlap_adoption_rate
