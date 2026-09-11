@@ -379,10 +379,10 @@ function rentWindowLabel(opts: { partnerSince: string | null; lookbackMonths: nu
 
 function renderCover(kpis: { pmcName: string; reportingMonth: string; partnerSince: string | null; propertyCount: number; firstMonth: string | null; isExpansion?: boolean }): string {
   // Deck label / props label vary by mode (Flask render_cover, generator/slides.py:53-67).
-  // Only branching on is_expansion here (Kevin's catch) — Flask's third branch, is_pitch_mode
-  // ("Flex Integration Opportunity" / OON-specific props label), belongs to a genuinely
-  // different deck (Flask's separate pitch_mode/PITCH_SLIDE_ORDER flow) with no Superblocks
-  // equivalent wired through this function yet — left as the existing default, not touched here.
+  // Only branching on is_expansion here (Kevin's catch). Flask's old third branch, is_pitch_mode
+  // ("Flex Integration Opportunity" / OON-specific props label), is gone: Pitch Mode was deleted
+  // in Flask and replaced by the Embed → DI deck, which has its own cover (renderEmbedCover in
+  // slides-embed.ts) and never reaches this function.
   const deckLabel = kpis.isExpansion ? "Portfolio Expansion Opportunity" : "Flex Performance Review";
   const propsLabel = kpis.isExpansion ? "Properties on Flex" : "Properties Active";
   // Third tile ("Reporting Period", firstMonth–reportingMonth range) dropped entirely for
