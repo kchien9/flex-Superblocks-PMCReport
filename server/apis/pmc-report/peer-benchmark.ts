@@ -424,18 +424,20 @@ export async function pullPeerBenchmark(
     return [frame, false];
   }
 
-  // Footprint preference: prefer peers whose state_count bucket matches prospect's
-  function withFootprint(frame: any[]): any[] {
-    if (!footprint) return frame;
+  // Footprint preference: prefer peers whose state_count bucket matches prospect's.
+  // Returns the note Flask's _with_footprint appends to the match label (prospect.py:735-751)
+  // so callers can surface which footprint bar actually applied.
+  function withFootprint(frame: any[]): [any[], string] {
+    if (!footprint) return [frame, ""];
     const prospectBucket = footprint; // Already bucketed from input
     // Exact bucket match
     const exact = frame.filter((r: any) => footprintBucket(r.STATE_COUNT || 1) === prospectBucket);
-    if (exact.length >= MIN_POOL_SIZE) return exact;
+    if (exact.length >= MIN_POOL_SIZE) return [exact, " & footprint"];
     // Adjacent bucket
     const adjBuckets = ADJACENT_FOOTPRINTS[prospectBucket] || [prospectBucket];
     const adjacent = frame.filter((r: any) => adjBuckets.includes(footprintBucket(r.STATE_COUNT || 1)));
-    if (adjacent.length >= MIN_POOL_SIZE) return adjacent;
-    return frame;
+    if (adjacent.length >= MIN_POOL_SIZE) return [adjacent, " & similar footprint"];
+    return [frame, ""];
   }
 
   // Helper: narrow to established (12+ months) if enough remain — Flask's per-tier preference
@@ -538,15 +540,17 @@ export async function pullPeerBenchmark(
     // Try ≥10 properties first, fall back to the full overlap base (≥3)
     const large = overlapCandidates.filter((r: any) => (r.OVERLAP_PROPERTY_COUNT || 0) >= 10);
     let ov = large.length >= MIN_POOL_SIZE ? large : overlapCandidates;
+    ov = preferEstablished(ov, MIN_POOL_SIZE);
     if (ov.length >= MIN_POOL_SIZE) {
-      // Footprint preference + overlap swap + established + rent band
-      ov = withFootprint(ov);
-      ov = preferEstablished(ov, MIN_POOL_SIZE);
+      // Flask order (prospect.py:854-869): established -> overlap swap -> footprint -> rent
+      // band. Running footprint first (and established after) can land on a different pool.
       ov = applyOverlapCols(ov);
+      const [ovFp, fpNote] = withFootprint(ov);
+      ov = ovFp;
       const [t3Rent, usedRent] = withRentBand(ov, MIN_POOL_SIZE);
       if (t3Rent.length >= MIN_POOL_SIZE) {
         pool = t3Rent;
-        matchLevel = `large presence in ${states.join("/")}` + (usedRent ? " & avg rent" : "");
+        matchLevel = `large presence in ${states.join(", ")}` + fpNote + (usedRent ? " & avg rent" : "");
         matchMode = "overlap";
         tierUsed = 3;
       }
@@ -563,7 +567,9 @@ export async function pullPeerBenchmark(
         states.includes((r.PRIMARY_STATE || "").toUpperCase())
       );
       if (sameState.length >= MIN_POOL_SIZE) {
-        chosen = withFootprint(sameState);
+        // Note: Flask (prospect.py:879) also appends withFootprint's note to this label.
+        // Left off here deliberately - out of scope for this change, tracked separately.
+        [chosen] = withFootprint(sameState);
         chosenLabel = `same state (${states.join(", ")})`;
       }
     }
@@ -573,7 +579,7 @@ export async function pullPeerBenchmark(
         STATE_TO_REGION[(r.PRIMARY_STATE || "").toUpperCase()] === targetRegion
       );
       if (sameRegion.length >= MIN_POOL_SIZE) {
-        chosen = withFootprint(sameRegion);
+        [chosen] = withFootprint(sameRegion);
         chosenLabel = `${targetRegion} region`;
       }
     }
