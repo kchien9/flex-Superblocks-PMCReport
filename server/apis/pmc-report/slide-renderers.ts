@@ -113,6 +113,22 @@ export function monthLabel(ym: string): string {
   return `${months[parseInt(m, 10) - 1]} ${y}`;
 }
 
+/**
+ * "September 2026" - full month name, no BP qualifier. Mirrors Flask's _month_full
+ * (generator/slides.py:54-58), which exists as its own helper precisely so the ONE label that
+ * prints a bare full month - the Exec Summary subtitle - can't drift when the abbreviated
+ * reporting-month helper next to it changes. Every other reporting-month label in the deck
+ * keeps its short month + "BP month" suffix; do not reuse this for those.
+ */
+export function monthFull(ym: string): string {
+  if (!ym) return "—";
+  const [y, m] = ym.split("-");
+  const months = ["January", "February", "March", "April", "May", "June",
+                  "July", "August", "September", "October", "November", "December"];
+  const name = months[parseInt(m, 10) - 1];
+  return name ? `${name} ${y}` : ym;
+}
+
 // Tiny inline-SVG line-plus-dot sparkline - was local-only to get-pmc-monthly-report.ts (built
 // for the Exec Summary tiles' trend sparklines), hoisted here and exported (Task 13) so the new
 // Portfolio Comparison table's per-row trend cell reuses this exact mechanism instead of a

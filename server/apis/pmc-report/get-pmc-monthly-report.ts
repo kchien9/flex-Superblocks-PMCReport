@@ -26,6 +26,8 @@ import {
   platinumHeadline,
   // "Jun 2026" (Flask _month_label) - this file's own monthLabel prints the long month name.
   monthLabel as shortMonthLabel,
+  // "September 2026" (Flask _month_full) - Exec Summary subtitle ONLY.
+  monthFull,
 } from "./slide-renderers.js";
 import type { BenchmarkMetric, ResidentTrend, Testimonial, TrendFlag, YearlyData, NewRolloutCandidate, DisabledPropertyRow, PortfolioComparisonEntity, QuarterAddsBlock, QuarterAddsSeries } from "./slide-renderers.js";
 import { buildSpeakerNotesHtml, buildExpansionSpeakerNotesHtml, EXPANSION_SLIDE_TITLES, buildPlatinumSpeakerNotesHtml, buildCheckinSpeakerNotesHtml } from "./speaker-notes.js";
@@ -484,7 +486,11 @@ interface ExecSummaryInput {
 function renderExecSummary(d: ExecSummaryInput): { html: string; js: string } {
   const slideId = d.slideId;
   const pmc = _e(d.pmcName);
-  const reportingMonth = monthLabel(d.reportingMonth);
+  // Bare full month, no "BP month" suffix (Flask _month_full, 56265fa) - the ONE reporting-month
+  // label in the deck that reads "September 2026". Deliberately monthFull and not this file's
+  // own monthLabel: monthLabel happens to print a long month today, but it also feeds the cover
+  // and every "… BP month" caption, so the subtitle must not depend on its format staying long.
+  const reportingMonth = monthFull(d.reportingMonth);
   const nar = d.currentNar;
 
   // Partner since label
