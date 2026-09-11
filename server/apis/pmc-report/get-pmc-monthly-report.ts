@@ -11,6 +11,7 @@ import {
   renderAdoptionOpportunities,
   renderPeerBenchmarks,
   renderDelinquency,
+  delinquencyWindowMonths,
   renderRetention,
   renderCustomerExperience,
   computePropertyTrendFlags,
@@ -5708,6 +5709,26 @@ export default api({
         residentsShielded: r.NUMBER_OF_RESIDENTS ?? 0,
       }));
 
+    // Delinquency window length = min(TENURE, 12) months — see delinquencyWindowMonths for why
+    // this must not be min(dqMonths.length, 12), which is what all four consumers below used to
+    // pass. Computed once here, in the shared section above both deck branches, so the
+    // Expansion and QBR render calls AND both speaker-notes payloads can never disagree about
+    // the window: the renderer's "Trailing N Months" label, its headline sum, and its
+    // >=3-real-months floor all derive from this one value.
+    //
+    // Same derivation as expMonthsSinceLaunch (Expansion) and monthsSinceLaunch (QBR) further
+    // down, which is Clark's mirror of Flask's kpis["months_since_launch"] — the exact value
+    // Flask's render_delinquency reads. Kept here rather than reusing one of those because
+    // both are declared inside their own deck branch, below this shared section; if the three
+    // are ever unified, they must stay one value, not drift apart.
+    const dqTenureMonths = (() => {
+      if (!earliestRollout || !latestCompletedMonth) return 0;
+      const [ey, em] = earliestRollout.split("-").map(Number);
+      const [ly, lm] = latestCompletedMonth.split("-").map(Number);
+      return (ly - ey) * 12 + (lm - em) + 1;
+    })();
+    const dqWindowMonths = delinquencyWindowMonths(dqTenureMonths, dqMonths.length);
+
     // Flask's real MoM retention (render_retention, generator/slides.py) is a true
     // customer-level set intersection between consecutive months — NOT a ratio of two
     // pre-aggregated columns. Build month -> set(customer_public_id) from the raw pairs,
@@ -6406,7 +6427,7 @@ export default api({
             const r = renderDelinquency({
               slideId: slideNum,
               months: dqMonths,
-              windowMonths: Math.min(dqMonths.length, 12),
+              windowMonths: dqWindowMonths,
             });
             pushSlide(sid, r);
             break;
@@ -6439,9 +6460,10 @@ export default api({
               // "peer median" numbers in the same deck (this slide vs. Peer Benchmarks/Case Close).
               // p75Nar was missing this same fallback (Kevin's catch) — p50/p75 must move
               // together from the same resolved tier, same fix as every other read site in
-              // this file. KNOWN REMAINING GAP: Flask re-derives this slide's whole peer cohort
-              // at the full target portfolio size (app.py:1608-1668), not the current-enrolled
-              // size these values are still scoped to here — that re-derivation isn't done yet.
+              // this file. The peer cohort behind these values IS matched at the full target
+              // portfolio size, mirroring Flask (app.py:1608-1668) — see subjectUnits in the
+              // peer-matching block above, which prefers expTotalPortfolioEarly over the
+              // current-enrolled count whenever it's larger.
               p50Nar: canonicalPeerNarP50 ?? expNarPerc?.p50,
               p75Nar: canonicalPeerNarP75 ?? expNarPerc?.p75,
             });
@@ -6591,7 +6613,7 @@ export default api({
           totalUnits: expTotalPortfolio,
           currentResidents: latestMonth?.billsPaid ?? 0,
           hasNiro: false,
-          dqWindowMonths: Math.min(dqMonths.length, 12),
+          dqWindowMonths,
         };
         const expNotesBenchmark: SpeakerNotesBenchmark = {
           benchmarkNar: canonicalPeerNarP50 ?? segmentNarAvg ?? 0.085,
@@ -6811,7 +6833,7 @@ export default api({
     const delinquencyResult = renderDelinquency({
       slideId: 13,
       months: dqMonths,
-      windowMonths: Math.min(dqMonths.length, 12),
+      windowMonths: dqWindowMonths,
     });
 
     // --- Resident Retention slide ---
@@ -7239,7 +7261,7 @@ export default api({
         totalUnits: totalUnitsAll,
         currentResidents: latestMonth?.billsPaid ?? 0,
         hasNiro: false,
-        dqWindowMonths: Math.min(dqMonths.length, 12),
+        dqWindowMonths,
       };
       const notesBenchmark: SpeakerNotesBenchmark = {
         benchmarkNar: canonicalPeerNarP50 ?? segmentNarAvg ?? 0.085,

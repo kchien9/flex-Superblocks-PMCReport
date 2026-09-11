@@ -380,8 +380,12 @@ function notesDelinquency(k: SpeakerNotesKpis): string[] {
   ];
   // Kevin's ask: state the actual window plainly, and flag when it's short because of real
   // data availability (a new partner) rather than let a rep get asked "why only 8 months?" and
-  // not have an answer. windowMonths itself is always min(real DQ history, 12) - never a
-  // partial/truncated 12-month view, so "8 months" here always means 8 real months exist.
+  // not have an answer. dqWindowMonths is min(TENURE, 12) - see dqWindowMonths in
+  // get-pmc-monthly-report.ts - so a sub-12 value genuinely means the partnership is younger
+  // than 12 months, which is exactly what the note below tells the rep to say. (It used to be
+  // min(DQ ROW COUNT, 12), which made this note flatly wrong for any long-tenured PMC with
+  // few DQ events: AJH Management, 58 months on Flex, was told "they haven't been on Flex for
+  // a full 12 months yet" because it only had 3 nonzero DQ months.)
   if (k.dqWindowMonths != null) {
     notes.push(
       k.dqWindowMonths >= 12

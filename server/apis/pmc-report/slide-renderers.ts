@@ -1757,6 +1757,24 @@ interface DelinquencyMonth {
   residentsShielded: number;
 }
 
+/**
+ * Length of the Delinquency slide's window, in calendar months: min(TENURE, 12).
+ *
+ * NOT min(DQ row count, 12) (Kevin's catch — that is what this used to be at every call site).
+ * DQ_PROPERTY's GROUP BY omits a month that shielded nothing rather than emitting a zero row
+ * for it, so a row count is the number of DQ EVENTS, not the length of the partnership. AJH
+ * Management — 58 months on Flex, 3 nonzero DQ months (2025-10, 2025-11, 2026-07) — got
+ * windowMonths = 3, which anchored the calendar window at 2026-05 and dropped both 2025
+ * months, leaving 1 real month under a "Trailing 3 Months" title. The months in between simply
+ * had nothing to report; tenure is the honest window length.
+ *
+ * Identical rule (and identical row-count fallback for unknown tenure) to Flask's
+ * render_delinquency `_window_months`, generator/slides.py.
+ */
+export function delinquencyWindowMonths(tenureMonths: number, dqRowCount: number): number {
+  return tenureMonths > 0 ? Math.min(tenureMonths, 12) : dqRowCount;
+}
+
 export function renderDelinquency(input: {
   slideId: number;
   months: DelinquencyMonth[];
