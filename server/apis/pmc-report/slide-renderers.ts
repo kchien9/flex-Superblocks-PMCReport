@@ -2981,7 +2981,7 @@ window.flexToggleAdoptionQuarter=function(slideId,qi,btn){
     ).join("");
     const showAllBtn = `<button class="spark-ctrl-btn ctl-btn" id="atShowAll${slideId}" onclick="flexToggleAllAdoptionEntities(${slideId},this)">Show all</button>`;
     // Quarter-adds buttons (most recent first) at the END of the row, past a thin divider ("" when absent).
-    entityToggleHtml = `\n    <div class="spark-ctrl presenter-control" style="flex-wrap:wrap;margin:-4px 0 8px;">${showAllBtn}${btns}${quarterBtnHtml ? QUARTER_BTN_DIVIDER + quarterBtnHtml : ""}</div>`;
+    entityToggleHtml = `\n    <div class="switch-row pdf-export-hide" style="flex-wrap:wrap;margin:-4px 0 8px;">${showAllBtn}${btns}${quarterBtnHtml ? QUARTER_BTN_DIVIDER + quarterBtnHtml : ""}</div>`;
     // basePts = the exact point set yMin/yMax above were computed from (combined + established +
     // peer median, as rendered). The sync function re-runs the same Flask formula over basePts +
     // every VISIBLE entity line on each click, so (a) with nothing toggled the axis is exactly
@@ -3030,7 +3030,7 @@ window.flexToggleAllAdoptionEntities=function(slideId,btn){
   // Single-PMC deck (no entity row) with a cohort: the quarter buttons get their own row in the
   // same slot, same styling. Stays "" when there's no cohort.
   if (hasQuarter && !showEntityLines) {
-    entityToggleHtml = `\n    <div class="spark-ctrl presenter-control" style="flex-wrap:wrap;margin:-4px 0 8px;">${quarterBtnHtml}</div>`;
+    entityToggleHtml = `\n    <div class="switch-row pdf-export-hide" style="flex-wrap:wrap;margin:-4px 0 8px;">${quarterBtnHtml}</div>`;
   }
 
   // ─── Platinum deck: "With direct marketing" toggle ──────────────────────
@@ -3043,7 +3043,7 @@ window.flexToggleAllAdoptionEntities=function(slideId,btn){
   let platJs = "";
   let platLegend = "";
   if (plat) {
-    entityToggleHtml = `\n    <div class="spark-ctrl pdf-export-hide" id="adtSwitchRow${slideId}" style="flex-wrap:wrap;margin:-4px 0 8px;">`
+    entityToggleHtml = `\n    <div class="switch-row pdf-export-hide" id="adtSwitchRow${slideId}" style="flex-wrap:wrap;margin:-4px 0 8px;">`
       + `<button type="button" class="spark-ctrl-btn" id="adtPlatBtn${slideId}" onclick="flexTogglePlatinumAdoption(${slideId},this)">${PLATINUM_TOGGLE_LABEL}</button></div>`;
     platLegend =
       `<span id="platLegend${slideId}" style="display:flex;align-items:center;gap:7px;">` +
@@ -3092,8 +3092,14 @@ window.flexToggleAllAdoptionEntities=function(slideId,btn){
       `<span style="display:inline-block;width:28px;height:0;border-top:2.5px dashed rgba(26,158,106,0.6);"></span>` +
       `<span style="font-size:13px;color:#524e5b;">Established Properties <span style="color:#a09cb0;">(excl. first 3 months)</span></span>` +
       `</span>`;
+    // `presenter-control keep-live`, matching Flask (generator/slides.py:2479). This shipped
+    // with NO class at all, inside a plain legend <div> - so it matched none of the PDF
+    // export's onclone strip list (.slide-hide-btn, .presenter-control, .pdf-export-hide) and
+    // was baked into every exported PDF. presenter-control strips it from the PDF;
+    // keep-live opts it back in during an actual presentation, because (Kevin) the established
+    // line has a real story worth telling live, unlike the peer median next to it.
     estToggle =
-      `<button onclick="toggleEstablished${slideId}(this)" ` +
+      `<button class="presenter-control keep-live" onclick="toggleEstablished${slideId}(this)" ` +
       `style="pointer-events:auto;padding:3px 9px;border-radius:5px;border:1px solid #e5e7eb;` +
       `background:#fff;color:#524e5b;font-size:10px;font-weight:600;cursor:pointer;` +
       `font-family:'ABCDiatype',sans-serif;letter-spacing:0.04em;">Hide established line</button>`;
@@ -3895,7 +3901,7 @@ window.flexToggleRucQuarter=function(slideId,qi,btn){
     // whitespace between slide-header and the legend row completely untouched (byte-identical
     // to pre-Task-12 HEAD).
     // Quarter-adds buttons (most recent first) at the END of the row, past a thin divider ("" when absent).
-    entitySwitcherHtml = `\n    <div class="spark-ctrl presenter-control" style="flex-wrap:wrap;max-width:620px;margin:-4px 0 8px;">${btns}${quarterBtnHtml ? QUARTER_BTN_DIVIDER + quarterBtnHtml : ""}</div>`;
+    entitySwitcherHtml = `\n    <div class="switch-row pdf-export-hide" style="flex-wrap:wrap;max-width:620px;margin:-4px 0 8px;">${btns}${quarterBtnHtml ? QUARTER_BTN_DIVIDER + quarterBtnHtml : ""}</div>`;
     // Escape "<" so a PMC name containing "</script>" can't break out of the inline script tag -
     // same convention as Task 9's jsonPayload.
     const jsonPayload = JSON.stringify(payload).replace(/</g, "\\u003c");
@@ -3928,7 +3934,7 @@ window.flexToggleRucQuarter=function(slideId,qi,btn){
   // Single-PMC deck (no switcher) with a cohort: the quarter buttons get their own row in the
   // same slot. Stays "" when there's no cohort.
   if (hasQuarter && !showEntitySwitcher) {
-    entitySwitcherHtml = `\n    <div class="spark-ctrl presenter-control" style="flex-wrap:wrap;max-width:620px;margin:-4px 0 8px;">${quarterBtnHtml}</div>`;
+    entitySwitcherHtml = `\n    <div class="switch-row pdf-export-hide" style="flex-wrap:wrap;max-width:620px;margin:-4px 0 8px;">${quarterBtnHtml}</div>`;
   }
 
   // ── Platinum deck: "With direct marketing" toggle (Flask render_residents_units_combo) ────
@@ -3955,7 +3961,7 @@ window.flexToggleRucQuarter=function(slideId,qi,btn){
         sourceLabel: platLabel,
       },
     };
-    entitySwitcherHtml = `\n    <div class="spark-ctrl pdf-export-hide" style="flex-wrap:wrap;max-width:620px;margin:-4px 0 8px;">`
+    entitySwitcherHtml = `\n    <div class="switch-row pdf-export-hide" style="flex-wrap:wrap;max-width:620px;margin:-4px 0 8px;">`
       + `<button type="button" class="spark-ctrl-btn" id="rucPlatBtn${slideId}" onclick="flexTogglePlatinumRuc(${slideId},this)">${PLATINUM_TOGGLE_LABEL}</button></div>`;
     comboChartExposeJs = `window['rucChart_${slideId}'] = _comboChart;\n    `;
     entitySwitcherJs = `window['rucEntityData_${slideId}']=${JSON.stringify(payload).replace(/</g, "\\u003c")};`

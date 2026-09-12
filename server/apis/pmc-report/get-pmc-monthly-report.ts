@@ -872,7 +872,9 @@ export function renderExecSummary(d: ExecSummaryInput): { html: string; js: stri
         ? `<button class="spark-ctrl-btn ctl-btn is-active" onclick="flexSwitchEntity(${slideId},0,this)">${_e(p.label)}</button>`
         : entitySwitchButton(i - 1, _e(p.label), `flexSwitchEntity(${slideId},${i},this)`)
     ).join("");
-    entitySwitcherHtml = `<div class="spark-ctrl presenter-control" style="flex-wrap:wrap;max-width:460px;">${btns}</div>`;
+    // .switch-row (not .spark-ctrl / .presenter-control) so neither fullscreen rule hides it -
+    // this control has to stay usable while presenting. See .switch-row's CSS comment.
+    entitySwitcherHtml = `<div class="switch-row pdf-export-hide" style="flex-wrap:wrap;max-width:460px;">${btns}</div>`;
     // Embed everything as JSON in a script variable, toggle via a shared function defined once -
     // same convention as flexToggleSpark just above. Escape "<" so a PMC name containing
     // "</script>" can't break out of the inline script tag.
@@ -1783,7 +1785,12 @@ function renderFullPropertyTable(
 
 // --- Deck Template ---
 
-function buildDeckHtml(params: {
+/**
+ * Exported so __tests__/present-mode-controls.test.ts can check the shell's real CSS against
+ * the real emitted control classes - the only evidence available for a fullscreen/PDF-visibility
+ * claim without a browser.
+ */
+export function buildDeckHtml(params: {
   slides: string;
   pmc_name: string;
   report_month: string;
@@ -1853,6 +1860,12 @@ function buildDeckHtml(params: {
   :fullscreen .slide-hide-btn, :-webkit-full-screen .slide-hide-btn { display: none; }
   :fullscreen .slide.slide-excluded, :-webkit-full-screen .slide.slide-excluded { opacity: 1; outline: none; }
   :fullscreen .presenter-control, :-webkit-full-screen .presenter-control { display: none; }
+  /* keep-live opts ONE presenter-control back into visibility during an actual presentation
+     (Flask deck_base.html:146). Used by the Adoption Trend established-line toggle: Kevin -
+     that line has a real story worth telling live, unlike peer median, which should never
+     reach an audience. Still stripped from the PDF by the .presenter-control half. */
+  :fullscreen .presenter-control.keep-live,
+  :-webkit-full-screen .presenter-control.keep-live { display: inline-block; }
   :fullscreen #editBtn, :-webkit-full-screen #editBtn { display: none; }
   .bm-metric-toggles { display: flex; gap: 6px; margin-top: 12px; flex-wrap: wrap; }
   .stat-toggle-bar { display: flex; gap: 4px; }
@@ -1874,6 +1887,17 @@ function buildDeckHtml(params: {
   .spark-ctrl-btn.ctl-btn { border-radius: 999px; border-color: #c4b5e6; color: #6A3DB8; background: #f5f1fb; font-weight: 700; padding: 3px 11px; }
   .spark-ctrl-btn.ctl-btn:hover { border-color: #6A3DB8; }
   :fullscreen .spark-ctrl, :-webkit-full-screen .spark-ctrl { display: none; }
+  /* SELECTION controls - the entity switchers (Exec Summary, Adoption Trend, Residents/Units)
+     and the quarter-adds buttons. Kevin's ask is explicitly that these stay usable while
+     presenting a combined deck live, unlike the purely cosmetic sparkline toggles above. So
+     they get their own container class that is deliberately NEITHER .spark-ctrl NOR
+     .presenter-control, which is exactly why no fullscreen rule can reach them - the same
+     trick, for the same stated reason, as Flask's .exec-switch-row / .adt-switch-row
+     (generator/slides.py:9703). They shipped as class="spark-ctrl presenter-control", which
+     BOTH fullscreen rules above hid, right below a Clark comment claiming the opposite.
+     Layout lives here rather than in an inline style so nothing out-specificities a future
+     rule; .pdf-export-hide on the rows still strips them from the exported PDF. */
+  .switch-row { display: flex; gap: 5px; align-items: center; }
   .stat-toggle-btn.is-active { background: #6A3DB8; color: #fff; border-color: #6A3DB8; }
   .nav-overlay { position: fixed; inset: 0; z-index: 200; background: rgba(17,17,17,0.72); display: flex; align-items: center; justify-content: center; }
   .nav-panel { background: #fff; border-radius: 16px; width: min(720px, 88vw); max-height: 78vh; display: flex; flex-direction: column; overflow: hidden; box-shadow: 0 24px 64px rgba(0,0,0,0.4); }
