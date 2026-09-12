@@ -1367,15 +1367,19 @@ interface StateRowData {
   estRate?: number;
 }
 
-interface StateBreakdownInput {
-  latestRows: { PROPERTY_NAME: string; PROPERTY_UNIT_COUNT: number; BILLS_PAID: number; PROPERTY_STATE: string | null; ROLLOUT_MONTH: string | null }[];
+export interface StateBreakdownInput {
+  // PROPERTY_PUBLIC_ID is optional only so older/synthetic callers (and the geo unit tests) can
+  // omit it; when present it is what the state bars count by - see renderStateBreakdown.
+  latestRows: { PROPERTY_NAME: string; PROPERTY_PUBLIC_ID?: string | null; PROPERTY_UNIT_COUNT: number; BILLS_PAID: number; PROPERTY_STATE: string | null; ROLLOUT_MONTH: string | null }[];
   portfolioNar: number;
   reportingMonth: string;
   slideId?: number;
   regionDetail?: RegionDetailRow[];
 }
 
-function renderStateBreakdown(input: StateBreakdownInput): { html: string; js: string } {
+/** Exported for the geo-additivity tests (__tests__/geo-state-additivity.test.ts) - the footnote
+ * is a residual, so the only honest way to check it is to parse the rendered markup. */
+export function renderStateBreakdown(input: StateBreakdownInput): { html: string; js: string } {
   const { latestRows, portfolioNar, reportingMonth, slideId = 6, regionDetail = [] } = input;
 
   // --- Aggregate by state ---
@@ -1383,7 +1387,11 @@ function renderStateBreakdown(input: StateBreakdownInput): { html: string; js: s
   for (const row of latestRows) {
     if (!row.PROPERTY_STATE) continue;
     const s = statesMap.get(row.PROPERTY_STATE) || { properties: new Set<string>(), totalUnits: 0, billsPaid: 0 };
-    s.properties.add(row.PROPERTY_NAME);
+    // Count by PROPERTY_PUBLIC_ID - the same key the Exec Summary's own property tile uses, and
+    // the same key the region-detail query now counts by. PROPERTY_NAME is not unique, so a
+    // name-based count here could not tie to either the tile above it or the drill-down rows
+    // below it. Rows without a public id fall back to the name as before. Mirrors Flask d537142.
+    s.properties.add(row.PROPERTY_PUBLIC_ID || row.PROPERTY_NAME);
     s.totalUnits += row.PROPERTY_UNIT_COUNT;
     s.billsPaid += row.BILLS_PAID;
     statesMap.set(row.PROPERTY_STATE, s);
@@ -1550,22 +1558,25 @@ function renderStateBreakdown(input: StateBreakdownInput): { html: string; js: s
 
   // --- Build region map by state ---
   const regionsByState = new Map<string, { region: string; properties: number; totalUnits: number; billsPaid: number; adoptionRate: number }[]>();
-  // state -> (properties, units) for rows bucketed as 'Unknown' (ZIP had no DMA and no usable
-  // neighbours, or the network puts its ZIP in a different state than PROPERTY_STATE - see
-  // geo-regions.ts). Those never render as a bar labelled "Unknown"; they become one grey
-  // footnote line under that state's regions. The state totals above still count them. Mirrors
-  // Flask f7d95a6 / 61facd0. DISPLAY_REGION (rule C) is the label to print - "PITTSBURGH (WV
-  // side)" for a WV property in a PA-home DMA - while PROPERTY_REGION stays the grouping key.
-  const unmappedByState = new Map<string, { properties: number; units: number }>();
+  // state -> (properties, units, bills) NOT shown on any region bar: the 'Unknown' bucket (ZIP
+  // had no DMA and no usable neighbours, or the network puts its ZIP in a different state than
+  // PROPERTY_STATE - see geo-regions.ts) plus anything else the region pull didn't account for.
+  // Those never render as a bar labelled "Unknown"; they become one grey footnote line under
+  // that state's regions. DISPLAY_REGION (rule C) is the label to print - "PITTSBURGH (WV side)"
+  // for a WV property in a PA-home DMA - while PROPERTY_REGION stays the grouping key.
+  //
+  // This is computed HERE as `state total - SUM(rendered region rows)`, per state, per measure -
+  // NOT read off the region query's own Unknown rows, which is what it used to do. Two
+  // independently sourced numbers cannot be made to add up by asserting that they do: live,
+  // Asset Living CA's 13 region bars already summed to the bar's 604 properties and the footnote
+  // still claimed "+4", while RPM Living TX's regions summed to 425 under a 424 bar with no
+  // footnote at all. As a residual it is arithmetically exact by construction - the rendered rows
+  // plus this line always equal the state bar for properties, units AND bills. Mirrors Flask
+  // d537142 (superseding f7d95a6 / 61facd0).
+  const unmappedByState = new Map<string, { properties: number; units: number; bills: number }>();
   for (const r of regionDetail) {
     if (!r.PROPERTY_STATE) continue;
-    if (r.PROPERTY_REGION === UNKNOWN_REGION) {
-      const u = unmappedByState.get(r.PROPERTY_STATE) || { properties: 0, units: 0 };
-      u.properties += r.PROPERTIES;
-      u.units += r.TOTAL_UNITS;
-      unmappedByState.set(r.PROPERTY_STATE, u);
-      continue;
-    }
+    if (r.PROPERTY_REGION === UNKNOWN_REGION) continue; // folded into the residual below
     const arr = regionsByState.get(r.PROPERTY_STATE) || [];
     const rate = r.TOTAL_UNITS > 0 ? r.BILLS_PAID / r.TOTAL_UNITS : 0;
     arr.push({ region: r.DISPLAY_REGION || r.PROPERTY_REGION, properties: r.PROPERTIES, totalUnits: r.TOTAL_UNITS, billsPaid: r.BILLS_PAID, adoptionRate: rate });
@@ -1574,6 +1585,21 @@ function renderStateBreakdown(input: StateBreakdownInput): { html: string; js: s
   // Sort regions within each state by adoption rate desc
   for (const [, regions] of regionsByState) {
     regions.sort((a, b) => b.adoptionRate - a.adoptionRate);
+  }
+  // Residual per state, against the state bars rendered above. Only states that actually have a
+  // bar are considered - a region row for a state with no bar has nothing to reconcile against.
+  if (regionDetail.length > 0) {
+    for (const s of states) {
+      const rendered = regionsByState.get(s.state) ?? [];
+      const resid = {
+        properties: s.properties - rendered.reduce((a, r) => a + r.properties, 0),
+        units: s.totalUnits - rendered.reduce((a, r) => a + r.totalUnits, 0),
+        bills: s.billsPaid - rendered.reduce((a, r) => a + r.billsPaid, 0),
+      };
+      if (resid.properties !== 0 || resid.units !== 0 || resid.bills !== 0) {
+        unmappedByState.set(s.state, resid);
+      }
+    }
   }
   const hasDrilldown = regionsByState.size > 0 || unmappedByState.size > 0;
 
@@ -1605,8 +1631,13 @@ function renderStateBreakdown(input: StateBreakdownInput): { html: string; js: s
       if (unmapped) {
         // Footnote, not a bar: an "Unknown" row ranked among real markets read as a data error
         // to Kevin (Allied combined deck). A state with ONLY unmapped properties still gets the
-        // expand affordance so the footnote is reachable. String matches Flask's exactly.
-        regionRows += `<div style="font-size:10px;color:#a09cb0;margin-top:4px;margin-bottom:${rowMargin};">+${unmapped.properties} ${unmapped.properties === 1 ? "property" : "properties"} · ${unmapped.units.toLocaleString()} units without a mapped market</div>`;
+        // expand affordance so the footnote is reachable. Every measure the rows above carry
+        // appears here too, signed, so the rows plus this line reconcile to the state bar
+        // exactly. A negative figure would mean the region pull over-accounts for the state and
+        // is printed as such rather than hidden - a wrong number a rep can see beats one they
+        // can't. String matches Flask's exactly.
+        const sgn = (v: number) => `${v < 0 ? "-" : "+"}${Math.abs(v).toLocaleString()}`;
+        regionRows += `<div style="font-size:10px;color:#a09cb0;margin-top:4px;margin-bottom:${rowMargin};">${sgn(unmapped.properties)} ${Math.abs(unmapped.properties) === 1 ? "property" : "properties"} · ${sgn(unmapped.units)} units · ${sgn(unmapped.bills)} paying without a mapped market</div>`;
       }
       // Left border acts as a visible tree guide-line connecting every region row back to
       // its parent state - a plain padding-left (the old approach) only nudged the label
@@ -1650,7 +1681,7 @@ function renderStateBreakdown(input: StateBreakdownInput): { html: string; js: s
     legendText += ` &middot; Darker shade = established properties (3+ mo.) &middot; Lighter shade = all properties`;
   }
   if (hasDrilldown) {
-    legendText += ` &middot; Click a state to see its regions`;
+    legendText += ` &middot; Click a state to see its regions - each state's region rows plus its grey line add up to that state's own props, units and paying residents`;
   }
 
   const regionScript = hasDrilldown
