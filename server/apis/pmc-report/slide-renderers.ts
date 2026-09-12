@@ -4183,16 +4183,70 @@ export interface SinceInceptionInput {
   entityYearlyData?: SinceInceptionEntityYearly[];
 }
 
+/** Drops every year-keyed entry before `firstYear` (the Since Inception partnership floor). */
+function floorYearRecord(byYear: Record<number, number>, firstYear: number): Record<number, number> {
+  const out: Record<number, number> = {};
+  for (const [y, v] of Object.entries(byYear)) {
+    if (Number(y) >= firstYear) out[Number(y)] = v;
+  }
+  return out;
+}
+
 export function renderSinceInception(input: SinceInceptionInput): SlideResult {
-  const { slideId, pmcName, reportingMonth, yearlyData, monthlyTotals, partnerSince } = input;
+  const { slideId, pmcName, reportingMonth, monthlyTotals, partnerSince } = input;
+  if (input.yearlyData.length === 0) return { html: "", js: "" };
+
+  // ── First year of the partnership, and the floor it imposes ────────────────
+  // "Joined Flex in {year}" must respect partnerSince — the same Cover-slide value (Salesforce
+  // closed-won date or first rollout, or a manual override) — matching Flask's
+  // _since_inception_first_year (generator/slides.py:255): this used to always use years[0],
+  // the raw earliest year with billing data in PROPERTY_BP_MONTH_STATS, which ignores a manual
+  // override and the documented case where a transferred property's rollout_month is inherited
+  // from its PRIOR, unrelated owner. That's exactly why this slide could disagree with the
+  // Cover slide on the partner-since year. Falls back to the earliest billed year only when
+  // partnerSince isn't available at all.
+  //
+  // The CHART - and every total derived from it below - is floored at that year too, not just
+  // the headline text (Flask slides.py:7717-7719, the Bridge PM fix). The yearly query is
+  // deliberately unbounded ("true full history"), which is right for a partner's own history
+  // but wrong here whenever a transferred property carries PRE-PARTNERSHIP billing rows under
+  // this PMC's name: those years otherwise render as real bars, and get summed into the
+  // subtitle's "since they joined Flex" totals, while the headline correctly says the
+  // partnership started later. Confirmed real on Bridge PM: bars back to 2019, partner_since
+  // 2024 (Kevin's catch). Clark had the firstYear value but fed it only to the subtitle.
+  const firstYear = partnerSince
+    ? new Date(partnerSince + "T00:00:00Z").getUTCFullYear()
+    : input.yearlyData[0].year;
+  const yearlyData = input.yearlyData.filter((y) => y.year >= firstYear);
+  // Re-gate to empty if the floor removed everything - same as Flask's `if yearly_df.empty`.
+  // A partner-since date later than every billed year means there is no partnership history to
+  // chart, and an empty chart is worse than no slide (the deck's .filter(Boolean) drops it).
   if (yearlyData.length === 0) return { html: "", js: "" };
 
   // ── Stacked-by-entity (Task 10) ────────────────────────────────────────────
   // Only stacks when there's more than 1 combined entity - a single-PMC report (or a combined
   // report whose entityYearlyData wasn't passed) gets entities = [] and isStacked = false, which
   // keeps every branch below on the exact same single-dataset code path as before this existed.
-  const entities = input.entityYearlyData ?? [];
-  const isStacked = entities.length > 1;
+  //
+  // Same firstYear floor as yearlyData above, for the same reason (a transferred property's
+  // pre-partnership rows must not render as a stacked segment either).
+  //
+  // Array POSITIONS are deliberately preserved rather than filtered: the position is the
+  // entity's index into ENTITY_PALETTE, and the repo's rule is that the same entity is the
+  // same color on every combined slide, so dropping one here would re-color everyone after it
+  // on this slide only. Instead, "is there still more than one entity with data after the
+  // floor" decides whether to stack at all - Flask's own `nunique() > 1` re-check after its
+  // floor (slides.py:7727-7729), which exists for exactly this case. An entity that kept its
+  // position but has no post-floor data contributes a zero-height segment and is already
+  // filtered out of the hover (see tooltipCallbacksJs).
+  const entities = (input.entityYearlyData ?? []).map((e) => ({
+    pmcName: e.pmcName,
+    totalRentByYear: floorYearRecord(e.totalRentByYear, firstYear),
+    ytdRentByYear: floorYearRecord(e.ytdRentByYear, firstYear),
+  }));
+  const isStacked = entities.filter(
+    (e) => Object.keys(e.totalRentByYear).length > 0 || Object.keys(e.ytdRentByYear).length > 0,
+  ).length > 1;
   const entityColors = entities.map((_, i) => entityColor(i));
   // Display-shortened names for the legend swatches and the dataset labels (= tooltip rows);
   // the per-entity rent arrays are positional, so nothing keys on the label.
@@ -4204,14 +4258,8 @@ export function renderSinceInception(input: SinceInceptionInput): SlideResult {
   const monthsActive = yearlyData.map(y => y.monthsActive);
 
   const labels = years.map(y => String(y));
-  // "Joined Flex in {year}" must respect partnerSince — the same Cover-slide value (Salesforce
-  // closed-won date or first rollout, or a manual override) — matching Flask's fix (generator/
-  // slides.py render_since_inception): this used to always use years[0], the raw earliest year
-  // with billing data in PROPERTY_BP_MONTH_STATS, which ignores a manual override and the
-  // documented case where a transferred property's rollout_month is inherited from its PRIOR,
-  // unrelated owner. That's exactly why this slide could disagree with the Cover slide on the
-  // partner-since year. Falls back to years[0] only when partnerSince isn't available at all.
-  const firstYear = partnerSince ? new Date(partnerSince + "T00:00:00Z").getUTCFullYear() : years[0];
+  // firstYear (and the floor it puts on yearlyData / entities) is resolved at the top of this
+  // function - these totals are already post-floor, which is the whole point.
   const totalRentAll = rentRaw.reduce((s, v) => s + v, 0);
   const totalBillsAll = billsPaid.reduce((s, v) => s + v, 0);
   const currentYear = parseInt(reportingMonth.slice(0, 4), 10);
