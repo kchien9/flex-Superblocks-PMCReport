@@ -3331,7 +3331,7 @@ export default api({
     // ask: Expansion's own "By State" slide never got this even though QBR's has had it all
     // along. Hoisted out of the QBR-only batch below (same "fire early" pattern networkPoolPromise
     // already uses) and gated on its OWN flag rather than needsQBRQueries, since this one query
-    // is cheap (scoped to a single subject PMC, no network-wide scan, no UDF chain) and safe to
+    // is cheap (scoped to the subject PMC family, no network-wide scan, no UDF chain) and safe to
     // also run for Expansion - unlike network pool/property pool just below, which stay QBR-only
     // on purpose (that's real, deliberately-tuned query cost this session already fought to keep
     // under control; Kevin didn't ask for those in Expansion, so they're untouched).
@@ -3377,14 +3377,21 @@ export default api({
                ON p.PROPERTY_PUBLIC_ID = t.PROPERTY_PUBLIC_ID AND p.rn = 1
              LEFT JOIN PRODUCTION.SEEDS.SEED_ZIP_CODE_TO_DMA_MAPPING dma
                ON dma.ZIP_CODE = LEFT(p.PROPERTY_ZIP, 5)
-             WHERE t.PMC_NAME = ?
+             -- allPmcNames, NOT the primary pmc_name alone. The state bars this drill-down has
+             -- to reconcile against come from latestRows, which is scoped to every combined
+             -- entity - so a primary-only region pull left every subsidiary's properties on no
+             -- region row. Now that the footnote is an exact residual it would have absorbed
+             -- them silently and honestly: Asset Living's 8-entity deck would have printed 7/8
+             -- of its portfolio as "without a mapped market" and still added up. Flask's
+             -- pull_property_region_detail has always scoped this to the full pmc_names list.
+             WHERE t.PMC_NAME IN (${pmcNamePlaceholders})
                AND t.BP_MONTH = ?
                AND t.IS_IN_NETWORK = TRUE
                AND t.PROPERTY_STATE IS NOT NULL AND t.PROPERTY_STATE != ''
              GROUP BY t.PROPERTY_STATE, COALESCE(dma.DMA_NAME, 'Unknown'), LEFT(p.PROPERTY_ZIP, 5)
              ORDER BY t.PROPERTY_STATE, BILLS_PAID DESC`,
             RegionDetailSchema,
-            [pmc_name, reportingMonthStr],
+            [...allPmcNames, reportingMonthStr],
             { label: "Pull DMA region detail for geo slide dropdowns" }
           ),
           // Same ZIP source/dedup as the detail query so the two agree ZIP for ZIP; no PMC scope
