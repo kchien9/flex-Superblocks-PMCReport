@@ -30,6 +30,7 @@ export interface ExpansionFormState {
   delivery: string;
   sparklines: string;
   period_comparison: string;
+  growth_slides: string;
   terminology: string;
   selected_slides: Set<string>;
   selected_metrics: Set<string>;
@@ -58,6 +59,10 @@ export function ExpansionTab({ pmcNames, pmcPresets, pmcLoading, generating, onG
   const [delivery, setDelivery] = useState("presenting");
   const [sparklines, setSparklines] = useState("auto");
   const [periodComparison, setPeriodComparison] = useState("auto");
+  // Growth trend slides veto (Flask growth_slides). "auto" is Flask's own default: SMB
+  // accounts only, since they have no dedicated AM/PSM running QBRs, so the Expansion deck is
+  // the only place their growth story gets told.
+  const [growthSlides, setGrowthSlides] = useState("auto");
   const [terminology, setTerminology] = useState("resident");
   const [selectedSlides, setSelectedSlides] = useState<Set<string>>(() => defaultSlideSet(EXPANSION_SLIDES));
   // Fixed — the picker for this was removed (server never reads it; the Peer Benchmarks slide
@@ -82,13 +87,14 @@ export function ExpansionTab({ pmcNames, pmcPresets, pmcLoading, generating, onG
       delivery,
       sparklines,
       period_comparison: periodComparison,
+      growth_slides: growthSlides,
       terminology,
       selected_slides: selectedSlides,
       selected_metrics: selectedMetrics,
       testimonials,
       imported_slides: importedSlides,
     });
-  }, [selectedPMC, additionalPmcs, totalPortfolioUnits, propertyIds, ownershipReportName, reviewPeriod, comparisonMonths, delivery, sparklines, periodComparison, terminology, selectedSlides, selectedMetrics, testimonials, importedSlides, onGenerate]);
+  }, [selectedPMC, additionalPmcs, totalPortfolioUnits, propertyIds, ownershipReportName, reviewPeriod, comparisonMonths, delivery, sparklines, periodComparison, growthSlides, terminology, selectedSlides, selectedMetrics, testimonials, importedSlides, onGenerate]);
 
   // Preset "Load {family}" button — only surfaces when the primary PMC exactly matches a known
   // combo family (e.g. Asset Living's subsidiaries). No match → matchingPreset is undefined and
@@ -240,10 +246,17 @@ export function ExpansionTab({ pmcNames, pmcPresets, pmcLoading, generating, onG
         </div>
         <div>
           <div className="flex items-center justify-between">
+            <label className="text-sm font-medium text-gray-700">Growth trend slides</label>
+            <ToggleGroup options={[{ value: "auto", label: "Auto" }, { value: "include", label: "Include" }, { value: "exclude", label: "Exclude" }]} value={growthSlides} onChange={setGrowthSlides} />
+          </div>
+          <p className="text-[11px] text-gray-400 mt-1">Residents/Units &amp; Rent, Adoption Trend and Cohort Overview. Auto: SMB accounts only - they have no AM/PSM running QBRs, so this deck is the only place their growth story gets told. Include to add them for a managed account anyway; Exclude to drop them entirely.</p>
+        </div>
+        <div>
+          <div className="flex items-center justify-between">
             <label className="text-sm font-medium text-gray-700">Exec tile sparklines</label>
             <ToggleGroup options={[{ value: "auto", label: "Auto" }, { value: "include", label: "Include" }, { value: "exclude", label: "Exclude" }]} value={sparklines} onChange={setSparklines} />
           </div>
-          <p className="text-[11px] text-gray-400 mt-1">Auto: hidden by default - the Residents/Units/Rent, Adoption Trend, and Cohort Overview slides always render on Expansion decks now, so the condensed exec-tile version is redundant. Override either way if you want them anyway.</p>
+          <p className="text-[11px] text-gray-400 mt-1">Auto: hidden whenever the Residents/Units/Rent slide is rendering (see Growth trend slides above), since the condensed exec-tile version is then redundant - and shown when it isn&apos;t. Override either way if you want them anyway.</p>
         </div>
         <div>
           <div className="flex items-center justify-between">
