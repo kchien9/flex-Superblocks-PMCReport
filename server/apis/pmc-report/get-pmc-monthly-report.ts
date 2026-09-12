@@ -289,6 +289,28 @@ function htmlEscape(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
 }
 
+/**
+ * Re-stamp one slide's internal ids from `oldId` to `newId` (its final 1-based document
+ * position after `.filter(Boolean)` dropped the empty slides).
+ *
+ * These six patterns are the WHOLE of what renumbering can reach. Notably absent, and not
+ * fixable here: a bare `N` inside an `onclick` argument list, which is indistinguishable from
+ * any other number in JS source. So a handler must never use its passed id for anything these
+ * patterns rewrite — see SLIDE_DOM_HELPERS_JS in slide-renderers.ts, and the
+ * __tests__/renumber-safety.test.ts that pins the invariant.
+ *
+ * Exported so that test can renumber with the REAL regexes rather than a drifting copy.
+ */
+export function renumberSlideHtml(html: string, oldId: string, newId: string): string {
+  return html
+    .replace(new RegExp(`id="slide-${oldId}"`, "g"), `id="slide-${newId}"`)
+    .replace(new RegExp(`#slide-${oldId}\\b`, "g"), `#slide-${newId}`)
+    .replace(new RegExp(`id="chart${oldId}"`, "g"), `id="chart${newId}"`)
+    .replace(new RegExp(`chart${oldId}(?=['"])`, "g"), `chart${newId}`)
+    .replace(new RegExp(`initSlide${oldId}`, "g"), `initSlide${newId}`)
+    .replace(new RegExp(`slide-${oldId}(?=['"\\.\\s])`, "g"), `slide-${newId}`);
+}
+
 function monthLabel(dateStr: string | null): string {
   if (!dateStr) return "—";
   const d = new Date(dateStr + "T00:00:00Z");
@@ -7513,13 +7535,7 @@ export default api({
       const oldId = m[1];
       slideIdMap.set(oldId, String(newId));
       if (oldId === String(newId)) return html;
-      return html
-        .replace(new RegExp(`id="slide-${oldId}"`, "g"), `id="slide-${newId}"`)
-        .replace(new RegExp(`#slide-${oldId}\\b`, "g"), `#slide-${newId}`)
-        .replace(new RegExp(`id="chart${oldId}"`, "g"), `id="chart${newId}"`)
-        .replace(new RegExp(`chart${oldId}(?=['"])`, "g"), `chart${newId}`)
-        .replace(new RegExp(`initSlide${oldId}`, "g"), `initSlide${newId}`)
-        .replace(new RegExp(`slide-${oldId}(?=['"\\.\\s])`, "g"), `slide-${newId}`);
+      return renumberSlideHtml(html, oldId, String(newId));
     }).join("\n");
 
     // Collect extra JS from slide renderers and apply same renumbering

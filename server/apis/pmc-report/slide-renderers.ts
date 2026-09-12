@@ -76,6 +76,42 @@ export function entitySwitchButton(idx: number, labelHtml: string, onclick: stri
   return `<button type="button" class="spark-ctrl-btn"${extraAttrs} style="border-left:3px solid ${entityColor(idx)};" onclick="${onclick}">${labelHtml}</button>`;
 }
 
+/**
+ * Renumber-safe slide lookup for the interactive handlers. Emitted (idempotently — every
+ * definition is `window.x = window.x || …`) alongside any handler that has to reach the slide
+ * it lives on.
+ *
+ * WHY: get-pmc-monthly-report.ts renumbers each slide's internal ids to its final document
+ * position AFTER `.filter(Boolean)` drops empty slides. That pass rewrites `id="slide-N"`,
+ * `#slide-N`, `id="chartN"`, `chartN'`, `initSlideN` and `slide-N` — but it cannot rewrite a
+ * bare `N` sitting in an `onclick` argument list, because a bare number in JS source is
+ * indistinguishable from any other number. So after a renumber the DOM says `slide-5` /
+ * `chart5` while the button still calls `flexToggleRucQuarter(4, …)`, and every handler that
+ * did `Chart.getChart('chart' + slideId)` got `undefined` (→ `if(!chart)return`, a silently
+ * dead button) while `getElementById('slide-' + slideId)` reached the NEIGHBOURING slide and
+ * overwrote its title. Triggered by any QBR deck with a "start"-anchored imported slide, and
+ * by any Expansion deck where a slide self-gates to empty.
+ *
+ * FIX: don't trust the passed id for anything the renumbering pass touches — derive it from
+ * the DOM instead, via the clicked button's own `.slide` ancestor, whose `id` the renumbering
+ * pass keeps correct by construction. Flask needs none of this because it has no renumbering
+ * step at all: it assigns the final number at render time.
+ *
+ * The passed `sid` stays the right key for everything the renumbering pass does NOT touch
+ * (`atQuarterData[sid]`, `atEntBtn<sid>-<i>`, `si-btn-full-<sid>`, …) — those are all emitted
+ * with the same original number the onclick carries, so they already agree with each other.
+ * `sid` is also the fallback when there is no element to walk up from (the Platinum PDF-prep
+ * hook calls its toggle with `btn = null`; that deck has a fixed slide order and never
+ * renumbers, so the fallback is exact there).
+ */
+const SLIDE_DOM_HELPERS_JS =
+  "window.flexSlideOf=window.flexSlideOf||function(el,sid){"
+  + "var s=(el&&el.closest)?el.closest('.slide'):null;"
+  + "return s||document.getElementById('slide-'+sid);};"
+  + "window.flexSlideNum=window.flexSlideNum||function(el,sid){"
+  + "var s=window.flexSlideOf(el,sid);"
+  + "return (s&&s.id)?s.id.replace('slide-',''):sid;};";
+
 function hexToRgba(hex: string, alpha: number): string {
   const h = hex.replace("#", "");
   const r = parseInt(h.slice(0, 2), 16);
@@ -2343,11 +2379,12 @@ const PLATINUM_PDF_PREP_JS =
 // over BOTH series, swap the headline. OFF restores the arrays, splices the ghosts out and puts
 // the headline back.
 const PLATINUM_RUC_JS =
-  "if(!window.flexTogglePlatinumRuc){window.flexTogglePlatinumRuc=function(slideId,btn){"
+  SLIDE_DOM_HELPERS_JS
+  + "if(!window.flexTogglePlatinumRuc){window.flexTogglePlatinumRuc=function(slideId,btn){"
   + "var data=window['rucEntityData_'+slideId];if(!data||!data.platinum)return;var p=data.platinum;"
   + "var chart=window['rucChart_'+slideId];if(!chart)return;var ds=chart.data.datasets;"
   + "btn=btn||document.getElementById('rucPlatBtn'+slideId);"
-  + "var slide=document.getElementById('slide-'+slideId);var title=slide?slide.querySelector('.slide-title'):null;"
+  + "var slide=window.flexSlideOf(btn,slideId);var title=slide?slide.querySelector('.slide-title'):null;"
   + "var chip=document.getElementById('rucPlatLegend'+slideId);var full=data.combined;"
   + "var rescale=function(arrs){var rv=[];arrs.forEach(function(a){a.forEach(function(v){if(v!=null)rv.push(v);});});"
   + "if(!rv.length)return;var mn=Math.min.apply(null,rv),mx=Math.max.apply(null,rv);"
@@ -2377,10 +2414,16 @@ const PLATINUM_RUC_JS =
 // while ON so the two don't sit on top of each other), swaps the headline and relabels the legend
 // chip with the source; OFF reverses.
 const PLATINUM_ADT_JS =
-  "if(!window.flexTogglePlatinumAdoption){window.flexTogglePlatinumAdoption=function(slideId,btn){"
-  + "var chart=Chart.getChart('chart'+slideId);var p=window['adtPlatinumData_'+slideId];if(!chart||!p)return;"
-  + "var ds=chart.data.datasets;btn=btn||document.getElementById('adtPlatBtn'+slideId);"
-  + "var slide=document.getElementById('slide-'+slideId);var title=slide?slide.querySelector('.slide-title'):null;"
+  SLIDE_DOM_HELPERS_JS
+  + "if(!window.flexTogglePlatinumAdoption){window.flexTogglePlatinumAdoption=function(slideId,btn){"
+  // btn is resolved BEFORE the chart lookup now: the canvas id is derived from the button's own
+  // slide (see SLIDE_DOM_HELPERS_JS), so it has to exist first.
+  + "btn=btn||document.getElementById('adtPlatBtn'+slideId);"
+  + "var slide=window.flexSlideOf(btn,slideId);"
+  + "var chart=Chart.getChart('chart'+window.flexSlideNum(btn,slideId));"
+  + "var p=window['adtPlatinumData_'+slideId];if(!chart||!p)return;"
+  + "var ds=chart.data.datasets;"
+  + "var title=slide?slide.querySelector('.slide-title'):null;"
   + "var chip=document.getElementById('platLegend'+slideId);"
   + "var sw=chip?chip.querySelector('.plat-swatch'):null;var tx=chip?chip.querySelector('.plat-text'):null;"
   + "var refIdx=ds.findIndex(function(d){return d._flexPlatRef===true;});"
@@ -2652,11 +2695,20 @@ export function renderAdoptionTrend(input: {
   const QTR_PEER_LABEL = "Peer Median · same stage";
   let quarterBtnHtml = "";
   let quarterJs = "";
-  // Guards spliced into the shared entity-toggle JS only when a cohort exists: an entity absent
-  // from the quarter is tagged `atQtrHidden` while quarter mode is on, and Show all / Hide all
-  // and the sync pass must skip it (it has no button to reflect, and must not be turned on).
-  const qtrSkip = hasQuarter ? "if(ds[j].atQtrHidden)continue;" : "";
-  const qtrNotHidden = hasQuarter ? "&&!ds[j].atQtrHidden" : "";
+  // An entity absent from the selected quarter is tagged `atQtrHidden` while quarter mode is
+  // on; Show all / Hide all and the sync pass must skip it (it has no button to reflect, and
+  // must not be turned on). Those guards are now emitted UNCONDITIONALLY inside the shared
+  // toggle functions, exactly as Flask emits them (generator/slides.py:2331).
+  //
+  // They used to be `hasQuarter ? "…" : ""` strings interpolated into the body of
+  // flexSyncAdoptionEntities / flexToggleAllAdoptionEntities — which are defined inside
+  // `if(!window.flexToggleAdoptionEntity){…}`, i.e. guard-once singletons shared by every
+  // slide in the deck. So the FIRST Adoption Trend slide rendered baked ITS value of those
+  // per-slide flags in for every later slide: a deck whose first such slide had no cohort
+  // emitted the guards as "" and then silently mis-handled a later slide that did have one
+  // (Show all would switch on lines the quarter view had deliberately hidden). Same
+  // shared-singleton class as Flask's old sort-arrow bug. Unconditional is also a no-op where
+  // there's no cohort: nothing ever sets `atQtrHidden` unless the quarter handler runs.
   if (hasQuarter) {
     const alignAdoption = (s: QuarterAddsSeries): (number | null)[] => {
       const byMonth = new Map(s.monthly.map((m) => [m.month, m]));
@@ -2721,13 +2773,14 @@ export function renderAdoptionTrend(input: {
     // the restored full state and save that full state.
     quarterJs = `
 window.atQuarterData=window.atQuarterData||{};window.atQuarterData[${slideId}]=${jsonPayload};
+${SLIDE_DOM_HELPERS_JS}
 if(!window.flexToggleAdoptionQuarter){
 window.flexToggleAdoptionQuarter=function(slideId,qi,btn){
   var qd=window.atQuarterData[slideId];if(!qd||!qd.quarters||!qd.quarters[qi])return;
-  var chart=Chart.getChart('chart'+slideId);if(!chart)return;
+  var slide=window.flexSlideOf(btn,slideId);
+  var chart=Chart.getChart('chart'+window.flexSlideNum(btn,slideId));if(!chart)return;
   var ds=chart.data.datasets,j,i,b,s,estIdx=-1,bmIdx=-1;
   for(j=0;j<ds.length;j++){if(ds[j].label==='Established Properties')estIdx=j;else if(ds[j].label===qd.peerLabel||ds[j].label===qd.peerLabelQ)bmIdx=j;}
-  var slide=document.getElementById('slide-'+slideId);
   var title=slide?slide.querySelector('.slide-title'):null;
   var note=document.getElementById('peerOutlierNote'+slideId);
   var bmLeg=document.getElementById('bmLegend'+slideId),bmLbl=bmLeg?bmLeg.children[1]:null;
@@ -2921,10 +2974,12 @@ window.flexToggleAdoptionQuarter=function(slideId,qi,btn){
     // template whitespace is untouched when this stays "". Entity pills go through the shared
     // entitySwitchButton (short name + entity-color left accent) - the standard the Exec
     // Summary and Residents/Units switchers now follow too.
+    // `this` is passed so the handler can derive its slide from the DOM rather than trusting
+    // the interpolated id, which the renumbering pass can't rewrite - see SLIDE_DOM_HELPERS_JS.
     const btns = entityLabels.map((lbl, i) =>
-      entitySwitchButton(i, _e(lbl), `flexToggleAdoptionEntity(${slideId},${i})`, ` id="atEntBtn${slideId}-${i}"`)
+      entitySwitchButton(i, _e(lbl), `flexToggleAdoptionEntity(${slideId},${i},this)`, ` id="atEntBtn${slideId}-${i}"`)
     ).join("");
-    const showAllBtn = `<button class="spark-ctrl-btn ctl-btn" id="atShowAll${slideId}" onclick="flexToggleAllAdoptionEntities(${slideId})">Show all</button>`;
+    const showAllBtn = `<button class="spark-ctrl-btn ctl-btn" id="atShowAll${slideId}" onclick="flexToggleAllAdoptionEntities(${slideId},this)">Show all</button>`;
     // Quarter-adds buttons (most recent first) at the END of the row, past a thin divider ("" when absent).
     entityToggleHtml = `\n    <div class="spark-ctrl presenter-control" style="flex-wrap:wrap;margin:-4px 0 8px;">${showAllBtn}${btns}${quarterBtnHtml ? QUARTER_BTN_DIVIDER + quarterBtnHtml : ""}</div>`;
     // basePts = the exact point set yMin/yMax above were computed from (combined + established +
@@ -2938,12 +2993,14 @@ window.flexToggleAdoptionQuarter=function(slideId,qi,btn){
     const jsonPayload = JSON.stringify(payload).replace(/</g, "\\u003c");
     entityToggleJs = `
 window.atEntityData=window.atEntityData||{};window.atEntityData[${slideId}]=${jsonPayload};
+${SLIDE_DOM_HELPERS_JS}
 if(!window.flexToggleAdoptionEntity){
 window.flexSyncAdoptionEntities=function(slideId,chart){
   var d=window.atEntityData[slideId]||{basePts:[]};
   var ds=chart.data.datasets, pts=d.basePts.slice(), on=0, total=0;
   for(var j=0;j<ds.length;j++){
-    if(ds[j].atEntity==null)continue;${qtrSkip}
+    if(ds[j].atEntity==null)continue;
+    if(ds[j].atQtrHidden)continue;
     total++;
     var vis=chart.isDatasetVisible(j);
     var b=document.getElementById('atEntBtn'+slideId+'-'+ds[j].atEntity);if(b)b.classList.toggle('is-active',vis);
@@ -2955,17 +3012,17 @@ window.flexSyncAdoptionEntities=function(slideId,chart){
   chart.options.scales.y.suggestedMax=pts.length?Math.floor(Math.max.apply(null,pts))+2:15;
   chart.update();
 };
-window.flexToggleAdoptionEntity=function(slideId,i){
-  var chart=Chart.getChart('chart'+slideId);if(!chart)return;
+window.flexToggleAdoptionEntity=function(slideId,i,btn){
+  var chart=Chart.getChart('chart'+window.flexSlideNum(btn,slideId));if(!chart)return;
   var ds=chart.data.datasets;
   for(var j=0;j<ds.length;j++){if(ds[j].atEntity===i){chart.setDatasetVisibility(j,!chart.isDatasetVisible(j));break;}}
   window.flexSyncAdoptionEntities(slideId,chart);
 };
-window.flexToggleAllAdoptionEntities=function(slideId){
-  var chart=Chart.getChart('chart'+slideId);if(!chart)return;
+window.flexToggleAllAdoptionEntities=function(slideId,btn){
+  var chart=Chart.getChart('chart'+window.flexSlideNum(btn,slideId));if(!chart)return;
   var ds=chart.data.datasets, allOn=true, j;
-  for(j=0;j<ds.length;j++){if(ds[j].atEntity!=null${qtrNotHidden}&&!chart.isDatasetVisible(j)){allOn=false;break;}}
-  for(j=0;j<ds.length;j++){if(ds[j].atEntity!=null${qtrNotHidden})chart.setDatasetVisibility(j,!allOn);}
+  for(j=0;j<ds.length;j++){if(ds[j].atEntity!=null&&!ds[j].atQtrHidden&&!chart.isDatasetVisible(j)){allOn=false;break;}}
+  for(j=0;j<ds.length;j++){if(ds[j].atEntity!=null&&!ds[j].atQtrHidden)chart.setDatasetVisibility(j,!allOn);}
   window.flexSyncAdoptionEntities(slideId,chart);
 };
 }`;
@@ -3765,6 +3822,7 @@ export function renderResidentsUnitsCombo(input: ResidentsUnitsInput & QuarterAd
     // top of the restored full state.
     quarterJs = `
 window.ruQuarterData=window.ruQuarterData||{};window.ruQuarterData[${slideId}]=${jsonPayload};
+${SLIDE_DOM_HELPERS_JS}
 if(!window.flexToggleRucQuarter){
 window.flexRucApply=function(chart,d){
   var ds=chart.data.datasets;ds[0].data=d.residents;ds[1].data=d.units;ds[2].data=d.residents;ds[3].data=d.rent;
@@ -3777,9 +3835,9 @@ window.flexRucApply=function(chart,d){
 window.flexRucQuarterTitle=function(q,view){return (view>0&&q.entityHeaders&&q.entityHeaders[view-1])?q.entityHeaders[view-1]:q.header;};
 window.flexToggleRucQuarter=function(slideId,qi,btn){
   var qd=window.ruQuarterData[slideId];if(!qd||!qd.quarters||!qd.quarters[qi])return;
-  var chart=Chart.getChart('chart'+slideId);if(!chart)return;
+  var chart=Chart.getChart('chart'+window.flexSlideNum(btn,slideId));if(!chart)return;
   var ds=chart.data.datasets,v;
-  var slide=document.getElementById('slide-'+slideId);var title=slide?slide.querySelector('.slide-title'):null;
+  var slide=window.flexSlideOf(btn,slideId);var title=slide?slide.querySelector('.slide-title'):null;
   var row=btn.parentElement;var views=row?row.querySelectorAll('button[onclick^="flexSwitchResUnitsView"]'):[];
   var wasOn=!!qd.on,prevQi=qd.qi;
   if(wasOn){
@@ -3847,6 +3905,7 @@ window.flexToggleRucQuarter=function(slideId,qi,btn){
     // quarter buttons' own .is-active alone (they share the row, as does the divider span).
     // Without one, this is the pre-existing string verbatim.
     entitySwitcherJs = `window.ruEntityData=window.ruEntityData||{};window.ruEntityData[${slideId}]=${jsonPayload};`
+      + SLIDE_DOM_HELPERS_JS
       + `if(!window.flexSwitchResUnitsView){window.flexSwitchResUnitsView=function(slideId,idx,btn){`
       + (hasQuarter
         ? `var qd=window.ruQuarterData?window.ruQuarterData[slideId]:null;var qq=(qd&&qd.on)?qd.quarters[qd.qi]:null;var d=qq?(idx===0?qq.combined:qq.entities[idx]):(window.ruEntityData[slideId]||[])[idx];if(!d)return;if(qd)qd.view=idx;`
@@ -3854,7 +3913,7 @@ window.flexToggleRucQuarter=function(slideId,qi,btn){
       + `var chart=window['comboChart'+slideId];if(!chart)return;`
       + (hasQuarter
         ? `window.flexRucApply(chart,d);`
-          + `if(qq){var sl=document.getElementById('slide-'+slideId);var t=sl?sl.querySelector('.slide-title'):null;if(t)t.textContent=window.flexRucQuarterTitle(qq,idx);}`
+          + `if(qq){var sl=window.flexSlideOf(btn,slideId);var t=sl?sl.querySelector('.slide-title'):null;if(t)t.textContent=window.flexRucQuarterTitle(qq,idx);}`
         : `chart.data.datasets[0].data=d.residents;chart.data.datasets[1].data=d.units;`
           + `chart.data.datasets[2].data=d.residents;chart.data.datasets[3].data=d.rent;`
           + `var rMin=Math.min.apply(null,d.rent),rMax=Math.max.apply(null,d.rent);`
