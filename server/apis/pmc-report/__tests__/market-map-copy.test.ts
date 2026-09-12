@@ -208,4 +208,42 @@ test("fmtPct100 / fmtPctNum honour decimals without trimming real zeros", () => 
   assert.equal(fmtPctNum(0, 0), "0");
 });
 
+// -- Pruned-footprint footnote (Flask excluded_states, slides_prospect.py:3465) ------------
+// summarizeStatesFromProperties' `excluded` list had ZERO read sites in Clark, so the 5%
+// threshold silently shrank the peer-matching footprint under a map that read as national.
+
+test("excluded states render an exact, magnitude-bearing footnote", () => {
+  const html = renderMarketMap(1, MARKET, { [DMA]: summary(similarity({})) }, PROSPECT_PINS,
+    NETWORK_PINS, 900, null, NO_USAGE, null, [
+      { state: "AZ", share: 0.031, units: 180, property_count: 2 },
+      { state: "NV", share: 0.042, units: 240, property_count: 1 },
+    ]).html;
+  // Ordered by share desc - the biggest prune a rep will be asked about comes first.
+  const iNv = html.indexOf("NV (4.2%"), iAz = html.indexOf("AZ (3.1%");
+  assert.ok(iNv > 0 && iAz > iNv, "pruned states must be ordered by share, largest first");
+  assert.ok(html.includes("excludes 2 states below 5% of your units"));
+  assert.ok(html.includes("NV (4.2%, 1 property, 240 units)"));
+  assert.ok(html.includes("AZ (3.1%, 2 properties, 180 units)"));
+  // Totals are the sum of the parts, so the footnote itself adds up.
+  assert.ok(html.includes("totalling 3 properties and 420 units of your uploaded list"));
+  assert.ok(html.includes("Those properties are still on the maps in their own markets."));
+});
+
+test("one pruned state is singular, and a unitless prune omits the units clause", () => {
+  const html = renderMarketMap(1, MARKET, { [DMA]: summary(similarity({})) }, PROSPECT_PINS,
+    NETWORK_PINS, 900, null, NO_USAGE, null,
+    [{ state: "AZ", share: 0.02, units: 0, property_count: 1 }]).html;
+  assert.ok(html.includes("excludes 1 state below 5% of your units"));
+  assert.ok(html.includes("AZ (2%, 1 property)")); // fmtPct drops the bare trailing .0
+  assert.ok(html.includes("totalling 1 property of your uploaded list"));
+  assert.ok(!html.includes("and 0 units"));
+});
+
+test("no pruned states renders no footnote at all (unchanged default)", () => {
+  const bare = renderMarketMap(1, MARKET, { [DMA]: summary(similarity({})) }, PROSPECT_PINS, NETWORK_PINS, 900, null, NO_USAGE).html;
+  const empty = renderMarketMap(1, MARKET, { [DMA]: summary(similarity({})) }, PROSPECT_PINS, NETWORK_PINS, 900, null, NO_USAGE, null, []).html;
+  for (const html of [bare, empty]) assert.ok(!html.includes("below 5% of your units"));
+  assert.equal(bare, empty, "omitting the arg must be byte-identical to passing []");
+});
+
 console.log(`\n${passed} tests passed`);

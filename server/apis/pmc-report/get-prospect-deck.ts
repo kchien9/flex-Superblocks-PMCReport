@@ -31,7 +31,7 @@ import {
   marketAnnualGuarantee,
   filterProspectPinsForMarket,
   filterPinsNearAny,
-  deriveStatesFromProperties,
+  summarizeStatesFromProperties,
   matchProspectOonUsage,
   sumMatchedUsageForMarket,
   type GeocodedProperty,
@@ -271,6 +271,10 @@ export default api({
     let geocodedProperties: GeocodedProperty[] = [];
     let marketMapWarning: string | null = null;
     let derivedStates: string[] = [];
+    // The states the 5%-of-units threshold pruned out of the footprint used for peer
+    // matching. Previously computed and discarded, so the prune was invisible on the deck -
+    // now handed to renderMarketMap, which states it as a footnote (Flask excluded_states).
+    let excludedStates: { state: string; share: number; units: number; property_count: number }[] = [];
     let geocodeDiagnostic: GeocodeDiagnostic | null = null;
     let uploadDiagnostic: UploadParseDiagnostic | null = null;
 
@@ -300,7 +304,9 @@ export default api({
           geocodedProperties = await assignMarkets(withGeo, ctx.integrations.snowflake_sso);
 
           // Derive states for peer matching (uses csvState fallback via GeocodedProperty.state)
-          derivedStates = deriveStatesFromProperties(geocodedProperties);
+          const stateSummary = summarizeStatesFromProperties(geocodedProperties);
+          derivedStates = stateSummary.included;
+          excludedStates = stateSummary.excluded;
 
           // Surface a warning if geocoding failed but zip fallback saved the day
           if (geocodeFailCount > 0 && geocodeFailCount === addresses.length) {
@@ -1079,7 +1085,8 @@ export default api({
           slideId++;
           const mapSlide = renderMarketMap(
             slideId, market, summaryByDma, prospectPins,
-            filteredNetworkPins.slice(0, 300), market.prospect_units, avgRentInput, marketOonUsage
+            filteredNetworkPins.slice(0, 300), market.prospect_units, avgRentInput, marketOonUsage,
+            null, excludedStates
           );
           if (mapSlide.html) slides.push({ key: "market_map", html: mapSlide.html, js: mapSlide.js });
         }

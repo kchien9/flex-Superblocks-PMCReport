@@ -108,7 +108,15 @@ export function renderMarketMap(
   prospectUnits: number,
   avgRentInput: number | null,
   oonUsage: MatchedUsageTotals,
-  subjectEmbed: SubjectEmbed | null = null
+  subjectEmbed: SubjectEmbed | null = null,
+  // summarizeStatesFromProperties' own `excluded` list - the states the 5%-of-units threshold
+  // pruned out of the prospect's footprint for peer matching. Clark computed that list and then
+  // read it NOWHERE, so the prune was invisible on the deck: a rep presenting a "national"
+  // market map had no way to see that a real state of the prospect's had been dropped from the
+  // comparison set underneath it. Rendered below as a footnote naming each pruned state with
+  // its share, property count and units. Empty/omitted renders nothing, as before.
+  // Mirrors Flask's excluded_states (slides_prospect.py:3465).
+  excludedStates: { state: string; share: number; units: number; property_count: number }[] = []
 ): SlideResult {
   const totals = marketTotals(market, summaryByDma);
   const {
@@ -297,6 +305,29 @@ export function renderMarketMap(
       </div>`
     : "";
 
+  // Pruned-footprint footnote. Exact magnitudes, not just a count - a rep gets asked "what
+  // about our Arizona properties?". Ordered by share desc, largest prune first.
+  const excl = (excludedStates ?? []).filter((e) => e != null).slice().sort((a, b) => (b.share || 0) - (a.share || 0));
+  let excludedHtml = "";
+  if (excl.length > 0) {
+    const nProps = excl.reduce((a, e) => a + (e.property_count || 0), 0);
+    const nUnits = Math.trunc(excl.reduce((a, e) => a + (e.units || 0), 0));
+    const parts = excl.map((e) => {
+      const n = e.property_count || 0;
+      const u = Math.trunc(e.units || 0);
+      const bit = `${n.toLocaleString()} propert${n === 1 ? "y" : "ies"}${u ? `, ${u.toLocaleString()} units` : ""}`;
+      return `${escapeHtml(String(e.state ?? "?"))} (${fmtPct(e.share || 0)}, ${bit})`;
+    }).join(", ");
+    excludedHtml =
+      `<div style="font-size:11px;color:#a09cb0;margin-top:14px;line-height:1.5;">` +
+      `Footprint used for these comparisons excludes ${excl.length} ` +
+      `state${excl.length !== 1 ? "s" : ""} below 5% of your units ` +
+      `&mdash; ${parts} &mdash; totalling ${nProps.toLocaleString()} ` +
+      `propert${nProps === 1 ? "y" : "ies"}` +
+      `${nUnits ? ` and ${nUnits.toLocaleString()} units` : ""} of your uploaded list. ` +
+      `Those properties are still on the maps in their own markets.</div>`;
+  }
+
   // Legend
   const prospectLabel = prospectPins.length === 1 ? "Your 1 property" : `Your ${prospectPins.length.toLocaleString()} properties`;
 
@@ -324,6 +355,7 @@ export function renderMarketMap(
       ${headerHtml}
       ${bulletsHtml}
       ${guaranteeFootnoteHtml}
+      ${excludedHtml}
     </div>
   </div>`;
 
