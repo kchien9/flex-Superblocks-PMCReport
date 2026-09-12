@@ -17,7 +17,7 @@
 import assert from "node:assert/strict";
 
 import { renderSinceInception } from "../slide-renderers.js";
-import type { MonthlyTotal, SinceInceptionInput, YearlyData } from "../slide-renderers.js";
+import type { MonthlyTotal, SinceInceptionEntityYearly, SinceInceptionInput, YearlyData } from "../slide-renderers.js";
 
 let passed = 0;
 function test(name: string, fn: () => void): void {
@@ -89,7 +89,7 @@ test("partnerSince inside the earliest year keeps that whole year", () => {
 });
 
 test("per-entity stacked segments are floored too, and the palette index is preserved", () => {
-  const entityYearlyData = [
+  const entityYearlyData: SinceInceptionEntityYearly[] = [
     // Entity 0 has ONLY pre-partnership history (the transferred-in prior owner's rows).
     { pmcName: "Prior Owner", totalRentByYear: { 2019: 1_000_000, 2020: 2_000_000 }, ytdRentByYear: { 2019: 500_000 } },
     { pmcName: "Bridge PM", totalRentByYear: { 2024: 6_000_000, 2025: 7_000_000 }, ytdRentByYear: { 2025: 3_500_000 } },
@@ -108,7 +108,7 @@ test("per-entity stacked segments are floored too, and the palette index is pres
 });
 
 test("if the floor leaves only one entity with data, the slide stops stacking", () => {
-  const entityYearlyData = [
+  const entityYearlyData: SinceInceptionEntityYearly[] = [
     { pmcName: "Prior Owner", totalRentByYear: { 2019: 1_000_000 }, ytdRentByYear: {} },
     { pmcName: "Bridge PM", totalRentByYear: { 2024: 6_000_000, 2025: 7_000_000 }, ytdRentByYear: { 2025: 3_500_000 } },
   ];
