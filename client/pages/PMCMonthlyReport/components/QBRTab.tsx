@@ -339,8 +339,8 @@ export function QBRTab({ pmcNames, pmcPresets, pmcLoading, generating, onGenerat
           selectedSlides={selectedSlides}
           onSlidesChange={setSelectedSlides}
           infoItems={[
-            { label: "Adoption Ceiling", text: "May not appear even when selected — auto-skipped if partner already markets to residents, peer set is too thin (<5), or they already beat P75." },
-            { label: "Delinquency", text: "off by default; framing is being reconsidered for partner sensitivity." },
+            { label: "Any slide", text: "May not appear even when selected — each one auto-skips when it has nothing credible to show (e.g. By State needs 3+ states, Portfolio Comparison needs 2+ combined PMCs)." },
+            { label: "Delinquency", text: "framing is being reconsidered for partner sensitivity." },
           ]}
         />
       </StaticSection>

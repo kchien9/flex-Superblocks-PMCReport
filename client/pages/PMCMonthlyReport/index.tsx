@@ -87,6 +87,11 @@ export default function PMCMonthlyReportPage() {
       show_engagement_portfolio_avg: state.show_engagement_portfolio_avg,
       show_engagement_peer_median: state.show_engagement_peer_median,
       imported_slides: state.imported_slides,
+      // The Slides picker's selection. Same bug class as terminology / hide_d2c below (Kevin's
+      // catch): QBRTab built all 22 checkboxes and kept them in form state, but nothing ever
+      // forwarded them, so the server rendered its full fixed order no matter what a rep
+      // ticked. Mirrors expansion_slides in handleExpansionGenerate.
+      qbr_slides: [...state.selected_slides],
       // Same bug class as the terminology fix above (Kevin's catch): "Include D2C Marketing
       // Language" existed on QBRFormState and updated on toggle, but was never included here -
       // the control did nothing, badges always showed regardless of the toggle.

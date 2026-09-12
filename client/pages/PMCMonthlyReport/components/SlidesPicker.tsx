@@ -11,31 +11,40 @@ export interface SlideOption {
   description: string;
 }
 
-/** All selectable QBR slides in SLIDE_ORDER (matches ALL_SLIDES in source). All default on —
- * this used to preselect only 11 of 21, silently leaving 10 real slides out of every report
- * unless someone happened to notice and hand-pick them. Auto-skip logic inside each renderer
- * (e.g. Adoption Ceiling's peer-set/already-beats-P75 checks) still applies regardless of
- * selection, so turning a slide on here doesn't force it to render if it has nothing to show. */
+/** Every selectable QBR slide — and ONLY slides the server actually renders.
+ *
+ * All default on. This used to preselect only 11 of 21, silently leaving 10 real slides out of
+ * every report unless someone happened to notice and hand-pick them. Auto-skip logic inside
+ * each renderer still applies regardless of selection, so turning a slide on here doesn't
+ * force it to render if it has nothing to show.
+ *
+ * Trimmed 2026-09-11 to exactly the ids `get-pmc-monthly-report.ts`'s QBR `slidesOrdered`
+ * gates on. Four chips were removed because nothing on the server renders them, so ticking or
+ * un-ticking them did nothing at all:
+ *   - integration_gap (Flask 23) / adoption_ceiling (Flask 45) / d2c_split (Flask 49):
+ *     deliberately NOT being ported (Kevin's call) — the Platinum and NIRO decks make those
+ *     arguments instead.
+ *   - properties_offline (Flask 53): unimplemented; disabled properties surface inside the
+ *     Adoption Opportunities slide instead.
+ * Anything added to this list must be gated in that array (and its `extraJs` twin), or a rep
+ * gets back a checkbox that silently does nothing again. QBR Close and imported (PDF) slides
+ * are intentionally absent: both always render, so neither is selectable. */
 export const QBR_SLIDES: SlideOption[] = [
   { id: "cover", label: "Cover", defaultOn: true, description: "Title slide with partner name and dates." },
   { id: "exec_summary", label: "Exec Summary", defaultOn: true, description: "The big numbers at a glance." },
   { id: "peer_benchmarks", label: "Peer Benchmarks", defaultOn: true, description: "How they stack up against similar PMCs." },
   { id: "properties_celebrating", label: "Properties Worth Celebrating", defaultOn: true, description: "Your best-performing properties." },
   { id: "adoption_opportunities", label: "Adoption Opportunities", defaultOn: true, description: "Properties with the most room to grow." },
-  { id: "properties_offline", label: "Properties Offline", defaultOn: true, description: "Properties that left the network this period." },
   { id: "residents_units", label: "Residents, Units & Rent", defaultOn: true, description: "Residents, units, and rent collected over time." },
   { id: "adoption_trend", label: "Adoption Trend", defaultOn: true, description: "Adoption rate over time, vs. similar PMCs." },
   { id: "portfolio_comparison", label: "Portfolio Comparison", defaultOn: true, description: "Every subsidiary side by side - units, residents, adoption, this month's rent, all-time rent and bills, plus each one's adoption trend sparkline over the lookback window. Only shows up when you're combining multiple PMCs into one report." },
-  { id: "d2c_split", label: "D2C Marketing Split", defaultOn: true, description: "How many properties have Flex marketing turned on." },
   { id: "high_rent", label: "Flex For Everyone", defaultOn: true, description: "Proof that even higher-rent residents use Flex." },
   { id: "by_state", label: "By State", defaultOn: true, description: "Adoption broken out by state." },
   { id: "retention", label: "Retention", defaultOn: true, description: "How many residents keep coming back." },
   { id: "delinquency", label: "Delinquency", defaultOn: true, description: "Rent Flex covered when residents fell behind." },
   { id: "rethinking_rent", label: "Rethinking Rent", defaultOn: true, description: "Outside research backing up why flexible rent works." },
   { id: "portfolio_projection", label: "Portfolio Projection", defaultOn: true, description: "What hitting a realistic adoption goal is worth in dollars." },
-  { id: "integration_gap", label: "Integration Gap", defaultOn: true, description: "Where the tech setup is holding adoption back." },
   { id: "customer_experience", label: "Customer Experience", defaultOn: true, description: "What residents are saying, straight from support." },
-  { id: "adoption_ceiling", label: "Adoption Ceiling", defaultOn: true, description: "How close they are to their realistic max." },
   { id: "cohort_overview", label: "Cohort Overview", defaultOn: true, description: "How each group of properties has grown since going live." },
   { id: "full_property_table", label: "Full Property Table", defaultOn: true, description: "Every property, every number. Reference only." },
   { id: "since_inception", label: "Bills & Rent Since Inception", defaultOn: true, description: "The whole relationship, year by year." },

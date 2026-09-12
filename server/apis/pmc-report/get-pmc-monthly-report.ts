@@ -268,6 +268,23 @@ const DEACTIVATION_LABELS: Record<string, string> = {
 
 // --- Helpers ---
 
+/**
+ * The QBR slide picker's gate: given the `qbr_slides` input (SlidesPicker's QBR_SLIDES ids),
+ * returns a predicate saying whether a given slide key was selected.
+ *
+ * An omitted or EMPTY list means "no filter" — render everything. That's deliberate and
+ * matches both Flask (`body.get("slides", list(SLIDE_RENDERERS.keys()))`) and this file's own
+ * `expansion_slides` handling: every caller that predates this field sends nothing, and they
+ * must keep getting the whole deck rather than an empty one.
+ *
+ * Exported so the picker contract is directly testable — see
+ * __tests__/qbr-slide-picker.test.ts.
+ */
+export function qbrSlidePicked(qbrSlides: string[] | undefined): (key: string) => boolean {
+  const selected = qbrSlides && qbrSlides.length > 0 ? new Set(qbrSlides) : null;
+  return (key: string) => selected === null || selected.has(key);
+}
+
 function htmlEscape(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
 }
@@ -2569,6 +2586,15 @@ export default api({
 
     total_portfolio_units: z.number().int().optional().default(0),
     expansion_slides: z.array(z.string()).optional(),
+    // QBR slide picker (SlidesPicker's QBR_SLIDES ids). Kevin's catch: QBRTab built all the
+    // checkboxes and wrote them into form state, index.tsx never forwarded them, and this
+    // schema had no field for them at all - so every QBR deck rendered the full fixed order no
+    // matter what a rep ticked (the same silent-no-op bug class as the terminology / hide_d2c
+    // fixes above). Mirrors Flask's `slides` body key -> `slide_ids` gate over ALL_SLIDES, and
+    // expansion_slides' own semantics right above: omitted / empty array means "no filter"
+    // (render everything), NOT "render nothing". Plain optional, not .default([]) - same
+    // call-site-required zod gotcha as every other optional field here.
+    qbr_slides: z.array(z.string()).optional(),
     presenting_mode: z.boolean().optional().default(false),
     comparison_months: z.number().int().optional().default(1),
     // Exec tile sparklines / period-comparison pills, independent manual overrides (Kevin's
@@ -2673,7 +2699,7 @@ export default api({
     }).optional(),
   }),
 
-  async run(ctx, { pmc_name, additional_pmc_names, report_name, lookback_months, deck_mode, adoption_target, testimonials, total_portfolio_units, expansion_slides, presenting_mode, comparison_months, sparklines, period_comparison, terminology, hidden_kpi_tiles, show_adoption_portfolio_avg, show_adoption_peer_median, show_engagement_observed, show_engagement_portfolio_avg, show_engagement_peer_median, imported_slides, hide_d2c, checkin_date, total_units, avg_rent, properties }) {
+  async run(ctx, { pmc_name, additional_pmc_names, report_name, lookback_months, deck_mode, adoption_target, testimonials, total_portfolio_units, expansion_slides, qbr_slides, presenting_mode, comparison_months, sparklines, period_comparison, terminology, hidden_kpi_tiles, show_adoption_portfolio_avg, show_adoption_peer_median, show_engagement_observed, show_engagement_portfolio_avg, show_engagement_peer_median, imported_slides, hide_d2c, checkin_date, total_units, avg_rent, properties }) {
     // Single resolved list every downstream query/array-builder reads from - pmc_name first
     // (the "primary" entity), then whatever else is being combined in. Replaces the old
     // old `hasSecondPmc ? [pmc_name, secondPmcName] : [pmc_name]` ternary pattern repeated at 4 call sites below.
@@ -7430,30 +7456,47 @@ export default api({
     //   → Adoption Trend(6) → Projection(21) → Cohort(14) → Geographic(12)
     //   → Flex For Everyone(39) → Retention(15) → Delinquency(26) → MetroSight(50)
     //   → Peer Benchmarks(44) → Celebrate(58) → Opportunities(34) → Testimonials(57) → QBR Close(25) → Appendix
+    // ─── QBR slide picker gate (qbr_slides) ──────────────────────────────────
+    // The rep's picker selection, applied to BOTH the html and the per-slide extra JS below.
+    // Gating the JS too is load-bearing, not tidiness: extraJs is renumbered against
+    // slideIdMap, which only carries the ids of slides that actually rendered, so an excluded
+    // slide's leftover `initSlideN` / `chartN` references would keep their original number and
+    // could collide with whatever slide ends up renumbered ONTO that number.
+    //
+    // Keys are SlidesPicker's QBR_SLIDES ids; every id in that list appears exactly once here,
+    // and the list carries no id that isn't here (so a rep can never tick a box that does
+    // nothing). The two exceptions, both matching Flask:
+    //   - imported slides (PDF upload) have no picker id and always render, at their anchor.
+    //   - QBR Close is force-appended regardless of selection, exactly like Expansion's
+    //     expansion_case_close (Flask app.py's own `if 46 not in active_exp_order` override).
+    const pickedSlide = qbrSlidePicked(qbr_slides);
+    const keepHtml = (key: string, html: string) => (pickedSlide(key) ? html : "");
+    const keepJs = (key: string, js: string | undefined) => (pickedSlide(key) ? js : "");
+
     const slidesOrdered = [
       ...startImportsHtml,                      // Imported (PDF upload) - anchor "start"
-      renderCover(kpis),                        // Flask slide 1  - Cover
-      execResult.html,                          // Flask slide 13 - Executive Summary
-      sinceInceptionResult.html,                // Flask slide 56 - Bills & Rent Since Inception
-      residentsUnitsResult.html,                // Flask slide 54 - Residents + Units + Rent
-      adoptionTrendHtml,                        // Flask slide 6  - Adoption Trend
+      keepHtml("cover", renderCover(kpis)),                        // Flask slide 1  - Cover
+      keepHtml("exec_summary", execResult.html),                   // Flask slide 13 - Executive Summary
+      keepHtml("since_inception", sinceInceptionResult.html),      // Flask slide 56 - Bills & Rent Since Inception
+      keepHtml("residents_units", residentsUnitsResult.html),      // Flask slide 54 - Residents + Units + Rent
+      keepHtml("adoption_trend", adoptionTrendHtml),               // Flask slide 6  - Adoption Trend
       // New (Task 13) - Portfolio Comparison (2+ entities only). Kevin's placement: after
       // Residents Paying + Adoption Trend, before Geographic Breakdown - the table reads as the
       // per-entity breakdown of the two combined trend charts it follows.
-      portfolioComparisonResult.html,
-      projResult.html,                          // Flask slide 21 - Portfolio Projection
-      cohortHtml,                               // Flask slide 14 - Cohort Analysis
-      stateResult.html,                         // Flask slide 12 - Geographic Breakdown
-      flexForEveryoneResult.html,               // Flask slide 39 - Flex Is For Everyone
-      retentionResult.html,                     // Flask slide 15 - Resident Retention
-      delinquencyResult.html,                   // Flask slide 26 - Delinquency Protection
-      metrosightFinal.html,                     // Flask slide 50 - MetroSight Evidence
-      peerBenchResult.html,                     // Flask slide 44 - Multi-metric Peer Benchmarks
-      celebrateResult.html,                     // Flask slide 58 - Properties Worth Celebrating
-      opportunitiesResult.html,                 // Flask slide 34 - Adoption Opportunities
-      testimonialResult.html,                   // Flask slide 57 - Customer Experience / Testimonials
+      keepHtml("portfolio_comparison", portfolioComparisonResult.html),
+      keepHtml("portfolio_projection", projResult.html),           // Flask slide 21 - Portfolio Projection
+      keepHtml("cohort_overview", cohortHtml),                     // Flask slide 14 - Cohort Analysis
+      keepHtml("by_state", stateResult.html),                      // Flask slide 12 - Geographic Breakdown
+      keepHtml("high_rent", flexForEveryoneResult.html),           // Flask slide 39 - Flex Is For Everyone
+      keepHtml("retention", retentionResult.html),                 // Flask slide 15 - Resident Retention
+      keepHtml("delinquency", delinquencyResult.html),             // Flask slide 26 - Delinquency Protection
+      keepHtml("rethinking_rent", metrosightFinal.html),           // Flask slide 50 - MetroSight Evidence
+      keepHtml("peer_benchmarks", peerBenchResult.html),           // Flask slide 44 - Multi-metric Peer Benchmarks
+      keepHtml("properties_celebrating", celebrateResult.html),    // Flask slide 58 - Properties Worth Celebrating
+      keepHtml("adoption_opportunities", opportunitiesResult.html),// Flask slide 34 - Adoption Opportunities
+      keepHtml("customer_experience", testimonialResult.html),     // Flask slide 57 - Customer Experience / Testimonials
       qbrFinal.html,                            // Flask slide 25 - QBR Close (always last real slide)
-      propertyTableHtml,                        // Appendix - Full Property Table
+      keepHtml("full_property_table", propertyTableHtml),          // Appendix - Full Property Table
       ...endImportsHtml,                        // Imported (PDF upload) - anchor "end" (default)
     ].filter(Boolean) as string[];
 
@@ -7480,13 +7523,21 @@ export default api({
     }).join("\n");
 
     // Collect extra JS from slide renderers and apply same renumbering
+    // Same qbr_slides gate as slidesOrdered above - see keepJs's declaration for why an
+    // excluded slide's JS must not survive into the renumbering pass.
     let extraJs = [
-      execResult.js, sinceInceptionResult.js, portfolioComparisonResult.js, residentsUnitsResult.js,
-      adoptionTrendResult.js, projResult.js, stateResult.js,
-      peerBenchResult.js,
-      flexForEveryoneResult.js,
-      delinquencyResult.js, retentionResult.js,
-      testimonialResult.js,
+      keepJs("exec_summary", execResult.js),
+      keepJs("since_inception", sinceInceptionResult.js),
+      keepJs("portfolio_comparison", portfolioComparisonResult.js),
+      keepJs("residents_units", residentsUnitsResult.js),
+      keepJs("adoption_trend", adoptionTrendResult.js),
+      keepJs("portfolio_projection", projResult.js),
+      keepJs("by_state", stateResult.js),
+      keepJs("peer_benchmarks", peerBenchResult.js),
+      keepJs("high_rent", flexForEveryoneResult.js),
+      keepJs("delinquency", delinquencyResult.js),
+      keepJs("retention", retentionResult.js),
+      keepJs("customer_experience", testimonialResult.js),
       qbrFinal.js,
     ].filter(Boolean).join("\n");
     // Apply the same slideId renumbering to JS init functions
@@ -7574,7 +7625,22 @@ export default api({
       // Same Flask slide-ID sequence the deck itself was just assembled from (see the
       // `slidesOrdered` array above) — notes are keyed by the real Flask slide ID, not by
       // this deck's own renumbered document position.
-      const qbrSlideIdSequence = [1, 13, 56, 54, 6, 21, 14, 12, 39, 15, 26, 50, 44, 58, 34, 57, 47];
+      // Filtered by the same qbr_slides picker gate the deck itself was gated on, so the notes
+      // can't script a slide that isn't in the deck (Flask passes its own rendered_slide_ids
+      // here for exactly this reason). An id with no picker key mapped to it - the close slide -
+      // is always rendered, so it's always scripted.
+      const QBR_NOTE_SLIDE_KEYS: Record<number, string> = {
+        1: "cover", 13: "exec_summary", 56: "since_inception", 54: "residents_units",
+        6: "adoption_trend", 21: "portfolio_projection", 14: "cohort_overview", 12: "by_state",
+        39: "high_rent", 15: "retention", 26: "delinquency", 50: "rethinking_rent",
+        44: "peer_benchmarks", 58: "properties_celebrating", 34: "adoption_opportunities",
+        57: "customer_experience",
+      };
+      const qbrSlideIdSequence = [1, 13, 56, 54, 6, 21, 14, 12, 39, 15, 26, 50, 44, 58, 34, 57, 47]
+        .filter((sid) => {
+          const key = QBR_NOTE_SLIDE_KEYS[sid];
+          return key === undefined || pickedSlide(key);
+        });
       // Property Reference tab (Kevin's catch) — same propertySnapshot every property-level
       // slide in this deck already reads from. preMeetingFlags stays unwired (a separate,
       // pre-existing gap, not touched here).
