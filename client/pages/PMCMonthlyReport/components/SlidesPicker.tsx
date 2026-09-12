@@ -52,6 +52,11 @@ export const QBR_SLIDES: SlideOption[] = [
 
 export const NEW_LOGO_SLIDES: SlideOption[] = [
   { id: "cover", label: "Cover", defaultOn: true, description: "Title slide for the prospect." },
+  // "embed" is a conditionally-rendered slide (only when the prospect has live out-of-network
+  // embed usage), but it still needs a chip: prospect_slides is sent as the full checked list,
+  // so any key missing from this array is unconditionally filtered out server-side even when its
+  // data exists. Same audit-fix Flask made to its own PROSPECT_SLIDES chip list.
+  { id: "embed", label: "Embed Activation", defaultOn: true, description: "Their own residents already using Flex through their PMS - only appears when there is real embed usage to show." },
   { id: "peer_perf", label: "Peer Proof / Benchmarks", defaultOn: true, description: "Real numbers from similar PMCs already using Flex, kept anonymous." },
   { id: "peer_retention", label: "Peer Retention", defaultOn: true, description: "Proof that once residents try Flex, they stick with it." },
   { id: "high_rent", label: "Flex For Everyone", defaultOn: true, description: "Same \"works for every rent level\" slide." },

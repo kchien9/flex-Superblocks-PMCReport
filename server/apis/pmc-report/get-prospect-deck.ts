@@ -46,6 +46,7 @@ import {
 import { renderMarketMap } from "./market-map-slides.js";
 import { buildProspectSpeakerNotesHtml } from "./speaker-notes.js";
 import { pullPeerBenchmark, pullPeerPlatinumRate } from "./peer-benchmark.js";
+import { pullEmbedUsage } from "./embed.js";
 
 const SNOWFLAKE_ID = "d38ee94a-4e93-46f5-ab44-c65a99b3aea5";
 // "Census Geocoder" REST API integration, configured in Superblocks' Integrations panel.
@@ -615,12 +616,28 @@ export default api({
       benchmarks.platinum_scope = plat.platinum_scope;
     };
 
+    // 3f. The prospect's OWN out-of-network embed usage - the data behind the Embed Activation
+    // slide (Flask app.py:3533, `embed_data = pull_embed_usage(pms, prospect_name)`). The single
+    // strongest slide in an embed prospect's deck, because it is their own residents rather than
+    // peer inference; without this pull Clark imported renderEmbedActivation and never called it.
+    // Same swallow-and-continue contract Flask has (`except -> embed_data = {}`): a failed or
+    // empty pull leaves embedUsage null and the slide is simply absent.
+    let embedUsage: EmbedData | null = null;
+    const pullEmbedUsageForDeck = async () => {
+      try {
+        embedUsage = await pullEmbedUsage(ctx.integrations.snowflake_sso, pms, prospect_name);
+      } catch (e: any) {
+        ctx.log.warn("pull_embed_usage failed", { error: e.message });
+      }
+    };
+
     await Promise.all([
       pullPeerMonthlyMetrics(),
       pullPeerCohort(),
       pullRampCurve(),
       pullPeerAdoptionTrend(),
       applyPlatinumRate(),
+      pullEmbedUsageForDeck(),
     ]);
 
     // ─── Step 4: Build pool for renderers ────────────────────────────────────
@@ -684,6 +701,17 @@ export default api({
     slideId++;
     const cover = renderProspectCover(slideId, prospect, benchmarks);
     if (cover.html) slides.push({ key: "cover", html: cover.html, js: cover.js });
+
+    // Embed Activation - immediately after the cover, before Peer Proof, exactly where Flask
+    // inserts it (app.py:3548-3553: `named_slides = [("cover", ...)]`, then `if embed_data:
+    // named_slides.append(("embed", render_embed_activation, ...))`, then `("peer_perf", ...)`).
+    // The slideId is consumed ONLY when the slide renders, so a non-embed prospect's deck keeps
+    // the exact numbering it had before this block existed.
+    if (embedUsage) {
+      slideId++;
+      const embedSlide = renderEmbedActivation(slideId, embedUsage, prospect, benchmarks);
+      if (embedSlide.html) slides.push({ key: "embed", html: embedSlide.html, js: embedSlide.js });
+    }
 
     // Peer Performance (Peer Proof Table)
     slideId++;

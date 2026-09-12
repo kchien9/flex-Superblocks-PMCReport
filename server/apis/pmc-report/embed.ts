@@ -1098,5 +1098,176 @@ export function embedProjectionRange(
   };
 }
 
+// ─── Prospect-deck embed usage (Flask prospect.pull_embed_usage) ───────────────
+
+/** Flask `pull_embed_usage`'s return shape (slides-prospect.ts `EmbedData`). */
+export interface EmbedUsage {
+  pmc_name: string;
+  unit_count: number;
+  property_count: number;
+  charged_users: number;
+  bills_paid: number;
+  msp: string;
+  bp_month: string;
+}
+
+/**
+ * Free-text PMS label -> one of the four MSPs that have embed tables, or null (Flask
+ * `pull_embed_usage`'s opening substring ladder: yardi / appfolio / mri / zego, anything else
+ * returns `{}` and the slide is skipped).
+ */
+export function embedMspFromPms(pms: string | null | undefined): string | null {
+  const p = String(pms ?? "").toLowerCase();
+  for (const msp of ["yardi", "appfolio", "mri", "zego"]) {
+    if (p.includes(msp)) return msp;
+  }
+  return null;
+}
+
+// Fuzzy name search per MSP, used to turn a free-text prospect name into the canonical source
+// name `resolveEmbedPmc` matches exactly. Flask searched the MSP list with `ILIKE '%name%'` and
+// took a single LIMIT 1 row; this keeps the ILIKE but returns up to CANDIDATE_LIMIT candidates
+// (exact match first, then largest) so the caller can fall through when the top one resolves to
+// no live properties - strictly more forgiving than Flask's one shot.
+//
+// Every list read is anchored to the LIST'S OWN latest snapshot, `month = (SELECT MAX(month) FROM
+// <list>)`, NOT the reporting month. The MSP snapshots lag the stats table by 2-4 months (live
+// 2026-09-11: Yardi 2026-07-01, MRI / Zego 2026-05-01 vs stats 2026-09-01), so Flask's
+// `month = %(bp_month)s` matches zero rows and silently drops its own embed slide for every
+// Yardi / MRI / Zego prospect. Same anchoring RESOLVE_SQL / LIST_SQL above already use.
+// Bind order per branch: [namePattern, pickedName] (appfolio takes the pattern twice).
+const CANDIDATE_LIMIT = 3;
+
+const USAGE_NAME_SQL: Record<string, string> = {
+  yardi: `
+        SELECT client_name AS NAME, SUM(TO_DECIMAL(unit_count)) AS UNITS
+        FROM ${LIST_YARDI}
+        WHERE client_name ILIKE ? AND month = (SELECT MAX(month) FROM ${LIST_YARDI})
+        GROUP BY client_name
+        ORDER BY (UPPER(client_name) = UPPER(?)) DESC, UNITS DESC NULLS LAST
+        LIMIT ${CANDIDATE_LIMIT}
+    `,
+  appfolio: `
+        SELECT company_name AS NAME, COUNT(*) AS UNITS
+        FROM ${TOGGLE}
+        WHERE (company_name ILIKE ? OR vhost ILIKE ?)
+          AND company_name IS NOT NULL
+          AND NOT (company_name ILIKE 'PRACTICE SITE%' OR vhost ILIKE 'PRACTICE SITE%')
+        GROUP BY company_name
+        ORDER BY (UPPER(company_name) = UPPER(?)) DESC, UNITS DESC NULLS LAST
+        LIMIT ${CANDIDATE_LIMIT}
+    `,
+  mri: `
+        SELECT TRIM(pmc_name) AS NAME, SUM(unit_count) AS UNITS
+        FROM ${LIST_MRI}
+        WHERE pmc_name ILIKE ? AND month = (SELECT MAX(month) FROM ${LIST_MRI})
+        GROUP BY TRIM(pmc_name)
+        ORDER BY (UPPER(TRIM(pmc_name)) = UPPER(?)) DESC, UNITS DESC NULLS LAST
+        LIMIT ${CANDIDATE_LIMIT}
+    `,
+  zego: `
+        SELECT pmc_company AS NAME, SUM(unit_count) AS UNITS
+        FROM ${LIST_ZEGO}
+        WHERE pmc_company ILIKE ? AND month = (SELECT MAX(month) FROM ${LIST_ZEGO})
+        GROUP BY pmc_company
+        ORDER BY (UPPER(pmc_company) = UPPER(?)) DESC, UNITS DESC NULLS LAST
+        LIMIT ${CANDIDATE_LIMIT}
+    `,
+};
+
+const UsageNameSchema = z.object({
+  NAME: z.string().nullable(),
+  UNITS: z.coerce.number().nullable(),
+});
+
+/**
+ * Canonical source-name candidates for a free-text prospect name, best first. Exported for the
+ * unit tests (and because the Embed deck's picker may want the same fuzzy step later).
+ */
+export async function findEmbedNameCandidates(
+  sf: SnowflakeClient,
+  msp: string,
+  prospectName: string,
+): Promise<string[]> {
+  const sql = USAGE_NAME_SQL[msp];
+  if (!sql) return [];
+  const picked = String(prospectName ?? "").trim();
+  if (!picked) return [];
+  const pattern = `%${picked}%`;
+  const binds = msp === "appfolio" ? [pattern, pattern, picked] : [pattern, picked];
+  const rows = await sf.query(sql, UsageNameSchema, binds, { label: `Find embed PMC name (${msp})` });
+  const out: string[] = [];
+  for (const r of rows) {
+    const nm = String(r.NAME ?? "").trim();
+    if (nm && isRealPmcName(nm) && !out.includes(nm)) out.push(nm);
+  }
+  return out;
+}
+
+/**
+ * A prospect's CURRENT out-of-network embed usage — the data behind the prospect deck's Embed
+ * Activation slide (`renderEmbedActivation`). Clark port of Flask `prospect.pull_embed_usage`
+ * (generator/prospect.py:1215).
+ *
+ * Rather than re-copying Flask's four per-MSP mega-queries, this composes the three pieces
+ * `embed.ts` already owns and unit-tests:
+ *   1. `findEmbedNameCandidates` — Flask's ILIKE name search, anchored at the list's own
+ *      MAX(month) (the lag fix Flask still lacks; see the comment above USAGE_NAME_SQL).
+ *   2. `resolveEmbedPmc` — the canonical name -> live dim property rows + the MSP list's
+ *      SUM(unit_count) (`list_unit_total`). One source of truth for the join paths.
+ *   3. `pullEmbedMonthly` — per-(month, property) CHARGED_USERS / BILLS_PAID from the stats
+ *      table, summed at the reporting month.
+ *
+ * `property_count` is therefore always the count of LIVE dim properties (what Flask's AppFolio
+ * and Zego branches already did) rather than raw MSP-list rows (what its Yardi and MRI branches
+ * did) — the same figure the Embed deck prints, and the honest one for "Properties live".
+ *
+ * Returns null — so the caller renders no slide — when the PMS has no embed tables, the name
+ * matches nothing, or no live embed properties resolve. A resolved PMC with zero billed
+ * residents this month still returns null: a slide headed "Flex is already working at your
+ * properties" with 0 residents is worse than no slide (Flask's `if embed_data:` gate had the
+ * same practical effect only by accident, via the LEFT JOIN COALESCE'ing to 0).
+ */
+export async function pullEmbedUsage(
+  sf: SnowflakeClient,
+  pms: string | null | undefined,
+  prospectName: string,
+  today: Date = new Date(),
+): Promise<EmbedUsage | null> {
+  const msp = embedMspFromPms(pms);
+  if (!msp) return null;
+
+  const bpMonth = latestEmbedBpMonth(today);
+  const candidates = await findEmbedNameCandidates(sf, msp, prospectName);
+  if (candidates.length === 0) return null;
+
+  for (const name of candidates) {
+    const resolved = await resolveEmbedPmc(sf, name);
+    if (!resolved || resolved.properties.length === 0) continue;
+    const ids = resolved.properties.map((p) => p.property_public_id);
+    // lookback 2 (not 1) so the reporting month is safely inside the window whatever day of the
+    // month this runs on; the filter below picks the one month the slide states.
+    const monthly = await pullEmbedMonthly(sf, ids, 2, today);
+    let chargedUsers = 0;
+    let billsPaid = 0;
+    for (const m of monthly) {
+      if (m.bp_month !== bpMonth) continue;
+      chargedUsers += m.charged_users;
+      billsPaid += m.bills_paid;
+    }
+    if (chargedUsers <= 0 && billsPaid <= 0) continue;
+    return {
+      pmc_name: resolved.pmc_display_name,
+      unit_count: resolved.list_unit_total ?? 0,
+      property_count: resolved.properties.length,
+      charged_users: chargedUsers,
+      bills_paid: billsPaid,
+      msp: resolved.msp,
+      bp_month: bpMonth,
+    };
+  }
+  return null;
+}
+
 /** Exported for the orchestration's month arithmetic (reporting month labels). */
 export { shiftMonth as _shiftMonth };
