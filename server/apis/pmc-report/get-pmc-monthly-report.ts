@@ -2652,13 +2652,6 @@ export default api({
     // (breaks QBR/new_logo callers that don't pass it).
     sparklines: z.enum(["auto", "include", "exclude"]).optional(),
     period_comparison: z.enum(["auto", "include", "exclude"]).optional(),
-    // Growth trend slides (residents_units / adoption_trend / cohort_overview), Expansion only.
-    // Flask's own growth_slides body key (app.py:2303-2304): "auto" = SMB accounts only,
-    // "include"/"exclude" force the segment veto either way. Clark had hardcoded the veto open
-    // (showGrowthSlides = true), which is the main cause of a 6-slide swing between the Flask
-    // and Clark Expansion decks for the same PMC. Plain optional, resolved to "auto" at the
-    // usage site - same call-site-required .default() gotcha as sparklines above.
-    growth_slides: z.enum(["auto", "include", "exclude"]).optional(),
     // Resident/household terminology, every deck mode (Kevin's ask, 2026-08-19). Plain
     // optional like sparklines above — same .default() call-site-required gotcha.
     terminology: z.enum(["resident", "household"]).optional(),
@@ -2752,7 +2745,7 @@ export default api({
     }).optional(),
   }),
 
-  async run(ctx, { pmc_name, additional_pmc_names, report_name, lookback_months, deck_mode, adoption_target, testimonials, total_portfolio_units, expansion_slides, qbr_slides, presenting_mode, comparison_months, sparklines, period_comparison, growth_slides, terminology, hidden_kpi_tiles, show_adoption_portfolio_avg, show_adoption_peer_median, show_engagement_observed, show_engagement_portfolio_avg, show_engagement_peer_median, imported_slides, hide_d2c, checkin_date, total_units, avg_rent, properties }) {
+  async run(ctx, { pmc_name, additional_pmc_names, report_name, lookback_months, deck_mode, adoption_target, testimonials, total_portfolio_units, expansion_slides, qbr_slides, presenting_mode, comparison_months, sparklines, period_comparison, terminology, hidden_kpi_tiles, show_adoption_portfolio_avg, show_adoption_peer_median, show_engagement_observed, show_engagement_portfolio_avg, show_engagement_peer_median, imported_slides, hide_d2c, checkin_date, total_units, avg_rent, properties }) {
     // Single resolved list every downstream query/array-builder reads from - pmc_name first
     // (the "primary" entity), then whatever else is being combined in. Replaces the old
     // old `hasSecondPmc ? [pmc_name, secondPmcName] : [pmc_name]` ternary pattern repeated at 4 call sites below.
@@ -4895,34 +4888,17 @@ export default api({
     // read sites still resolve correctly; hubspotSegment had no remaining reader, removed.
     const segmentNarAvg: number | null = null;
 
-    // SMB detection (Flask app.py:2294-2298). MODE of STATIC_PARENT_TEAM_NAME_OPPORTUNITY
-    // (aliased SEGMENT_TEAM), not the first row, so one property can't flip a combined-PMC
-    // report's classification. Ties break on the team name so the result is deterministic,
-    // matching pandas' sorted .mode().iloc[0].
-    const isSmb = (() => {
-      const counts = new Map<string, number>();
-      for (const r of inNetwork) {
-        if (r.SEGMENT_TEAM) counts.set(r.SEGMENT_TEAM, (counts.get(r.SEGMENT_TEAM) ?? 0) + 1);
-      }
-      if (counts.size === 0) return false;
-      const [top] = [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
-      return top[0] === "SMB Manager";
-    })();
-
-    // Growth trend slides (residents_units / adoption_trend / cohort_overview) - Expansion only.
-    // Restores Flask's growth_slides contract (app.py:2303-2304), which Clark had replaced with
-    // a hardcoded `true`: "auto" (the default) shows them only for SMB accounts, "include" /
-    // "exclude" let an AE force the segment veto either way. The SMB-only default is the point -
-    // SMB accounts have no dedicated AM/PSM running QBRs, so the Expansion deck is the only
-    // place their growth story gets told; a managed account's growth story belongs in its QBR,
-    // and repeating it here is what produced the 6-slide swing between the two Expansion decks.
-    // An AE who wants it anyway sets Growth trend slides -> Include in the Expansion tab.
-    //
-    // Also read by renderExecSummary's showSparklines below: the condensed exec-tile sparklines
-    // are suppressed exactly when the full charts are rendering, so the two stay coupled in
-    // both directions. QBR never reads this (its showSparklines branch is a hardcoded false).
-    const growthMode = growth_slides ?? "auto";
-    const showGrowthSlides = growthMode === "include" || (growthMode === "auto" && isSmb);
+    // Growth trend slides (residents_units/adoption_trend/cohort_overview) - unconditional for
+    // Expansion now (Kevin's ask: bring in the inception slide, residents paying, and adoption
+    // slide for every Expansion deck, not just SMB). Previously gated on is_smb (mode of
+    // STATIC_PARENT_TEAM_NAME_OPPORTUNITY, aliased SEGMENT_TEAM) with a growth_slides
+    // "auto"/"include"/"exclude" override; both the segment gate and the override input are
+    // gone, so this is now a flat `true`. Kept as a named const (not inlined) since it's still
+    // read by renderExecSummary's showSparklines below, to suppress the exec-tile sparklines
+    // now that the full residents_units chart always renders on Expansion. QBR never reads this
+    // at all (its own showSparklines branch is a hardcoded `false`), so this change is
+    // Expansion-only.
+    const showGrowthSlides = true;
 
     // Sparklines / period-comparison manual overrides (Kevin's ask) - null means "auto" (no
     // override; the existing derived default applies unchanged). Derived here, same reasoning
@@ -6042,9 +6018,9 @@ export default api({
       // Flask: QBR always show_sparklines=False (hardcoded, unconditional).
       // Expansion: show_sparklines = not (_show_growth and 54 in active_exp_order).
       // Since slide 54 = "residents_units", suppress sparklines on expansion when the growth
-      // trend slides are showing (showGrowthSlides - SMB-only by default, overridable via
-      // growth_slides) and that slide specifically is included (it renders the same data as a
-      // full chart). With the veto on, the condensed sparklines come back in their place.
+      // trend slides are showing (always, now that showGrowthSlides is unconditionally true
+      // for Expansion) and that slide specifically is included (it renders the same data as a
+      // full chart).
       // An empty expansion_slides array means "no filter" (all slides included) per the
       // activeOrder build below — match that semantics here rather than treating [] as "off".
       // sparklinesOverride is Expansion-only (Kevin's call: QBR stays exactly as-is - it never
@@ -6557,11 +6533,13 @@ export default api({
         "expansion_case_close",
       ];
 
-      // Flask's growth-trend veto (slides 54 / 6 / 14), restored - see showGrowthSlides above
-      // for the contract. Deliberately NOT reported in expSkippedSlides: that list is for
-      // slides a renderer refused for thin data ("we tried and there wasn't enough to show"),
-      // and a segment/override veto is a different, deliberate answer.
-      const GROWTH_TREND_SLIDES = new Set(["residents_units", "adoption_trend", "cohort_overview"]);
+      // Growth trend slides (residents_units/adoption_trend/cohort_overview) used to be gated
+      // here by showGrowthSlides (a segment-based veto) via a GROWTH_TREND_SLIDES set-membership
+      // check. showGrowthSlides is now unconditionally `true` for Expansion (see its
+      // declaration above), so that gate could never fire and is removed - these 3 slides are
+      // ordinary members of EXPANSION_SLIDE_ORDER now, subject only to the same expansion_slides
+      // selection filter as everything else below. showGrowthSlides itself stays, since it still
+      // feeds the exec-tile sparkline suppression above.
 
       // Build active order: filter by expansion_slides if provided, then
       // force-append expansion_case_close at the end regardless of selection
@@ -6572,7 +6550,6 @@ export default api({
       const activeOrder = EXPANSION_SLIDE_ORDER.filter((sid) => {
         if (sid === "expansion_case_close") return false; // always appended below
         if (sid === "testimonials" && testimonials.length === 0) return false;
-        if (!showGrowthSlides && GROWTH_TREND_SLIDES.has(sid)) return false;
         return slideFilter === null || slideFilter.has(sid);
       });
       activeOrder.push("expansion_case_close"); // always last

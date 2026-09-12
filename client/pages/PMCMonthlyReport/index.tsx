@@ -164,9 +164,6 @@ export default function PMCMonthlyReportPage() {
       comparison_months: state.comparison_months ?? 1,
       sparklines: state.sparklines as "auto" | "include" | "exclude",
       period_comparison: state.period_comparison as "auto" | "include" | "exclude",
-      // Flask's growth_slides veto over Residents/Units, Adoption Trend and Cohort Overview -
-      // "auto" is SMB-only, which is Flask's own default.
-      growth_slides: state.growth_slides as "auto" | "include" | "exclude",
       terminology: state.terminology as "resident" | "household",
       imported_slides: state.imported_slides,
     };
