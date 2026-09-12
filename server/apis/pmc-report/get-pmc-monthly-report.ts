@@ -409,7 +409,12 @@ function rentWindowLabel(opts: { partnerSince: string | null; lookbackMonths: nu
 
 // --- HTML Slide Renderers ---
 
-function renderCover(kpis: { pmcName: string; reportingMonth: string; partnerSince: string | null; propertyCount: number; firstMonth: string | null; isExpansion?: boolean }): string {
+/**
+ * Exported ONLY so __tests__/expansion-cover.test.ts can assert the Expansion cover's
+ * "Total Portfolio" tile (same reason renderExecSummary below is exported). The deck builds this
+ * slide through the in-module call sites, as it always has.
+ */
+export function renderCover(kpis: { pmcName: string; reportingMonth: string; partnerSince: string | null; propertyCount: number; firstMonth: string | null; isExpansion?: boolean; totalUnits?: number; totalPortfolioUnits?: number }): string {
   // Deck label / props label vary by mode (Flask render_cover, generator/slides.py:53-67).
   // Only branching on is_expansion here (Kevin's catch). Flask's old third branch, is_pitch_mode
   // ("Flex Integration Opportunity" / OON-specific props label), is gone: Pitch Mode was deleted
@@ -417,19 +422,27 @@ function renderCover(kpis: { pmcName: string; reportingMonth: string; partnerSin
   // slides-embed.ts) and never reaches this function.
   const deckLabel = kpis.isExpansion ? "Portfolio Expansion Opportunity" : "Flex Performance Review";
   const propsLabel = kpis.isExpansion ? "Properties on Flex" : "Properties Active";
-  // Third tile ("Reporting Period", firstMonth–reportingMonth range) dropped entirely for
-  // Expansion (Kevin's ask - tried relabeling it "Track Record" first, didn't like that either;
-  // this isn't a review, so nothing needs to fill that slot). QBR keeps its own third tile
-  // exactly as before - Flask's render_cover, generator/slides.py:91-92.
+  // Third tile: "Reporting Period" (firstMonth–reportingMonth) on QBR, "Total Portfolio"
+  // ("1,232 of 11,000 units") on Expansion - Flask's render_cover, generator/slides.py:310-311.
+  // The Expansion framing was previously dropped entirely (Kevin's ask was only to kill the
+  // "Reporting Period"/"Track Record" label on a deck that isn't a review), which left the
+  // Expansion cover with no portfolio size on it at all - the one number the whole deck argues
+  // about. Restored as Flask has it, and it self-gates: no resolved total, no tile.
   // "BP month(s)" suffix (Kevin's ask) so the period reads as Flex bill-pay months, not calendar
   // months (the Exec Summary subtitle itself is the one label that prints the bare month - see
   // the reporting-month labelling note near the top of this file).
   const periodRange = kpis.firstMonth
     ? `${monthLabel(kpis.firstMonth)} – ${monthLabel(kpis.reportingMonth)} BP months`
     : `${monthLabel(kpis.reportingMonth)} BP month`;
-  const periodTileHtml = kpis.isExpansion ? "" : `
-      <div><div style="font-size:10px;letter-spacing:0.14em;text-transform:uppercase;color:rgba(255,255,255,0.28);margin-bottom:6px;font-family:'ABCDiatype',sans-serif;">Reporting Period</div>
-           <div style="font-size:16px;font-weight:600;color:rgba(255,255,255,0.85);font-family:'ABCDiatype',sans-serif;">${periodRange}</div></div>`;
+  const totalPortfolioUnits = kpis.totalPortfolioUnits ?? 0;
+  const thirdTile = kpis.isExpansion
+    ? (totalPortfolioUnits > 0
+        ? { label: "Total Portfolio", value: `${(kpis.totalUnits ?? 0).toLocaleString("en-US")} of ${totalPortfolioUnits.toLocaleString("en-US")} units` }
+        : null)
+    : { label: "Reporting Period", value: periodRange };
+  const periodTileHtml = thirdTile === null ? "" : `
+      <div><div style="font-size:10px;letter-spacing:0.14em;text-transform:uppercase;color:rgba(255,255,255,0.28);margin-bottom:6px;font-family:'ABCDiatype',sans-serif;">${thirdTile.label}</div>
+           <div style="font-size:16px;font-weight:600;color:rgba(255,255,255,0.85);font-family:'ABCDiatype',sans-serif;">${thirdTile.value}</div></div>`;
   return `
   <div class="slide active" id="slide-1" style="background:#2C194D;justify-content:center;align-items:flex-start;">
     <div style="font-size:11px;letter-spacing:0.18em;text-transform:uppercase;color:#DDC6F9;margin-bottom:20px;font-weight:600;font-family:'ABCDiatype',sans-serif;">${deckLabel}</div>
@@ -6714,7 +6727,17 @@ export default api({
             // Opportunity", no third Reporting Period tile, etc.) was built but never actually
             // wired at this call site - `kpis` alone never carried isExpansion:true anywhere,
             // so this always rendered the QBR-labeled cover even inside the Expansion branch.
-            const coverHtml = renderCover({ ...kpis, isExpansion: true });
+            // totalUnits / totalPortfolioUnits feed the "Total Portfolio" tile ("1,232 of
+            // 11,000 units"). expTotalPortfolio is the SAME value every other Expansion slide
+            // reads - caller-supplied when given, otherwise resolved from
+            // PRODUCTION.SALES.DIM_SALES_ACCOUNTS through resolveSubjectPortfolioUnits (one row
+            // per PMC_ID, never a blind SUM across joined account rows).
+            const coverHtml = renderCover({
+              ...kpis,
+              isExpansion: true,
+              totalUnits: enrolledUnits,
+              totalPortfolioUnits: expTotalPortfolio,
+            });
             if (coverHtml) {
               expSlideHtmls.push(coverHtml);
               expRenderedKeys.push(sid);
