@@ -1491,11 +1491,12 @@ function renderStateBreakdown(input: StateBreakdownInput): { html: string; js: s
     estRate?: number;
     props: number;
     units: number;
+    bills?: number;
     extraHtml?: string;
     onclick?: string;
     scale?: number;
   }): string {
-    const { stateLabel, rate, avg, estRate = 0, props, units, extraHtml = "", onclick = "", scale } = opts;
+    const { stateLabel, rate, avg, estRate = 0, props, units, bills = 0, extraHtml = "", onclick = "", scale } = opts;
     const isNested = scale != null;
     const localScale = scale ?? barScale;
     const barPct = (rate / localScale) * 100;
@@ -1530,8 +1531,11 @@ function renderStateBreakdown(input: StateBreakdownInput): { html: string; js: s
       ? "font-size:11px;font-weight:500;color:#524e5b;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;"
       : "font-size:13px;font-weight:600;color:#1d1d1d;";
 
+    // The paying-residents column exists so the drill-down accounts for the adoption rate's own
+    // NUMERATOR, not just its denominator - without it, a state's region rows could silently
+    // leave real paying residents on no row at all (see unmappedByState). Mirrors Flask d537142.
     return `
-      <div style="display:grid;grid-template-columns:${labelColWidth} 1fr 62px 68px 68px;gap:10px;align-items:center;margin-bottom:${rowMargin};">
+      <div style="display:grid;grid-template-columns:${labelColWidth} 1fr 62px 68px 68px 74px;gap:10px;align-items:center;margin-bottom:${rowMargin};">
         <div ${onclick} style="${labelStyle}${cursorStyle}" title="${htmlEscape(stateLabel)}">${htmlEscape(stateLabel)}${chevron}</div>
         <div style="position:relative;background:#eceaf2;border-radius:4px;height:10px;overflow:visible;">
           ${barsHtml}
@@ -1540,6 +1544,7 @@ function renderStateBreakdown(input: StateBreakdownInput): { html: string; js: s
         <div style="font-size:13px;font-weight:700;color:${labelColor};text-align:right;">${fmtPct(rate)}</div>
         <div style="font-size:11px;color:#a09cb0;text-align:right;">${props} props</div>
         <div style="font-size:11px;color:#a09cb0;text-align:right;">${units.toLocaleString()} units</div>
+        <div style="font-size:11px;color:#a09cb0;text-align:right;">${bills.toLocaleString()} paying</div>
       </div>${extraHtml}`;
   }
 
@@ -1592,6 +1597,7 @@ function renderStateBreakdown(input: StateBreakdownInput): { html: string; js: s
             avg: portfolioNar,
             props: rr.properties,
             units: rr.totalUnits,
+            bills: rr.billsPaid,
             scale: localScale,
           });
         }
@@ -1623,6 +1629,7 @@ function renderStateBreakdown(input: StateBreakdownInput): { html: string; js: s
       estRate: s.estRate ?? 0,
       props: s.properties,
       units: s.totalUnits,
+      bills: s.billsPaid,
       extraHtml: regionBlock,
       onclick,
     });
