@@ -163,6 +163,24 @@ test("state bars and region rows both print the paying-residents measure", () =>
   assert.ok(html.includes("add up to that state's own props, units and paying residents"));
 });
 
+test("SUM(state bars) equals the portfolio property count the Exec Summary tile uses", () => {
+  // get-pmc-monthly-report builds that tile as
+  //   new Set(latestRows.map(r => r.PROPERTY_PUBLIC_ID || r.PROPERTY_NAME)).size
+  // A property lives in exactly one state, so the state bars must sum to it exactly. Two CA
+  // rows share a name here: a name-based count on either side would break the tie.
+  const rows: StateBreakdownInput["latestRows"] = [
+    snapRow("p1", "The Enclave", "CA", 100, 20), snapRow("p2", "The Enclave", "CA", 50, 5),
+    snapRow("p3", "The Enclave", "WA", 120, 36), snapRow("p4", "E", "WA", 80, 24),
+    snapRow("p5", "F", "TX", 90, 9),
+  ];
+  const execTile = new Set(rows.map((r) => r.PROPERTY_PUBLIC_ID || r.PROPERTY_NAME)).size;
+  const blocks = parseStateBlocks(render([], rows));
+  assert.equal(blocks.reduce((a, b) => a + b.props, 0), execTile);
+  assert.equal(execTile, 5);
+  assert.equal(blocks.reduce((a, b) => a + b.units, 0), 440);
+  assert.equal(blocks.reduce((a, b) => a + b.bills, 0), 94);
+});
+
 test("no region detail at all leaves the state bars alone and prints no footnote", () => {
   const html = render([]);
   assert.ok(!html.includes("without a mapped market"));

@@ -4886,7 +4886,14 @@ export default api({
       // Fallback to rollout-date aggregate on Salesforce query failure
     }
 
-    const uniqueProperties = new Set(latestRows.map((r) => r.PROPERTY_NAME));
+    // PROPERTY_PUBLIC_ID, not PROPERTY_NAME. This is the portfolio property count behind the
+    // Exec Summary tile and seven other slides, and the By State bars now sum to a public-id
+    // count - so a name-based tile here would contradict the very slide it has to reconcile
+    // with. property_name is NOT unique: two genuinely distinct properties can carry the same
+    // name, and the name-based count silently collapsed them into one. Same `|| PROPERTY_NAME`
+    // fallback renderStateBreakdown uses, row for row, so the two tie by construction. Flask's
+    // compute_pmc_kpis has always counted property_public_id (generator/data.py:634).
+    const uniqueProperties = new Set(latestRows.map((r) => r.PROPERTY_PUBLIC_ID || r.PROPERTY_NAME));
 
     const kpis = {
       pmcName: pmcDisplayName,
