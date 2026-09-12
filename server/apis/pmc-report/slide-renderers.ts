@@ -1395,15 +1395,24 @@ export function renderPropertiesWorthCelebrating(input: {
   // observed adoption rate, highest to lowest (Kevin's ask, mirroring the identical fix on
   // Flask's render_properties_worth_celebrating) - a straight adoption-rate sort BEFORE the
   // slice would have changed which 12 properties get selected, not just their order.
-  const celebrationDf = established
+  const celebrationPool = established
     .filter((p) => p.adoptionRate > portfolioAvgNar)
     .sort((a, b) => {
       const aImpact = a.units * (a.adoptionRate - portfolioAvgNar);
       const bImpact = b.units * (b.adoptionRate - portfolioAvgNar);
       return bImpact - aImpact;
-    })
+    });
+  const celebrationDf = celebrationPool
     .slice(0, 12)
     .sort((a, b) => b.adoptionRate - a.adoptionRate);
+  // The table is a deliberate top-12 of a pool that is usually much larger, under a title
+  // ("Properties worth celebrating") that names no subset - so without this the slide reads as
+  // if these twelve were every property beating the average. Mirrors Flask's own _more_note
+  // (generator/slides.py:6665), same copy and same placement under the table.
+  const notShown = Math.max(0, celebrationPool.length - celebrationDf.length);
+  const moreNoteHtml = notShown > 0
+    ? `<div style="font-size:9px;color:#9ca3af;margin-top:5px;font-style:italic;">+ ${notShown.toLocaleString()} more not shown</div>`
+    : "";
 
   if (celebrationDf.length === 0) return { html: "", js: "" };
 
@@ -1460,6 +1469,7 @@ export function renderPropertiesWorthCelebrating(input: {
         ${theadHtml}
         <tbody>${rowsHtml}</tbody>
       </table>
+      ${moreNoteHtml}
       <div style="font-size:9px;color:#9ca3af;margin-top:5px;font-style:italic;">Portfolio avg = this portfolio's own average · Peer median = comparable properties network-wide (same state/size/rent) · Engagement = new bill connections per 100 units</div>
     </div>`;
 

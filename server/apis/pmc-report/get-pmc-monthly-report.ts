@@ -994,7 +994,7 @@ export function renderExecSummary(d: ExecSummaryInput): { html: string; js: stri
 
 
 
-interface CohortRow {
+export interface CohortRow {
   rolloutMonth: string;
   propertyCount: number;
   totalUnits: number;
@@ -1004,14 +1004,15 @@ interface CohortRow {
   cohortNar: number;
 }
 
-interface CohortOverviewInput {
+export interface CohortOverviewInput {
   cohorts: CohortRow[];
   reportingMonth: string;
   cohortMonthly: Map<string, (number | null)[]>; // rolloutMonth → array of monthly NAR values
   presentingMode?: boolean;
 }
 
-function renderCohortAnalysis(input: CohortOverviewInput & { slideId: number }): string {
+/** Exported for the subset-remainder tests (__tests__/subset-remainders.test.ts). */
+export function renderCohortAnalysis(input: CohortOverviewInput & { slideId: number }): string {
   const { cohorts, reportingMonth, cohortMonthly, slideId, presentingMode } = input;
   const totalCohorts = cohorts.length;
   const MAX_COHORTS = presentingMode ? Infinity : 6;
@@ -1089,9 +1090,30 @@ function renderCohortAnalysis(input: CohortOverviewInput & { slideId: number }):
         </div>`;
   }
 
+  // The remainder has to carry its MAGNITUDE, not just its count. The totals bar directly
+  // below is portfolio-wide (every cohort), so a rep reading "62 older cohorts not shown"
+  // against a 403,415-unit total had no way to know the six rows above account for 54,830 of
+  // them (13.6%) - Asset Living, live. A count alone reads like a footnote about tidiness; the
+  // units/properties/residents behind it are what someone actually asks about. Mirrors Flask's
+  // overflow_note (generator/slides.py:3222).
+  const sumBy = (rows: CohortRow[], f: (c: CohortRow) => number) => rows.reduce((s, c) => s + f(c), 0);
+  const shownIds = new Set(display.map((c) => c.rolloutMonth));
+  const hidden = cohorts.filter((c) => !shownIds.has(c.rolloutMonth));
+  const shownUnits = sumBy(display, (c) => c.totalUnits);
+  const allUnits = sumBy(cohorts, (c) => c.totalUnits);
+  const shownShare = allUnits > 0 ? (shownUnits / allUnits) * 100 : 0;
   const overflowNote = hiddenCohorts > 0
     ? `<div style="font-size:10px;color:#a09cb0;margin-top:6px;flex-shrink:0;">` +
-      `Showing the ${MAX_COHORTS} most recent cohorts &middot; ${hiddenCohorts} older cohort${hiddenCohorts !== 1 ? "s" : ""} not shown - see full cohort table in the workbook</div>`
+      `The ${display.length} cohort${display.length !== 1 ? "s" : ""} above are ` +
+      `${shownUnits.toLocaleString()} of ${allUnits.toLocaleString()} units ` +
+      `(${shownShare.toFixed(1)}% of the portfolio) and ` +
+      `${sumBy(display, (c) => c.currentResidents).toLocaleString()} of ` +
+      `${sumBy(cohorts, (c) => c.currentResidents).toLocaleString()} paying residents &middot; the other ` +
+      `${hiddenCohorts} cohort${hiddenCohorts !== 1 ? "s" : ""} ` +
+      `(${sumBy(hidden, (c) => c.propertyCount).toLocaleString()} properties, ` +
+      `${sumBy(hidden, (c) => c.totalUnits).toLocaleString()} units, ` +
+      `${sumBy(hidden, (c) => c.currentResidents).toLocaleString()} paying) are in the workbook's full ` +
+      `cohort table. Totals below cover every cohort.</div>`
     : "";
 
   // Totals bar
