@@ -246,7 +246,12 @@ export function displayRegion(region: string, state: string, dmaHome: GeoLookups
 /** Post-query step for the regionDetail query over its (state, DMA, ZIP5) rows: rules A/B move
  * the region bucket, everything is re-aggregated to one row per (PROPERTY_STATE, PROPERTY_REGION)
  * and rule C sets DISPLAY_REGION. Output keeps the query's ORDER BY contract (state asc,
- * BILLS_PAID desc). State totals live elsewhere (latestRows) and are untouched. */
+ * BILLS_PAID desc). State totals live elsewhere (latestRows) and are untouched.
+ *
+ * PROPERTIES is SUMMED across the (state, DMA, ZIP5) rows below, so the query feeding this MUST
+ * count DISTINCT PROPERTY_PUBLIC_ID per row, never PROPERTY_NAME - two distinct same-named
+ * properties in different ZIPs would otherwise land on separate rows, count once each, and sum
+ * to 2 against a state bar that counts the name once (Flask d537142). */
 export function applyGeoRules(rows: readonly RegionDetailRawRow[], lookups: GeoLookups): RegionDetailRow[] {
   const agg = new Map<string, RegionDetailRow>();
   for (const r of rows) {

@@ -3321,7 +3321,17 @@ export default api({
                 t.PROPERTY_STATE                            AS PROPERTY_STATE,
                 COALESCE(dma.DMA_NAME, 'Unknown')           AS PROPERTY_REGION,
                 LEFT(p.PROPERTY_ZIP, 5)                     AS ZIP5,
-                COUNT(DISTINCT t.PROPERTY_NAME)             AS PROPERTIES,
+                -- PROPERTIES counts DISTINCT PROPERTY_PUBLIC_ID, not PROPERTY_NAME. The GROUP BY
+                -- includes ZIP5 and applyGeoRules then SUMs those rows up to (state, region), so
+                -- a name-based count counted two genuinely distinct same-named properties in
+                -- different ZIPs once each and summed them to 2, while the state bar it has to
+                -- tie to counted that name once. Live before the fix: RPM Living TX summed to 425
+                -- region properties under a 424-property state bar; Asset Living CA's 13 region
+                -- bars already totalled the bar's 604 with a "+4" footnote still printed under
+                -- them. PROPERTY_PUBLIC_ID is the same key the Exec Summary property tile and the
+                -- property snapshot use, so every count on the slide now counts the same thing.
+                -- Mirrors Flask d537142 (pull_property_region_detail).
+                COUNT(DISTINCT t.PROPERTY_PUBLIC_ID)        AS PROPERTIES,
                 SUM(t.PROPERTY_UNIT_COUNT)                  AS TOTAL_UNITS,
                 SUM(t.BILLS_PAID_COUNT)                     AS BILLS_PAID
              FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS t
