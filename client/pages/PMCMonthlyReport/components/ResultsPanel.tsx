@@ -281,11 +281,14 @@ export function ResultsPanel({ generating, reportData, delivery, deckLabel, subj
         )}
       </div>
 
-      {/* Iframe */}
+      {/* Iframe.
+          allow-modals is load-bearing, not boilerplate: the deck's own exportDeckPDF reports a
+          failure with alert(), and alert()/confirm() are silently suppressed in a sandboxed
+          frame without it - so a failed PDF export looked like nothing happening at all. */}
       <iframe
         srcDoc={reportData.html}
         className="flex-1 w-full border-0 min-h-[60vh]"
-        sandbox="allow-scripts allow-same-origin allow-downloads allow-popups allow-presentation"
+        sandbox="allow-scripts allow-same-origin allow-downloads allow-popups allow-presentation allow-modals"
         allowFullScreen
         title="Report Deck"
       />

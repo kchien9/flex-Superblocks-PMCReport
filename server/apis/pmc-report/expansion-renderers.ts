@@ -6,30 +6,14 @@
 
 import { renderAffordableHousingSlide } from "./slides-prospect.js";
 import { fmtPct } from "./format-pct.js";
+// ONE currency formatter for the whole deck - see formatters.ts for the four verified
+// divergences the three copied-and-drifted local versions used to produce.
+import { fmtCurrency } from "./formatters.js";
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
 function _e(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
-}
-
-function fmtCurrency(v: number): string {
-  if (v >= 1_000_000_000) return `$${(v / 1_000_000_000).toFixed(2)}B`;
-  if (v >= 1_000_000) {
-    let s = (v / 1_000_000).toFixed(2).replace(/0+$/, "");
-    if (s.endsWith(".")) s += "0";
-    return `$${s}M`;
-  }
-  if (v >= 1_000) {
-    const k = Math.round(v / 1_000);
-    if (k >= 1000) {
-      let s2 = (k / 1000).toFixed(1).replace(/0+$/, "");
-      if (s2.endsWith(".")) s2 += "0";
-      return `$${s2}M`;
-    }
-    return `$${k}K`;
-  }
-  return `$${Math.round(v).toLocaleString("en-US")}`;
 }
 
 export interface SlideResult {

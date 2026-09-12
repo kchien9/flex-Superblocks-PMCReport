@@ -4,6 +4,12 @@
  */
 
 import type { PlatinumCounterfactual } from "./platinum.js";
+// ONE currency formatter and ONE percentage formatter for the whole deck. Both used to be
+// file-private copies here that had drifted from the other modules' copies - see formatters.ts
+// for the four verified divergences (e.g. this file printed "$1.2M" where the others printed
+// "$1.23M", and "$1000K" where Flask prints "$1.0M").
+import { fmtCurrency } from "./formatters.js";
+import { fmtPct, fmtPct100, fmtPctNum, fmtPp } from "./format-pct.js";
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -124,24 +130,11 @@ function _e(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 
-// Every currency formatter in this deck (TS helpers here and in get-pmc-monthly-report.ts /
-// expansion-renderers.ts / speaker-notes.ts, plus the fmtRent/fmtK closures embedded in the
-// Chart.js tick/label/tooltip JS below) rolls to a $X.XXB tier at >= 1e9 - Kevin's catch on the
-// 8-entity Asset Living deck, where combined lifetime rent printed as "$2210.5M". K/M behaviour
-// below 1e9 is unchanged everywhere.
-function fmtCurrency(n: number): string {
-  if (n >= 1_000_000_000) return `$${(n / 1_000_000_000).toFixed(2)}B`;
-  if (n >= 1_000_000) return `$${(n / 1_000_000).toFixed(1)}M`;
-  if (n >= 1_000) return `$${(n / 1_000).toFixed(0)}K`;
-  return `$${Math.round(n).toLocaleString()}`;
-}
-
-function fmtPct(n: number): string {
-  // Drop the trailing ".0" on a whole-number percent (Kevin's catch: "85%", not "85.0%") -
-  // same fix as get-pmc-monthly-report.ts's own fmtPct, just never ported to this file.
-  const s = (n * 100).toFixed(1);
-  return s.endsWith(".0") ? s.slice(0, -2) + "%" : s + "%";
-}
+// NOTE: the fmtRent / fmtK closures embedded in the Chart.js tick/label/tooltip JS further down
+// are a SEPARATE, browser-side implementation of the same tiering (they run in the deck, where
+// no module import exists). They roll to a $X.XXB tier at >= 1e9 just like fmtCurrency above -
+// Kevin's catch on the 8-entity Asset Living deck, where combined lifetime rent printed as
+// "$2210.5M".
 
 export function monthLabel(ym: string): string {
   const [y, m] = ym.split("-");
@@ -206,13 +199,13 @@ function _trendBadgeHtml(flag: { direction: string; basis: string; referenceNar:
   const hasRef = referenceNar != null && currentNar != null;
   if (basis === "outperform" && hasRef) {
     const gainPp = (currentNar! - referenceNar!) * 100;
-    title = `Over the last 6 months, this property's 3-month-average adoption grew from ${(referenceNar! * 100).toFixed(1)}% to ${(currentNar! * 100).toFixed(1)}% (${gainPp >= 0 ? "+" : ""}${gainPp.toFixed(1)}pp)`;
+    title = `Over the last 6 months, this property's 3-month-average adoption grew from ${fmtPct(referenceNar!)} to ${fmtPct(currentNar!)} (${gainPp >= 0 ? "+" : ""}${gainPp.toFixed(1)}pp)`;
   } else if (basis === "peak" && hasRef) {
     const windowTxt = referenceWindow ? ` (${referenceWindow})` : "";
-    title = `This property peaked at ${(referenceNar! * 100).toFixed(1)}%${windowTxt} and has since dropped to ${(currentNar! * 100).toFixed(1)}%`;
+    title = `This property peaked at ${fmtPct(referenceNar!)}${windowTxt} and has since dropped to ${fmtPct(currentNar!)}`;
   } else if (basis === "yoy" && hasRef) {
     const windowTxt = referenceWindow ? ` (${referenceWindow})` : "";
-    title = `This property was at ${(referenceNar! * 100).toFixed(1)}% this time last year${windowTxt} — now ${(currentNar! * 100).toFixed(1)}%`;
+    title = `This property was at ${fmtPct(referenceNar!)} this time last year${windowTxt} — now ${fmtPct(currentNar!)}`;
   }
   const [arrow, label, color, bg, border] = direction === "decline"
     ? ["▼", "declining", "#b91c1c", "#fef2f2", "#fecaca"]
@@ -749,7 +742,7 @@ const METRIC_META: Record<string, MetricMeta> = {
   NAR: {
     label: "Adoption Rate",
     definition: "Active Flex users \u00f7 total enrolled units",
-    format: (v) => `${(v * 100).toFixed(1)}%`,
+    format: (v) => fmtPct(v),
   },
   ENGAGEMENT: {
     label: "Engagement (per 100 units)",
@@ -1026,7 +1019,8 @@ export function renderLaunchSnapshot(input: LaunchSnapshotInput): { html: string
       </div>`;
   }
 
-  const fmtPct = (v: number) => (v * 100).toFixed(1) + "%";
+  // (A local `fmtPct` used to shadow the shared one here, and kept the trailing ".0" the shared
+  // rule drops - so this one slide printed "12.0%" where every other slide printed "12%".)
 
   const html = `
   <div class="slide" id="slide-${slideId}" style="background:#fff;padding:0;">
@@ -1423,7 +1417,7 @@ export function renderPropertiesWorthCelebrating(input: {
       ? `${_e(p.peerNarCriteria)} · ${p.peerNarCount} peers`
       : (p.peerNar == null && peerMedianNar != null ? "Network-wide median" : "");
     const peerNarCell = pNar != null
-      ? `<span style="text-decoration:underline dotted #9ca3af;text-underline-offset:2px;cursor:help;" title="${peerNarTitle}">${(pNar * 100).toFixed(1)}%</span>`
+      ? `<span style="text-decoration:underline dotted #9ca3af;text-underline-offset:2px;cursor:help;" title="${peerNarTitle}">${fmtPct(pNar)}</span>`
       : "-";
     // Per-property peer engagement
     const pEng = p.peerEng ?? peerMedianEngagement;
@@ -1435,8 +1429,8 @@ export function renderPropertiesWorthCelebrating(input: {
       : "-";
     const badge = p.trendFlag ? _trendBadgeHtml(p.trendFlag, p.monthsLive) : "";
     const dataCells = benchmarkRowCells(input, {
-      adoptionObserved: `<td style="padding:6px 8px;text-align:right;font-size:13px;font-weight:700;color:#1a9e6a;">${(p.adoptionRate * 100).toFixed(1)}%</td>`,
-      adoptionPortfolioAvg: `<td style="padding:6px 8px;text-align:right;font-size:12px;color:#6b7280;">${(portfolioAvgNar * 100).toFixed(1)}%</td>`,
+      adoptionObserved: `<td style="padding:6px 8px;text-align:right;font-size:13px;font-weight:700;color:#1a9e6a;">${fmtPct(p.adoptionRate)}</td>`,
+      adoptionPortfolioAvg: `<td style="padding:6px 8px;text-align:right;font-size:12px;color:#6b7280;">${fmtPct(portfolioAvgNar)}</td>`,
       adoptionPeerMedian: `<td style="padding:6px 8px;text-align:right;font-size:12px;color:#6b7280;">${peerNarCell}</td>`,
       engagementObserved: `<td style="padding:6px 8px;text-align:right;font-size:12px;color:#374151;">${eng.toFixed(0)}</td>`,
       engagementPortfolioAvg: `<td style="padding:6px 8px;text-align:right;font-size:12px;color:#6b7280;">${portfolioAvgEng.toFixed(0)}</td>`,
@@ -1577,8 +1571,8 @@ export function renderAdoptionOpportunities(input: {
           <div style="font-size:11px;font-weight:600;color:#1D1D1D;line-height:1.3;">${_e(c.propertyName)}${d2c}</div>
           <div style="font-size:9px;color:#a09cb0;margin-top:1px;">${_e(c.propertyState || "")} · ${c.units.toLocaleString()} units · mo ${c.ageMonths}</div>
         </td>
-        <td style="padding:5px 8px;text-align:right;font-size:13px;font-weight:700;color:#dc2626;">${(c.adoptionRate * 100).toFixed(1)}%</td>
-        <td style="padding:5px 8px;text-align:right;font-size:12px;color:#6b7280;">${(c.benchNar * 100).toFixed(1)}%</td>
+        <td style="padding:5px 8px;text-align:right;font-size:13px;font-weight:700;color:#dc2626;">${fmtPct(c.adoptionRate)}</td>
+        <td style="padding:5px 8px;text-align:right;font-size:12px;color:#6b7280;">${fmtPct(c.benchNar)}</td>
         <td style="padding:5px 8px;text-align:right;font-size:12px;color:#374151;">${c.observedEngPer100.toFixed(0)}</td>
         <td style="padding:5px 8px;text-align:right;font-size:12px;color:#9ca3af;">${c.expectedEngPer100 > 0 ? c.expectedEngPer100.toFixed(0) : "-"}</td>
       </tr>`;
@@ -1695,7 +1689,7 @@ export function renderAdoptionOpportunities(input: {
       ? `${_e(p.peerNarCriteria)} · ${p.peerNarCount} peers`
       : (p.peerNar == null && peerMedianNar != null ? "Network-wide median" : "");
     const peerNarCell = pNar != null
-      ? `<span style="text-decoration:underline dotted #9ca3af;text-underline-offset:2px;cursor:help;" title="${peerNarTitle}">${(pNar * 100).toFixed(1)}%</span>`
+      ? `<span style="text-decoration:underline dotted #9ca3af;text-underline-offset:2px;cursor:help;" title="${peerNarTitle}">${fmtPct(pNar)}</span>`
       : "-";
     // Per-property peer engagement
     const peerEngTitle = p.peerEngCriteria && p.peerEngCount
@@ -1713,8 +1707,8 @@ export function renderAdoptionOpportunities(input: {
       trendBadge += `<span style="font-size:8px;color:#6b7280;margin-left:3px;">(still below avg)</span>`;
     }
     const dataCells = benchmarkRowCells(input, {
-      adoptionObserved: `<td style="padding:6px 8px;text-align:right;font-size:13px;font-weight:700;color:#dc5050;">${(p.adoptionRate * 100).toFixed(1)}%</td>`,
-      adoptionPortfolioAvg: `<td style="padding:6px 8px;text-align:right;font-size:12px;color:#6b7280;">${(portfolioAvgNar * 100).toFixed(1)}%</td>`,
+      adoptionObserved: `<td style="padding:6px 8px;text-align:right;font-size:13px;font-weight:700;color:#dc5050;">${fmtPct(p.adoptionRate)}</td>`,
+      adoptionPortfolioAvg: `<td style="padding:6px 8px;text-align:right;font-size:12px;color:#6b7280;">${fmtPct(portfolioAvgNar)}</td>`,
       adoptionPeerMedian: `<td style="padding:6px 8px;text-align:right;font-size:12px;color:#6b7280;">${peerNarCell}</td>`,
       engagementObserved: `<td style="padding:6px 8px;text-align:right;font-size:12px;color:#374151;">${eng.toFixed(0)}</td>`,
       engagementPortfolioAvg: `<td style="padding:6px 8px;text-align:right;font-size:12px;color:#6b7280;">${portfolioAvgEng.toFixed(0)}</td>`,
@@ -2148,7 +2142,7 @@ export function renderRetention(input: {
           <div style="background:${b.color};opacity:0.70;height:100%;width:${barWidth.toFixed(0)}%;border-radius:6px;"></div>
         </div>
         <div style="font-size:17px;font-weight:700;color:#1d1d1d;width:40px;text-align:right;">${b.count.toLocaleString()}</div>
-        <div style="font-size:13px;color:#a09cb0;width:44px;">${(pct * 100).toFixed(1)}%</div>
+        <div style="font-size:13px;color:#a09cb0;width:44px;">${fmtPct(pct)}</div>
       </div>`;
     }).join("");
 
@@ -2622,14 +2616,14 @@ export function renderAdoptionTrend(input: {
         const noteId = `peerOutlierNote${slideId}`;
 
         if (ratio >= 1.5) {
-          peerOutlierNote = `<div id="${noteId}" style="font-size:13px;color:#15803d;font-weight:700;">${ratio.toFixed(1)}\u00d7 above comparable peer median (${peerLatest.toFixed(1)}%)${aboveNote}</div>`;
+          peerOutlierNote = `<div id="${noteId}" style="font-size:13px;color:#15803d;font-weight:700;">${ratio.toFixed(1)}\u00d7 above comparable peer median (${fmtPct100(peerLatest)})${aboveNote}</div>`;
         } else if (gapPpAbove > 0.5) {
-          peerOutlierNote = `<div id="${noteId}" style="font-size:13px;color:#15803d;font-weight:700;">+${gapPpAbove.toFixed(1)}pp above comparable peer median (${peerLatest.toFixed(1)}%)${aboveNote}</div>`;
+          peerOutlierNote = `<div id="${noteId}" style="font-size:13px;color:#15803d;font-weight:700;">+${fmtPp(gapPpAbove)} above comparable peer median (${fmtPct100(peerLatest)})${aboveNote}</div>`;
         } else if (gapPpAbove >= -0.5) {
-          peerOutlierNote = `<div id="${noteId}" style="font-size:13px;color:#6b7280;">At comparable peer median (${peerLatest.toFixed(1)}%)</div>`;
+          peerOutlierNote = `<div id="${noteId}" style="font-size:13px;color:#6b7280;">At comparable peer median (${fmtPct100(peerLatest)})</div>`;
         } else {
           const gapPp = peerLatest - pmcCompare;
-          peerOutlierNote = `<div id="${noteId}" style="font-size:13px;color:#dc2626;font-weight:700;">${gapPp.toFixed(1)}pp below comparable peer median (${peerLatest.toFixed(1)}%)</div>`;
+          peerOutlierNote = `<div id="${noteId}" style="font-size:13px;color:#dc2626;font-weight:700;">${fmtPp(gapPp)} below comparable peer median (${fmtPct100(peerLatest)})</div>`;
         }
       }
     }
@@ -2857,7 +2851,7 @@ window.flexToggleAdoptionQuarter=function(slideId,qi,btn){
         `border-radius:6px;padding:6px 14px;margin-top:8px;text-align:center;line-height:1.5;">` +
         `<strong>${monthLabel(last.month)}:</strong> +${propDelta.toLocaleString()} net-new properties added - ` +
         `the "All Properties" dip is a denominator effect, not adoption decline. ` +
-        `The dashed line shows established properties at ${(lastEst * 100).toFixed(1)}%.` +
+        `The dashed line shows established properties at ${fmtPct(lastEst)}.` +
         `</div>`;
     }
   }
@@ -4288,7 +4282,7 @@ export function renderSinceInception(input: SinceInceptionInput): SlideResult {
       const priorIdx = years.length - 2;
       if (rentRaw[priorIdx] > 0) {
         const pct = (projRentVal - rentRaw[priorIdx]) / rentRaw[priorIdx] * 100;
-        ghostPctText = `${pct >= 0 ? "+" : ""}${pct.toFixed(1)}% vs ${labels[priorIdx]}`;
+        ghostPctText = `${fmtPct100(pct, 1, true)} vs ${labels[priorIdx]}`;
       }
     }
   }
@@ -5034,7 +5028,7 @@ export function renderQbrClose(input: QbrCloseInput): SlideResult {
   } else {
     win1Head = `Adoption at ${narPct} - upside ahead`;
     const growthClause = ownGrowthPp !== null
-      ? `Adoption has grown ${(ownGrowthPp * 100).toFixed(1)}pp over the last ${growthLookback} months - `
+      ? `Adoption has grown ${fmtPp(ownGrowthPp * 100)} over the last ${growthLookback} months - `
       : "";
     if (showAdoptionPeerMedian) {
       // Both stories at once when there's real growth to point to - the peer-median gap
@@ -5527,7 +5521,7 @@ export function renderPlatinumClose(slideId: number, cf: PlatinumCounterfactual)
   const signedNum = (v: number | null | undefined) => { const x = v ?? 0; return `${x >= 0 ? "+" : "−"}${Math.round(Math.abs(x)).toLocaleString("en-US")}`; };
   const money = (v: number | null | undefined) => platinumCurrency(Math.max(v ?? 0, 0));
   const signedMoney = (v: number | null | undefined) => { const x = v ?? 0; return `${x >= 0 ? "+" : "−"}${platinumCurrency(Math.abs(x))}`; };
-  const pp = (v: number) => `${v >= 0 ? "+" : "−"}${(Math.abs(v) * 100).toFixed(1)}pp`;
+  const pp = (v: number) => `${v >= 0 ? "+" : "−"}${fmtPctNum(Math.abs(v) * 100)}pp`;
 
   interface Cells { rate: string; res: string; rent: string; window: string }
   const chosen: Cells = {
