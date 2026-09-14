@@ -8,12 +8,39 @@ import { renderAffordableHousingSlide } from "./slides-prospect.js";
 import { fmtPct } from "./format-pct.js";
 // ONE currency formatter for the whole deck - see formatters.ts for the four verified
 // divergences the three copied-and-drifted local versions used to produce.
-import { fmtCurrency } from "./formatters.js";
+import { fmtCurrency, fmtPp } from "./formatters.js";
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
 function _e(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
+/**
+ * Median month-over-month adoption-rate change across the trailing window - the same
+ * robust-to-outliers method Flask's render_portfolio_projection already uses for its 12-month
+ * NAR projection (generator/slides.py:3321, "Median is robust to single-month outliers"), reused
+ * here rather than a bare last-vs-previous-month comparison, which one good or bad month could
+ * flip either way.
+ *
+ * Trailing 6 months (or fewer if the PMC's history is shorter) - a genuine recent trend, not a
+ * lifetime average a short cold-start blip could never move. Returns null when there isn't
+ * enough data to compute a median MoM delta at all (<3 months, same floor
+ * render_portfolio_projection uses) - the caller treats null the same as "don't claim a trend."
+ * Deliberately reads the BLENDED (units-weighted) adoption rate, not the established-cohort one -
+ * a real MoM rise here is happening AGAINST the denominator drag a growing portfolio adds
+ * (see reference_nar_drivers / feedback_adoption_rate_framing: growth mechanically dilutes
+ * blended NAR), so a genuine positive median is a stronger claim, not a weaker one.
+ */
+export function medianMomAdoptionTrend(monthly: { adoptionRate: number }[]): { medianMom: number; months: number } | null {
+  const window = monthly.slice(-6);
+  if (window.length < 3) return null;
+  const deltas: number[] = [];
+  for (let i = 1; i < window.length; i++) deltas.push(window[i].adoptionRate - window[i - 1].adoptionRate);
+  const sorted = [...deltas].sort((a, b) => a - b);
+  const n = sorted.length;
+  const medianMom = n % 2 === 1 ? sorted[(n - 1) / 2] : (sorted[n / 2 - 1] + sorted[n / 2]) / 2;
+  return { medianMom, months: window.length };
 }
 
 export interface SlideResult {
@@ -545,6 +572,10 @@ export interface ExpansionCaseCloseInput {
    * whose slide didn't render just doesn't appear, rather than showing a generic version that
    * implies evidence the AE can't actually point to. */
   renderedSlideKeys?: Set<string> | string[];
+  /** Same monthly series fed to Adoption Trend (renderAdoptionTrend's own `monthly`) - drives
+   * the "adoption momentum" proof point below via medianMomAdoptionTrend. Omit to suppress that
+   * proof point entirely (matches every other candidate's "no source data, no claim" rule). */
+  monthlyTotals?: { adoptionRate: number }[];
 }
 
 export function renderExpansionCaseClose(input: ExpansionCaseCloseInput): SlideResult {
@@ -562,6 +593,7 @@ export function renderExpansionCaseClose(input: ExpansionCaseCloseInput): SlideR
     benchmarkNar = 0.085,
     lookbackMonths = 12,
     renderedSlideKeys,
+    monthlyTotals,
   } = input;
 
   const pmc = _e(pmcName);
@@ -607,7 +639,24 @@ export function renderExpansionCaseClose(input: ExpansionCaseCloseInput): SlideR
   const vacCur = Math.max(1, Math.round(flexUnits / 100 * 2.1));
   const turnsCur = Math.max(1, Math.round(flexUnits * (1 / 24.2 - 1 / 27.9) * 12));
 
+  // Adoption momentum (Kevin's ask, 2026-09-14): a 5th proof point, placed FIRST since these
+  // slides read top-to-bottom - "your adoption is genuinely trending up" is the strongest
+  // opener, not an afterthought. Gated on medianMomAdoptionTrend returning a real, positive,
+  // non-rounding-to-zero median - no monthly data, a flat trend, or a declining one all mean
+  // no candidate at all, same "no source data, no claim" rule as every other finding here.
+  const momTrend = monthlyTotals ? medianMomAdoptionTrend(monthlyTotals) : null;
+  const momPp = momTrend ? Math.round(momTrend.medianMom * 1000) / 10 : 0;
+  const momCandidate = momTrend && momPp > 0
+    ? [{
+        slideKey: "adoption_trend",
+        category: "Adoption momentum",
+        headline: "Adoption is trending up, month over month",
+        body: `${pmc}'s adoption rate has risen a median of ${fmtPp(momPp, 1, true)} per month over the trailing ${momTrend.months} months – a real, sustained trend, not a single good month.`,
+      }]
+    : [];
+
   const candidates: { slideKey: string; category: string; headline: string; body: string }[] = [
+    ...momCandidate,
     {
       slideKey: "retention",
       category: "Repeat usage",
@@ -652,7 +701,7 @@ export function renderExpansionCaseClose(input: ExpansionCaseCloseInput): SlideR
 
   const survivors = candidates.filter((c) => isRendered(c.slideKey));
   const findingsHtml = survivors.map((c, i) => finding(i + 1, c.headline, c.body)).join("");
-  const NUMBER_WORDS = ["Zero", "One", "Two", "Three", "Four"];
+  const NUMBER_WORDS = ["Zero", "One", "Two", "Three", "Four", "Five"];
   const pointsTitle = `${NUMBER_WORDS[survivors.length] ?? survivors.length} proof point${survivors.length === 1 ? "" : "s"}.`;
   const categoriesSubtitle = survivors.map((c) => c.category).join(" \u00b7 ");
 

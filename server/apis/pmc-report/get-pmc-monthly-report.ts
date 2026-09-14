@@ -6996,6 +6996,10 @@ export default api({
               // own proof points actually have a slide behind them. expRenderedKeys is already
               // complete by this point since this case is always last in activeOrder.
               renderedSlideKeys: expRenderedKeys,
+              // Same series the Adoption Trend slide itself charts - drives the "adoption
+              // momentum" proof point (Kevin's ask, 2026-09-14). Real, positive, non-zero
+              // median-MoM only; renderExpansionCaseClose drops the candidate otherwise.
+              monthlyTotals,
             });
             pushSlide(sid, r);
             break;

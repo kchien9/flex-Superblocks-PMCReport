@@ -4398,6 +4398,7 @@ export function renderSinceInception(input: SinceInceptionInput): SlideResult {
       <div style="flex:1;min-height:0;position:relative;overflow:hidden;">
         <canvas id="sichart${slideId}"></canvas>
       </div>${stackedLegendHtml}
+      <div id="si-xaxis-note-${slideId}" style="display:none;text-align:center;font-size:9px;font-weight:700;color:#6A3DB8;margin-top:2px;flex-shrink:0;">Every bar shows Jan-${_e(monthLbl)} of that year only</div>
     </div>
     <div id="si-footnote-${slideId}" style="font-size:10px;color:#a09cb0;margin-top:6px;flex-shrink:0;font-style:italic;${hasProjection ? '' : 'display:none;'}">Projected figures extrapolate from year-to-date performance (trailing 3-month run-rate); actual results will vary.</div>
   </div>`;
@@ -4527,6 +4528,8 @@ export function renderSinceInception(input: SinceInceptionInput): SlideResult {
     if (eYtd) eYtd.style.display = showYtd ? 'inline' : 'none';
     var footnote = document.getElementById('si-footnote-' + sid);
     if (footnote) footnote.style.display = (showYtd || !active.hasFootnote) ? 'none' : '';
+    var xAxisNote = document.getElementById('si-xaxis-note-' + sid);
+    if (xAxisNote) xAxisNote.style.display = showYtd ? 'block' : 'none';
   };
 }`
     : `if (!window.flexToggleSIView) {
@@ -4557,6 +4560,8 @@ export function renderSinceInception(input: SinceInceptionInput): SlideResult {
     if (eYtd) eYtd.style.display = showYtd ? 'inline' : 'none';
     var footnote = document.getElementById('si-footnote-' + sid);
     if (footnote) footnote.style.display = (showYtd || !active.hasFootnote) ? 'none' : '';
+    var xAxisNote = document.getElementById('si-xaxis-note-' + sid);
+    if (xAxisNote) xAxisNote.style.display = showYtd ? 'block' : 'none';
   };
 }`;
 
