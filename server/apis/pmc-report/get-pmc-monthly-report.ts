@@ -6897,6 +6897,10 @@ export default api({
               slideId: slideNum,
               months: dqMonths,
               windowMonths: dqWindowMonths,
+              // Never zero-fill a month before the partnership existed (Kevin's catch, live-
+              // verified, Coast Property Management PMC 654 - see the tenure floor comment
+              // inside renderDelinquency).
+              tenureStartMonth: earliestRollout,
             });
             pushSlide(sid, r);
             break;
@@ -7313,6 +7317,9 @@ export default api({
       slideId: 13,
       months: dqMonths,
       windowMonths: dqWindowMonths,
+      // Never zero-fill a month before the partnership existed (Kevin's catch, live-verified,
+      // Coast Property Management PMC 654 - see the tenure floor comment inside renderDelinquency).
+      tenureStartMonth: earliestRollout,
     });
 
     // --- Resident Retention slide ---

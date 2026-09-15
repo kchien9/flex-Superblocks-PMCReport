@@ -1913,12 +1913,14 @@ export function renderDelinquency(input: {
   slideId: number;
   months: DelinquencyMonth[];
   windowMonths: number;
+  /** The partnership's actual first BP month ("YYYY-MM-DD" or "YYYY-MM"), e.g. earliestRollout /
+   * dqTenureMonths' own source. Optional only for callers that genuinely can't resolve it - see
+   * the tenure floor below for why omitting it is a real (if rare) regression, not a no-op. */
+  tenureStartMonth?: string | null;
 }): SlideResult {
-  const { slideId, months: monthsInput, windowMonths } = input;
+  const { slideId, months: monthsInput, windowMonths, tenureStartMonth } = input;
   const months = monthsInput ?? [];
 
-  const windowPhrase = windowMonths >= 12 ? "12 months" : `${windowMonths} months`;
-  const windowTitle = windowMonths >= 12 ? "Trailing 12 Months" : `Trailing ${windowMonths} Months`;
   // Headline sum/count computed from the same windowMonths the label claims (Kevin's catch —
   // this used to sum every row `months` happened to contain, which can exceed windowMonths
   // thanks to the underlying pull's lag buffer, producing a $ figure that didn't match its own
@@ -1979,8 +1981,22 @@ export function renderDelinquency(input: {
   // Every slot in the window now gets a real value - 0 when no row exists for that month
   // (a genuine fact: nothing was shielded that month, not missing data) - so two real bars
   // months apart can never again render as if they were adjacent.
+  //
+  // TENURE FLOOR (Kevin's catch, live-verified, Coast Property Management PMC 654): the anchor
+  // above is dqLatestMonth - the latest month actually PRESENT in the (1-month-lagged)
+  // DQ_PROPERTY pull, not the report's own latest completed month. For a PMC whose tenure is
+  // exactly windowMonths long, walking back windowMonths-1 slots from that lagged anchor lands
+  // ONE MONTH BEFORE the partnership even started - Coast joined 2026-06, dqLatestMonth was
+  // 2026-08 (Sep DQ hadn't posted yet), and the un-floored loop fabricated a $0 May bar for a
+  // month they weren't a Flex partner in at all. That's not "a genuine fact: nothing was
+  // shielded" (this comment's own claim two lines up) - it's the exact same pre-partnership-zero
+  // bug class Since Inception's firstYear floor exists to prevent, just never applied here.
+  // Never emit a slot earlier than tenureStartMonth; the loop still WALKS the full windowMonths
+  // count (so it can't accidentally start later than intended), it just stops pushing once it
+  // crosses the floor.
   const totalSlots = Math.max(windowMonths, 3);
   const byMonth = new Map(windowedMonths.map((m) => [m.month.slice(0, 7), m]));
+  const tenureFloorKey = tenureStartMonth ? tenureStartMonth.slice(0, 7) : null;
   const chartMonths: string[] = [];
   const chartVals: (number | null)[] = [];
   const residentsVals: (number | null)[] = [];
@@ -1988,11 +2004,22 @@ export function renderDelinquency(input: {
   for (let i = totalSlots - 1; i >= 0; i--) {
     const d = new Date(ly, lm - 1 - i, 1);
     const monthKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+    if (tenureFloorKey && monthKey < tenureFloorKey) continue;
     const row = byMonth.get(monthKey);
     chartMonths.push(monthLabel(`${monthKey}-01`));
     chartVals.push(row ? Math.round(row.totalRentShielded) : 0);
     residentsVals.push(row ? row.residentsShielded : 0);
   }
+
+  // Title/headline "Trailing N Months" now names the count ACTUALLY rendered above, not the
+  // raw windowMonths input - the tenure floor can legitimately shrink the real count (Coast:
+  // windowMonths=4 in, 3 real slots out after the May floor), and a "Trailing 4 Months" label
+  // over 3 bars is exactly the "count doesn't match the label" bug this whole gate exists to
+  // prevent. No tenureStartMonth given (rare caller) - chartMonths.length === windowMonths (or
+  // the 3-slot floor), so this is a no-op change for that case.
+  const renderedWindowMonths = chartMonths.length;
+  const windowPhrase = renderedWindowMonths >= 12 ? "12 months" : `${renderedWindowMonths} months`;
+  const windowTitle = renderedWindowMonths >= 12 ? "Trailing 12 Months" : `Trailing ${renderedWindowMonths} Months`;
 
   const realResidents = residentsVals.filter((v): v is number => v !== null && v > 0);
   const resMax = realResidents.length > 0 ? Math.max(...realResidents) : 100;
