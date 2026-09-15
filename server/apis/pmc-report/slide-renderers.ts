@@ -4472,7 +4472,7 @@ export function renderSinceInception(input: SinceInceptionInput): SlideResult {
         <div style="display:flex;align-items:center;flex-shrink:0;margin-left:16px;">
           <div style="display:flex;gap:14px;font-size:10px;color:#524e5b;">
             ${rentLegendHtml}
-            <span><span style="display:inline-block;width:8px;height:8px;background:#1a9e6a;border-radius:50%;margin-right:4px;vertical-align:middle;"></span>Bills paid / year</span>
+            <span><span style="display:inline-block;width:8px;height:8px;background:#1a9e6a;border-radius:50%;margin-right:4px;vertical-align:middle;"></span><span id="si-bills-legend-full-${slideId}">Bills paid / year</span><span id="si-bills-legend-ytd-${slideId}" style="display:none;">Bills paid, YTD</span></span>
             ${projLegend}
           </div>
           ${toggleHtml}
@@ -4609,6 +4609,9 @@ export function renderSinceInception(input: SinceInceptionInput): SlideResult {
     var eFull = document.getElementById('si-eyebrow-full-' + sid), eYtd = document.getElementById('si-eyebrow-ytd-' + sid);
     if (eFull) eFull.style.display = showYtd ? 'none' : 'inline';
     if (eYtd) eYtd.style.display = showYtd ? 'inline' : 'none';
+    var blFull = document.getElementById('si-bills-legend-full-' + sid), blYtd = document.getElementById('si-bills-legend-ytd-' + sid);
+    if (blFull) blFull.style.display = showYtd ? 'none' : 'inline';
+    if (blYtd) blYtd.style.display = showYtd ? 'inline' : 'none';
     var footnote = document.getElementById('si-footnote-' + sid);
     if (footnote) footnote.style.display = (showYtd || !active.hasFootnote) ? 'none' : '';
     var xAxisNote = document.getElementById('si-xaxis-note-' + sid);
@@ -4641,6 +4644,9 @@ export function renderSinceInception(input: SinceInceptionInput): SlideResult {
     var eFull = document.getElementById('si-eyebrow-full-' + sid), eYtd = document.getElementById('si-eyebrow-ytd-' + sid);
     if (eFull) eFull.style.display = showYtd ? 'none' : 'inline';
     if (eYtd) eYtd.style.display = showYtd ? 'inline' : 'none';
+    var blFull = document.getElementById('si-bills-legend-full-' + sid), blYtd = document.getElementById('si-bills-legend-ytd-' + sid);
+    if (blFull) blFull.style.display = showYtd ? 'none' : 'inline';
+    if (blYtd) blYtd.style.display = showYtd ? 'inline' : 'none';
     var footnote = document.getElementById('si-footnote-' + sid);
     if (footnote) footnote.style.display = (showYtd || !active.hasFootnote) ? 'none' : '';
     var xAxisNote = document.getElementById('si-xaxis-note-' + sid);
@@ -4771,6 +4777,15 @@ window['initSlide${slideId}'] = (function() {
         }
       }
     });
+    // Forces a real layout pass once the slide is actually visible (Kevin's catch: the
+    // bills-paid dots only appeared after clicking a Full Year/YTD toggle, never on first
+    // load). Every slide starts hidden (display:none) until it's made active, so this chart
+    // is created against a 0-sized canvas - centerDots' afterDatasetsDraw reads
+    // chart.getDatasetMeta(0).data[i] for each dot's position, and that geometry is garbage
+    // until a real resize happens. Toggling calls chart.update() AFTER the slide is visible,
+    // which is why the dots 'fixed themselves' the moment anyone touched a toggle. Same fix
+    // already used on the Flex-Is-For-Everyone and Residents/Units charts in this same file.
+    requestAnimationFrame(() => { window['siChart${slideId}'].resize(); });
   };
 })();
 ${toggleFnJs}
