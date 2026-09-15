@@ -190,4 +190,22 @@ test("no region detail at all leaves the state bars alone and prints no footnote
   assert.deepEqual(blocks.map((b) => b.regions.length), [0, 0, 0]);
 });
 
+// ── Long DMA names must wrap, never clip (Kevin's catch, live screenshot) ──────────────────
+// Real Nielsen market names run long ("GREENVLL-SPART-ASHEVLL-AND", "NORFOLK-PORTSMTH-NEWPT
+// NWS"). The region label used to be white-space:nowrap + text-overflow:ellipsis in a fixed
+// 230px column, which cut real, correctly-mapped names off mid-word with no way to read the
+// rest short of a mouse hover - useless live or in a PDF. It must now wrap instead.
+test("a long region name renders in full, not clipped with an ellipsis", () => {
+  const longName = "GREENVLL-SPART-ASHEVLL-AND (NC/SC) FULL MARKET NAME NEVER TRUNCATED";
+  // CA - a state actually present in SNAPSHOT - not a new one, or the region row has no
+  // matching state bar to attach to and never renders at all.
+  const html = render([regionRow("CA", longName, 2, 100, 15)], SNAPSHOT);
+  assert.ok(html.includes(longName), "the full region name string must appear verbatim");
+  // The nested (230px) label column must not use nowrap/ellipsis clipping.
+  const labelBlockRe = /grid-template-columns:230px[\s\S]{0,400}/;
+  const labelBlock = labelBlockRe.exec(html)?.[0] ?? "";
+  assert.ok(!labelBlock.includes("text-overflow:ellipsis"), "region label must not ellipsis-clip");
+  assert.ok(!labelBlock.includes("white-space:nowrap"), "region label must be allowed to wrap");
+});
+
 console.log(`\ngeo-state-additivity: ${passed} tests passed`);

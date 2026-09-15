@@ -1571,8 +1571,15 @@ export function renderStateBreakdown(input: StateBreakdownInput): { html: string
     const cursorStyle = onclick ? "cursor:pointer;" : "";
     const chevron = onclick ? ` <span style="color:#a09cb0;font-size:11px;">&#9662;</span>` : "";
     const labelColWidth = isNested ? "230px" : "84px";
+    // Wraps instead of clipping (Kevin's catch, live screenshot: real Nielsen DMA names like
+    // "GREENVLL - SPART - ASHEVLL - AND (NC..." and "NORFOLK - PORTSMTH - NEWPT NWS (N..." were
+    // cut off mid-word with no way to read the rest short of hovering for the title tooltip -
+    // useless in a live presentation or a PDF export, neither of which has a mouse hovering
+    // over anything. These are real, correctly-mapped market names, just long ones - wrapping
+    // to a second line costs a little vertical space (grid rows aren't fixed-height, so a taller
+    // label just pushes the rows below it down) but never loses a character.
     const labelStyle = isNested
-      ? "font-size:11px;font-weight:500;color:#524e5b;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;"
+      ? "font-size:11px;font-weight:500;color:#524e5b;white-space:normal;overflow-wrap:break-word;line-height:1.3;"
       : "font-size:13px;font-weight:600;color:#1d1d1d;";
 
     // The paying-residents column exists so the drill-down accounts for the adoption rate's own
