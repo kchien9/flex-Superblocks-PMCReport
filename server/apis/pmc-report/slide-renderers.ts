@@ -3562,6 +3562,15 @@ export function renderHighRentAdoption(input: RentBucketInput): { html: string; 
     </div>
   </div>`;
 
+  // y2's explicit ticks.stepSize below (Kevin's catch, live screenshot: two overlapping
+  // labels, "$625K" sitting right on top of "$600K") - rentChartMax is always a multiple of
+  // 25,000 but Chart.js's own "nice number" step algorithm doesn't know that; on a 0-625,000
+  // range it picked a clean 100,000 step (0/100K/.../600K) and then force-included the exact
+  // configured max (625,000) as an extra, oddly-close 7th tick nobody asked for. stepSize =
+  // max/5 is always an integer (max is always k*25_000, so max/5 is always k*5_000) - the
+  // forced max-tick and the regular-interval ticks always coincide, so there is never a stray
+  // extra tick to overlap with. Kept as a short one-liner in the shipped JS below (not this
+  // long version) since this whole template literal ships to the browser on every deck.
   const js = `
 window['initSlide${slideId}'] = (function() {
   let done = false;
@@ -3602,7 +3611,8 @@ window['initSlide${slideId}'] = (function() {
           y: { min: 0, max: ${chartMax}, position: 'left', grid: { color: '#f3f4f6' }, border: { display: false },
                ticks: { color: '#9ca3af', font: { size: 10 }, callback: function(v) { return v + '%'; } }, title: { display: true, text: '% of Flex users', color: '#9ca3af', font: { size: 9 } } },
           y2: { min: 0, max: ${rentChartMax}, position: 'right', grid: { display: false }, border: { display: false },
-                ticks: { color: '#1a9e6a', font: { size: 10 }, callback: function(v) { return fmtRent(v); } } }
+                // stepSize avoids a duplicate tick at max (see the comment above const js).
+                ticks: { color: '#1a9e6a', font: { size: 10 }, stepSize: ${rentChartMax} / 5, callback: function(v) { return fmtRent(v); } } }
         }
       }
     });
@@ -3702,7 +3712,13 @@ function flexRentBucket(sid, period) {
   chart.options.scales.y.max = Math.ceil((maxV + 5) / 10) * 10;
   // Rescale Y2-axis (rent) with 30% headroom
   var maxRent = Math.max.apply(null, bucketed.rentRaw.concat([1]));
-  chart.options.scales.y2.max = Math.ceil(maxRent * 1.3 / 25000) * 25000;
+  var y2Max = Math.ceil(maxRent * 1.3 / 25000) * 25000;
+  chart.options.scales.y2.max = y2Max;
+  // Same explicit stepSize as the initial render (Kevin's catch) - without it, toggling
+  // periods can re-trigger Chart.js's own auto step landing off the exact max and producing
+  // the same overlapping-label glitch on the OTHER period too, not just whichever one
+  // happened to render first.
+  chart.options.scales.y2.ticks.stepSize = y2Max / 5;
   chart.update();
   // Toggle button active states. Scoped to a dedicated id (hr-period-btns-{sid}) instead of
   // slide-{sid} -- slide-{sid} can resolve to a different/duplicate DOM node (same class of
@@ -4330,11 +4346,16 @@ export function renderSinceInception(input: SinceInceptionInput): SlideResult {
   const totalBillsAll = billsPaid.reduce((s, v) => s + v, 0);
   const currentYear = parseInt(reportingMonth.slice(0, 4), 10);
 
-  const subtitle = `<strong>${fmtCurrency(totalRentAll)} guaranteed</strong> and <strong>${totalBillsAll.toLocaleString("en-US")} bills paid</strong> since ${_e(pmcName)} joined Flex in ${firstYear}.`;
-
   // Projection for incomplete current year
   const lastMonthsActive = monthsActive[monthsActive.length - 1];
   const hasProjection = years[years.length - 1] === currentYear && lastMonthsActive > 0 && lastMonthsActive < 12;
+
+  // "...and where you're headed" (Kevin's ask) only when a projection bar is actually there to
+  // back it up - hasProjection is false for a fully-completed year (no ghost bar rendered at
+  // all), and claiming "where you're headed" with nothing on the chart showing that would be
+  // exactly the "copy claims content the slide doesn't have" bug class this whole audit exists
+  // to catch.
+  const subtitle = `<strong>${fmtCurrency(totalRentAll)} guaranteed</strong> and <strong>${totalBillsAll.toLocaleString("en-US")} bills paid</strong> since ${_e(pmcName)} joined Flex in ${firstYear}${hasProjection ? " — and where you’re headed" : ""}.`;
   let projRentVal: number | null = null;
   let projBillsVal: number | null = null;
   let ghostPctText = "";
