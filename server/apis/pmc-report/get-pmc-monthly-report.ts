@@ -12,6 +12,7 @@ import {
   renderPeerBenchmarks,
   renderDelinquency,
   delinquencyWindowMonths,
+  delinquencyRenderedWindowMonths,
   renderRetention,
   renderCustomerExperience,
   computePropertyTrendFlags,
@@ -6168,6 +6169,11 @@ export default api({
       return (ly - ey) * 12 + (lm - em) + 1;
     })();
     const dqWindowMonths = delinquencyWindowMonths(dqTenureMonths, dqMonths.length);
+    // The Delinquency slide's OWN real rendered window, after its tenure floor - the number
+    // other slides (Expansion Case Close's DQ proof point) must quote instead of the report's
+    // unrelated lookback_months (Kevin's catch, live-verified, Coast Property Management - see
+    // delinquencyRenderedWindowMonths' own doc comment).
+    const dqProofPointWindowMonths = delinquencyRenderedWindowMonths(dqLatestMonth, dqWindowMonths, earliestRollout);
 
     // Flask's real MoM retention (render_retention, generator/slides.py) is a true
     // customer-level set intersection between consecutive months — NOT a ratio of two
@@ -6993,9 +6999,14 @@ export default api({
               // Exactly Kevin's live AJH catch, which Flask fixed by giving the metric one
               // source (slides.py:76-106).
               trueRepeatRate: effectiveTrueRepeat,
-              // Names the real window lifetimeDqShielded is summed over (Kevin's catch) -
-              // see the comment at its use inside renderExpansionCaseClose.
-              lookbackMonths: lookback_months,
+              // The Delinquency slide's OWN real (tenure-floored) window - NOT lookback_months,
+              // the report's unrelated Full/Quarter/YTD review-period selector (Kevin's catch,
+              // live-verified, Coast Property Management: proof point said "trailing 12 months"
+              // while the Delinquency slide two pages earlier correctly said "3 months" for the
+              // exact same $18K/10-resident fact). See delinquencyRenderedWindowMonths' doc
+              // comment - the two concepts happen to coincide for an established partner and
+              // diverge for a short-tenure one.
+              lookbackMonths: dqProofPointWindowMonths,
               // Kevin's catch (real client, AJH) - makes this slide "smart" about which of its
               // own proof points actually have a slide behind them. expRenderedKeys is already
               // complete by this point since this case is always last in activeOrder.

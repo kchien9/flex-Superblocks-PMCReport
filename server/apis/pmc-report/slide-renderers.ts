@@ -1909,6 +1909,41 @@ export function renderDelinquencyMagnitude(input: {
  *                                   -> MAGNITUDE MODE: same shell, a stat block, NO chart.
  *   - otherwise                     -> {html:"", js:""} - no slide at all, not a placeholder.
  */
+/**
+ * Real month count the Delinquency slide's own chart renders, after the tenure floor clips it
+ * (see renderDelinquency's TENURE FLOOR comment a few lines below - this mirrors that exact
+ * loop's count, pulled out standalone). Lets OTHER slides that state "the Delinquency window"
+ * quote the SAME real number instead of an unrelated one.
+ *
+ * Kevin's catch, live-verified, Coast Property Management: Expansion Case Close's DQ proof
+ * point said "over the trailing 12 months" (lookback_months - the report's own Full/Quarter/
+ * YTD review-period selector) while the standalone Delinquency slide two pages earlier
+ * correctly said "3 months" (tenure-floored) - two slides stating the same $18K/10-resident
+ * fact under two different claimed windows. lookback_months and the Delinquency window are
+ * genuinely different concepts (the slide is deliberately independent of the report's review
+ * period - see renderDelinquency's own comment) that happen to coincide for an established
+ * partner and diverge for a short-tenure one like Coast (3 real months vs. a 12-month review
+ * period default).
+ */
+export function delinquencyRenderedWindowMonths(
+  dqLatestMonth: string | null,
+  windowMonths: number,
+  tenureStartMonth?: string | null,
+): number {
+  if (dqLatestMonth == null) return 0;
+  const totalSlots = Math.max(windowMonths, 3);
+  const tenureFloorKey = tenureStartMonth ? tenureStartMonth.slice(0, 7) : null;
+  const [ly, lm] = dqLatestMonth.split("-").map(Number);
+  let count = 0;
+  for (let i = totalSlots - 1; i >= 0; i--) {
+    const d = new Date(ly, lm - 1 - i, 1);
+    const monthKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+    if (tenureFloorKey && monthKey < tenureFloorKey) continue;
+    count++;
+  }
+  return count;
+}
+
 export function renderDelinquency(input: {
   slideId: number;
   months: DelinquencyMonth[];

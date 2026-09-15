@@ -19,7 +19,8 @@
  */
 import assert from "node:assert/strict";
 
-import { renderDelinquency } from "../slide-renderers.js";
+import { renderDelinquency, delinquencyRenderedWindowMonths } from "../slide-renderers.js";
+import { renderExpansionCaseClose } from "../expansion-renderers.js";
 
 let passed = 0;
 function test(name: string, fn: () => void): void {
@@ -85,6 +86,43 @@ test("a PMC with real DQ data starting exactly at tenure start floors to a no-op
   });
   assert.match(html, /Trailing 3 Months/);
   assert.match(js, /Jan 2025/);
+});
+
+// ── Cross-slide consistency: the DQ proof point must quote the SAME window ────────────────
+// Kevin's catch, live screenshot: the Delinquency slide correctly said "3 months" (post-floor)
+// while Expansion Case Close's DQ proof point said "the trailing 12 months" (lookback_months,
+// the report's unrelated review-period selector) for the exact same $18K/10-resident fact.
+
+test("delinquencyRenderedWindowMonths matches the Delinquency slide's own rendered title", () => {
+  const dqLatestMonth = "2026-08-01";
+  const windowMonths = 4; // dqTenureMonths for Coast (Jun-Sep)
+  const tenureStartMonth = "2026-06-01";
+  const rendered = delinquencyRenderedWindowMonths(dqLatestMonth, windowMonths, tenureStartMonth);
+  assert.equal(rendered, 3);
+
+  const { html } = renderDelinquency({
+    slideId: 13, months: COAST_MONTHS, windowMonths, tenureStartMonth,
+  });
+  assert.match(html, new RegExp(`Trailing ${rendered} Months`));
+});
+
+test("Expansion Case Close's DQ proof point now quotes the same real window, not lookback_months", () => {
+  const rendered = delinquencyRenderedWindowMonths("2026-08-01", 4, "2026-06-01");
+  const { html } = renderExpansionCaseClose({
+    slideId: 46,
+    pmcName: "Coast Property Management",
+    enrolledUnits: 8_908,
+    totalPortfolioUnits: 10_326,
+    currentNar: 0.038,
+    currentRent: 673_000,
+    currentResidents: 338,
+    lifetimeDqShielded: 17_880.35, // $1,414 + $9,015.66 + $7,450.69
+    // Old, buggy call site passed the report's lookback_months (e.g. 12 for a Full Year
+    // review) here regardless of real tenure - this test passes the FIXED value instead.
+    lookbackMonths: rendered,
+  });
+  assert.match(html, /absorbed \$18K in delinquency risk over the trailing 3 months/);
+  assert.doesNotMatch(html, /trailing 12 months/);
 });
 
 console.log(`\n${passed} passed`);
