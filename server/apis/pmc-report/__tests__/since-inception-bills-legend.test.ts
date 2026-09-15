@@ -109,4 +109,29 @@ test("the same fix reaches the combined/stacked view - the exact shape the live 
   assert.match(js, /c\.update\('none'\);/);
 });
 
+test("the total-rent label and the bills-paid dot's own number don't collide on a short bar", () => {
+  // Kevin's catch, live screenshot: for a near-invisible early-year bar (e.g. $49K on a chart
+  // scaled to $100M+), the year's total-rent label (just above the bar) and the bills-paid
+  // dot's own number (flipped above the dot to dodge the x-axis label below it) both converged
+  // on nearly the same pixel spot - a short bar's dot sits close to BOTH the baseline and the
+  // bar's own top at once, so flipping which side it goes on only swapped which label it
+  // collided with. Sidestepped to the dot's right instead of above: a different vertical band
+  // than the total label's, and no other label shares that horizontal position either way.
+  const { js } = renderSinceInception({
+    slideId: 3, pmcName: "Coast Property Management", reportingMonth: "2025-12-01",
+    yearlyData: [
+      { year: 2020, totalRent: 49_000, billsPaid: 10, monthsActive: 12, ytdRent: 30_000, ytdBills: 6, ytdMonthsActive: 9 },
+      { year: 2025, totalRent: 105_100_000, billsPaid: 78_696, monthsActive: 12, ytdRent: 78_000_000, ytdBills: 60_000, ytdMonthsActive: 9 },
+    ],
+    monthlyTotals,
+  } satisfies SinceInceptionInput);
+  assert.match(js, /const nearBaseline = p\.base != null && \(p\.base - p\.y\) < 24;/);
+  assert.match(js, /if \(nearBaseline\) \{/);
+  assert.match(js, /ctx\.textAlign = 'left';/);
+  assert.match(js, /ctx\.fillText\(p\.val\.toLocaleString\(\), p\.x \+ 8, p\.y \+ 4\);/);
+  // Normal (tall-bar) case is unchanged - still centered below the dot.
+  assert.match(js, /ctx\.textAlign = 'center';/);
+  assert.match(js, /ctx\.fillText\(p\.val\.toLocaleString\(\), p\.x, p\.y \+ 16\);/);
+});
+
 console.log(`\n${passed} passed`);

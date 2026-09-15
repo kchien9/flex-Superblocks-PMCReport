@@ -4743,9 +4743,27 @@ window['initSlide${slideId}'] = (function() {
           ctx.lineWidth = 1.5; ctx.strokeStyle = '#f7f7f7'; ctx.stroke();
           ctx.font = "600 11px 'ABCDiatype', sans-serif";
           ctx.fillStyle = p.projected ? 'rgba(21,128,61,0.8)' : '#15803d';
-          ctx.textAlign = 'center';
+          // For a short bar, the dot (drawn at the bar's own vertical center) sits close to
+          // BOTH the baseline and the bar's own top at once - there's no vertical direction
+          // left that's clear of something: below crowds the x-axis year label, and above
+          // crowds the year's total-rent datalabel (which sits just above the bar's top, and
+          // for a short bar that's only a few px from the dot's own position). Kevin's catch,
+          // live screenshot: total and bills-paid numbers overlapping into unreadable static
+          // for the early, tiny-value years. Flipping above (this function's first version)
+          // only swapped which of those two collisions happened - it never had anywhere
+          // vertically clear to go. Sidestepping to the dot's RIGHT instead avoids both at
+          // once: the total label is offset vertically from a DIFFERENT anchor entirely, so
+          // there's no shared vertical band to collide in, and there's no similarly-positioned
+          // text at the bar's own horizontal center at dot height to collide with there either.
+          // Aligned to Flask's render_since_inception, same commit.
           const nearBaseline = p.base != null && (p.base - p.y) < 24;
-          ctx.fillText(p.val.toLocaleString(), p.x, nearBaseline ? p.y - 10 : p.y + 16);
+          if (nearBaseline) {
+            ctx.textAlign = 'left';
+            ctx.fillText(p.val.toLocaleString(), p.x + 8, p.y + 4);
+          } else {
+            ctx.textAlign = 'center';
+            ctx.fillText(p.val.toLocaleString(), p.x, p.y + 16);
+          }
         });
         ctx.restore();
       }
