@@ -37,7 +37,7 @@ test("in-progress current year gets the projection clause", () => {
     slideId: 3, pmcName: "Coast Property Management", reportingMonth: "2026-06-01",
     yearlyData, monthlyTotals,
   } satisfies SinceInceptionInput);
-  assert.match(html, /joined Flex in 2024 — and where you.re headed\./);
+  assert.match(html, /joined Flex in 2024 - and where you.re headed\./);
 });
 
 test("a fully completed year gets no projection clause - nothing on the chart backs it up", () => {

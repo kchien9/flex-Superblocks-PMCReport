@@ -4355,7 +4355,7 @@ export function renderSinceInception(input: SinceInceptionInput): SlideResult {
   // all), and claiming "where you're headed" with nothing on the chart showing that would be
   // exactly the "copy claims content the slide doesn't have" bug class this whole audit exists
   // to catch.
-  const subtitle = `<strong>${fmtCurrency(totalRentAll)} guaranteed</strong> and <strong>${totalBillsAll.toLocaleString("en-US")} bills paid</strong> since ${_e(pmcName)} joined Flex in ${firstYear}${hasProjection ? " — and where you’re headed" : ""}.`;
+  const subtitle = `<strong>${fmtCurrency(totalRentAll)} guaranteed</strong> and <strong>${totalBillsAll.toLocaleString("en-US")} bills paid</strong> since ${_e(pmcName)} joined Flex in ${firstYear}${hasProjection ? " - and where you're headed" : ""}.`;
   let projRentVal: number | null = null;
   let projBillsVal: number | null = null;
   let ghostPctText = "";
