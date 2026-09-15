@@ -4796,12 +4796,28 @@ window['initSlide${slideId}'] = (function() {
     // the container's real size and corrects the canvas's actual pixel dimensions, which is
     // the root problem); update('none') right after forces an immediate, fully non-animated
     // final redraw against those now-correct dimensions, so nothing is ever left mid-transition
-    // for this plugin to draw over. Kevin still needs to confirm this live - there's no browser
-    // in this session to watch the render.
+    // for this plugin to draw over.
+    //
+    // A faithful headless-browser repro of this exact generated JS (real Chart.js 4.4.0 +
+    // chartjs-plugin-datalabels registered exactly as production does, single-entity and an
+    // 8-entity combined case) renders correctly on first paint with this fix in place - so
+    // whatever Kevin is still seeing live isn't a defect in this resize/update logic itself.
+    // The most likely remaining explanation is something specific to how the deck is actually
+    // served/embedded (e.g. Superblocks' custom-component iframe not yet at full size when this
+    // callback fires) that a standalone file:// repro can't reproduce. Wrapped in try/catch with
+    // an explicit console.error so that if resize()/update() ever throws (chart missing,
+    // stale/overwritten globals, anything else) it's no longer silently swallowed - the
+    // surrounding showSlide()'s try/catch only covers the synchronous initSlideN() call, not
+    // this async rAF callback, so a throw in here previously vanished with no trace at all.
     requestAnimationFrame(() => {
-      const c = window['siChart${slideId}'];
-      c.resize();
-      c.update('none');
+      try {
+        const c = window['siChart${slideId}'];
+        if (!c) { console.error('slide ${slideId} SI resize: chart missing'); return; }
+        c.resize();
+        c.update('none');
+      } catch (e) {
+        console.error('slide ${slideId} SI resize failed:', e);
+      }
     });
   };
 })();

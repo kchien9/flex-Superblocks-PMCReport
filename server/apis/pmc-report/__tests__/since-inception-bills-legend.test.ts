@@ -84,6 +84,13 @@ test("the chart forces a resize + non-animated redraw after creation, so the bil
   // update('none') must run too, not just resize() alone - the whole point of this second call
   // is to force a final, non-animated redraw so centerDots never draws mid-transition.
   assert.match(js, /c\.update\('none'\);/);
+  // A faithful headless-browser repro (real Chart.js 4.4.0 + chartjs-plugin-datalabels, single
+  // and 8-entity combined cases) proved this resize/update logic itself renders correctly - so
+  // if Kevin is still seeing the bug live, whatever throws or goes missing needs to actually
+  // surface instead of vanishing silently. showSlide()'s try/catch only wraps the synchronous
+  // initSlideN() call, not this async requestAnimationFrame callback.
+  assert.match(js, /if \(!c\) \{ console\.error\('slide 3 SI resize: chart missing'\); return; \}/);
+  assert.match(js, /\} catch \(e\) \{\s*console\.error\('slide 3 SI resize failed:', e\);/);
 });
 
 test("the same fix reaches the combined/stacked view - the exact shape the live glitch showed up on", () => {
