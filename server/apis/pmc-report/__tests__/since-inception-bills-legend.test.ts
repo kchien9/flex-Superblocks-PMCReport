@@ -14,19 +14,24 @@
  * 2. "The paying users [dots] only show in the YTD toggle" - every slide starts hidden
  *    (display:none) until made active, so this chart was created against a 0-sized canvas.
  *    centerDots' afterDatasetsDraw plugin reads chart.getDatasetMeta(0).data[i] for each dot's
- *    pixel position - garbage until a real resize happens. Clicking ANY toggle calls
- *    chart.update() after the slide is actually visible, which "fixed" the dots by accident;
- *    the real bug was that the FIRST paint (Full Year, the default) never got that same
- *    resize. Two other charts in this file (Flex Is For Everyone, Residents/Units) already
- *    carry a requestAnimationFrame(() => chart.resize()) call after creation for exactly this
- *    reason - Since Inception was just missing it.
+ *    pixel position - garbage until a real resize happens. A bare resize() (2026-09-15's first
+ *    attempt) fixed the absence but regressed to something worse on the combined/stacked view -
+ *    overlapping garbled labels and a stray oversized ghost box, a real live-screenshot catch.
+ *    centerDots is the only hand-rolled canvas plugin in this file (every other resize() site
+ *    only has the standard chartjs-plugin-datalabels, which animates cleanly on its own) - it
+ *    re-reads scale/bar pixel positions fresh on every afterDatasetsDraw call, so if resize()
+ *    kicks off Chart.js's default animated transition, this plugin repaints mid-interpolation.
+ *    Fixed with resize() (still needed - it's the only call that corrects the canvas's actual
+ *    pixel dimensions) immediately followed by update('none') (forces a final, fully
+ *    non-animated redraw against those now-correct dimensions, so nothing is ever left
+ *    mid-transition for this plugin to draw over).
  *
  * Run: npx tsx server/apis/pmc-report/__tests__/since-inception-bills-legend.test.ts
  */
 import assert from "node:assert/strict";
 
 import { renderSinceInception } from "../slide-renderers.js";
-import type { MonthlyTotal, SinceInceptionInput, YearlyData } from "../slide-renderers.js";
+import type { MonthlyTotal, SinceInceptionEntityYearly, SinceInceptionInput, YearlyData } from "../slide-renderers.js";
 
 let passed = 0;
 function test(name: string, fn: () => void): void {
@@ -68,12 +73,33 @@ test("toggling to YTD swaps the Bills Paid legend, matching the eyebrow and x-ax
   assert.match(js, /si-bills-legend-ytd-'\s*\+\s*sid/);
 });
 
-test("the chart forces a resize after creation, so the bills-paid dots don't need a toggle click to appear", () => {
+test("the chart forces a resize + non-animated redraw after creation, so the bills-paid dots don't need a toggle click to appear or repaint garbled", () => {
   const { js } = renderSinceInception({
     slideId: 3, pmcName: "Coast Property Management", reportingMonth: "2025-12-01",
     yearlyData: YEARLY, monthlyTotals,
   } satisfies SinceInceptionInput);
-  assert.match(js, /requestAnimationFrame\(\(\) => \{ window\['siChart3'\]\.resize\(\); \}\);/);
+  assert.match(js, /requestAnimationFrame\(\(\) => \{/);
+  assert.match(js, /const c = window\['siChart3'\];/);
+  assert.match(js, /c\.resize\(\);/);
+  // update('none') must run too, not just resize() alone - the whole point of this second call
+  // is to force a final, non-animated redraw so centerDots never draws mid-transition.
+  assert.match(js, /c\.update\('none'\);/);
+});
+
+test("the same fix reaches the combined/stacked view - the exact shape the live glitch showed up on", () => {
+  // Asset Living's real shape: several entities stacked into one bar per year.
+  const entityYearlyData: SinceInceptionEntityYearly[] = [
+    { pmcName: "Asset Living", totalRentByYear: { 2024: 200_000_000, 2025: 300_000_000 }, ytdRentByYear: { 2024: 100_000_000, 2025: 150_000_000 } },
+    { pmcName: "Echelon Property Group", totalRentByYear: { 2024: 20_000_000, 2025: 30_000_000 }, ytdRentByYear: { 2024: 10_000_000, 2025: 15_000_000 } },
+    { pmcName: "FPI", totalRentByYear: { 2024: 50_000_000, 2025: 70_000_000 }, ytdRentByYear: { 2024: 25_000_000, 2025: 35_000_000 } },
+  ];
+  const { js } = renderSinceInception({
+    slideId: 9, pmcName: "Asset Living", reportingMonth: "2025-12-01",
+    yearlyData: YEARLY, monthlyTotals, entityYearlyData,
+  } satisfies SinceInceptionInput);
+  assert.match(js, /const c = window\['siChart9'\];/);
+  assert.match(js, /c\.resize\(\);/);
+  assert.match(js, /c\.update\('none'\);/);
 });
 
 console.log(`\n${passed} passed`);

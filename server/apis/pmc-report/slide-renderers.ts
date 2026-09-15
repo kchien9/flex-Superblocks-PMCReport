@@ -4782,10 +4782,27 @@ window['initSlide${slideId}'] = (function() {
     // load). Every slide starts hidden (display:none) until it's made active, so this chart
     // is created against a 0-sized canvas - centerDots' afterDatasetsDraw reads
     // chart.getDatasetMeta(0).data[i] for each dot's position, and that geometry is garbage
-    // until a real resize happens. Toggling calls chart.update() AFTER the slide is visible,
-    // which is why the dots 'fixed themselves' the moment anyone touched a toggle. Same fix
-    // already used on the Flex-Is-For-Everyone and Residents/Units charts in this same file.
-    requestAnimationFrame(() => { window['siChart${slideId}'].resize(); });
+    // until a real resize happens.
+    //
+    // resize() ALONE regressed to something worse on the combined/stacked view (Kevin's catch,
+    // live screenshot on Asset Living's 8-entity deck): overlapping, garbled dollar labels and
+    // a stray oversized ghost-projection box. centerDots is the only HAND-ROLLED canvas plugin
+    // in this file (every other chart's overlay is the standard chartjs-plugin-datalabels,
+    // which animates cleanly on its own) - it reads chart.scales.y.getPixelForValue(...) and
+    // barMeta.data[i] fresh on every afterDatasetsDraw call, so if resize() kicks off Chart.js's
+    // default ANIMATED transition, this plugin repaints at a different, still-interpolating
+    // pixel position on each intermediate frame - exactly what a "two numbers overlapping"
+    // screenshot looks like. resize() is still needed first (it's the only call that re-reads
+    // the container's real size and corrects the canvas's actual pixel dimensions, which is
+    // the root problem); update('none') right after forces an immediate, fully non-animated
+    // final redraw against those now-correct dimensions, so nothing is ever left mid-transition
+    // for this plugin to draw over. Kevin still needs to confirm this live - there's no browser
+    // in this session to watch the render.
+    requestAnimationFrame(() => {
+      const c = window['siChart${slideId}'];
+      c.resize();
+      c.update('none');
+    });
   };
 })();
 ${toggleFnJs}
