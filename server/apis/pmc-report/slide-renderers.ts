@@ -1539,8 +1539,6 @@ export function renderAdoptionOpportunities(input: {
   peerMedianEngagement?: number;
   /** Properties rolled out in the last 6 months, below their age-matched benchmark. */
   newRolloutCandidates?: NewRolloutCandidate[];
-  /** Deactivated properties (churn/transfer/API-access/enrollment), partner-relevant reasons only. */
-  disabledProperties?: DisabledPropertyRow[];
   /** Live presenting has no fixed-height/no-scroll PDF export constraint, so row caps lift. */
   presentingMode?: boolean;
   /** Hides the "Direct Marketing on/off" badge (both this table and the new-rollout
@@ -1549,7 +1547,7 @@ export function renderAdoptionOpportunities(input: {
 } & BenchmarkColumnVisibility): { html: string; js: string } {
   const {
     slideId, propertySnapshot, targetNar: _targetNar, peerMedianNar, peerMedianEngagement,
-    newRolloutCandidates = [], disabledProperties = [], presentingMode = false, hideD2c = false,
+    newRolloutCandidates = [], presentingMode = false, hideD2c = false,
   } = input;
   const { colgroupHtml, theadHtml } = benchmarkTableHeader(input);
 
@@ -1683,26 +1681,17 @@ export function renderAdoptionOpportunities(input: {
   // on Flask's render_adoption_opportunities).
   laggards.sort((a, b) => b.p.adoptionRate - a.p.adoptionRate);
 
-  // ── Disabled Properties ─────────────────────────────────────────────────
-  const disabledRowsHtml = disabledProperties.map((d) => `
-    <tr style="border-bottom:1px solid #f0f0f4;">
-      <td style="padding:5px 8px 5px 4px;">
-        <div style="font-size:11px;font-weight:600;color:#6b7280;">${_e(d.propertyName)}</div>
-        <div style="font-size:9px;color:#a09cb0;margin-top:1px;">${d.units.toLocaleString()} units${d.lastSeenMonth ? ` · left ${_e(d.lastSeenMonth)}` : ""}</div>
-      </td>
-      <td style="padding:5px 8px;font-size:11px;color:#6b7280;" colspan="3">${_e(d.deactivationLabel)}</td>
-    </tr>`).join("");
-  const disabledSection = disabledRowsHtml ? `
-    <div style="flex-shrink:0;padding-top:8px;border-top:1px solid #f0f0f4;margin-top:6px;">
-      <div style="font-size:8px;font-weight:700;color:#9ca3af;text-transform:uppercase;letter-spacing:0.1em;margin-bottom:4px;">No Longer Active</div>
-      <table style="width:100%;border-collapse:collapse;table-layout:fixed;">
-        <colgroup><col style="width:220px;"><col></colgroup>
-        <tbody>${disabledRowsHtml}</tbody>
-      </table>
-    </div>` : "";
+  // Churned/deactivated properties used to get a "No Longer Active" table right here (Kevin's
+  // original ask). Moved off this slide entirely (Kevin, 2026-09-15): a partner-facing "what
+  // needs your attention" slide showing properties that already left the network read as
+  // confusing/off-topic - churn detail now lives on the Full Property Table appendix (still
+  // real, partner-facing data) and gets its own speaker-notes talk-track bullet on THIS slide
+  // instead (notesAdoptionOpportunities, speaker-notes.ts) so a rep still knows to mention it
+  // live without it cluttering the slide itself. See renderFullPropertyTable's disabled-rows
+  // section (get-pmc-monthly-report.ts) for where this table moved to.
 
   // ── Early exit if nothing to show ───────────────────────────────────────
-  if (laggards.length === 0 && !newRolloutSection && !disabledSection) return { html: "", js: "" };
+  if (laggards.length === 0 && !newRolloutSection) return { html: "", js: "" };
 
   const hasTrend = laggards.some((r) => r.p.trendFlag);
 
@@ -1795,7 +1784,6 @@ export function renderAdoptionOpportunities(input: {
     <div style="font-size:10px;color:#a09cb0;margin:-4px 0 8px;">Peer comparisons are drawn from a capped sample of the network, not the full population — hover a value for its exact match criteria and peer count.</div>
     ${newRolloutSection}
     ${establishedSection}
-    ${disabledSection}
   </div>`;
 
   return { html, js: "" };

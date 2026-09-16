@@ -1757,9 +1757,15 @@ export function renderStateBreakdown(input: StateBreakdownInput): { html: string
 
 
 
-function renderFullPropertyTable(
+export function renderFullPropertyTable(
   snapshot: { propertyName: string; pmcName?: string; units: number; billsPaid: number; newSignups: number; prevSignups?: number; adoptionRate: number; rentPaid?: number; cumRent?: number; rolloutMonth?: string | null }[],
-  slideId: number
+  slideId: number,
+  // Churned/deactivated properties (Kevin, 2026-09-15) - moved here from the "These properties
+  // need our attention" slide, which read as confusing showing properties that had already
+  // left the network alongside ones still active and needing action. This appendix ("every
+  // property, every number, reference only") is the right home for it - still real,
+  // partner-facing data, just not mixed into the "needs attention" narrative slide anymore.
+  disabledProperties: DisabledPropertyRow[] = []
 ): string {
   // "PMC" column right after Property, ONLY when the report combines 2+ PMCs (Kevin's ask on the
   // 8-entity Asset Living deck: with every subsidiary's properties in one list, the property
@@ -1828,6 +1834,26 @@ function renderFullPropertyTable(
     )
     .join("");
 
+  // ── No Longer Active (churned/deactivated properties) ────────────────────
+  // Same markup that used to live on the "needs attention" slide - moved here verbatim, just
+  // relocated. Partner-relevant deactivation reasons only (filtered upstream, same as before).
+  const disabledRowsHtml = disabledProperties.map((d) => `
+    <tr style="border-bottom:1px solid #f0f0f4;">
+      <td style="padding:5px 8px 5px 4px;">
+        <div style="font-size:11px;font-weight:600;color:#6b7280;">${_e(d.propertyName)}</div>
+        <div style="font-size:9px;color:#a09cb0;margin-top:1px;">${d.units.toLocaleString()} units${d.lastSeenMonth ? ` · left ${_e(d.lastSeenMonth)}` : ""}</div>
+      </td>
+      <td style="padding:5px 8px;font-size:11px;color:#6b7280;" colspan="3">${_e(d.deactivationLabel)}</td>
+    </tr>`).join("");
+  const disabledSection = disabledRowsHtml ? `
+    <div style="flex-shrink:0;padding-top:8px;margin-top:10px;border-top:1px solid #f0f0f4;">
+      <div style="font-size:8px;font-weight:700;color:#9ca3af;text-transform:uppercase;letter-spacing:0.1em;margin-bottom:4px;">No Longer Active</div>
+      <table style="width:100%;border-collapse:collapse;table-layout:fixed;">
+        <colgroup><col style="width:220px;"><col></colgroup>
+        <tbody>${disabledRowsHtml}</tbody>
+      </table>
+    </div>` : "";
+
   return `
   <div class="slide" id="slide-${slideId}" style="background:#fff;">
     <div class="slide-header">
@@ -1841,6 +1867,7 @@ function renderFullPropertyTable(
         <tbody id="tbody${slideId}">${rows}</tbody>
       </table>
     </div>
+    ${disabledSection}
   </div>
   <script>if(!window.flexSortTable){window.flexSortTable=function(sid,col){
     var tbody=document.getElementById('tbody'+sid); if(!tbody) return;
@@ -7538,7 +7565,6 @@ export default api({
       peerMedianNar: canonicalPeerNarP50 ?? undefined,
       peerMedianEngagement: peerMedianEngFallback,
       newRolloutCandidates,
-      disabledProperties,
       presentingMode: presenting_mode,
       hideD2c: hide_d2c,
       showAdoptionPortfolioAvg: show_adoption_portfolio_avg,
@@ -7610,7 +7636,7 @@ export default api({
 
     // Full Property Table = appendix after QBR Close
     const propTableSlideId = allocSlideId();
-    const propertyTableHtml = renderFullPropertyTable(propertySnapshot, propTableSlideId);
+    const propertyTableHtml = renderFullPropertyTable(propertySnapshot, propTableSlideId, disabledProperties);
 
     // New (Task 13) - right after Since Inception, before Residents/Units. No Flask reference
     // slide id (this is TS-only, net new) - uses the dynamic allocator like every other
@@ -7785,6 +7811,7 @@ export default api({
         currentResidents: latestMonth?.billsPaid ?? 0,
         hasNiro: false,
         dqWindowMonths,
+        disabledProperties,
       };
       const notesBenchmark: SpeakerNotesBenchmark = {
         benchmarkNar: canonicalPeerNarP50 ?? segmentNarAvg ?? 0.085,

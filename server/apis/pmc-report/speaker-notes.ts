@@ -81,6 +81,14 @@ export const SLIDE_TITLES: Record<number, string> = {
   57: "Customer Experience", 58: "Properties Worth Celebrating",
 };
 
+// Minimal shape for the churn talk-track bullet below - deliberately not importing
+// DisabledPropertyRow from slide-renderers.ts for this one field; this file has never taken a
+// dependency on that one, and the notes only need the two fields they actually print.
+export interface SpeakerNotesDisabledProperty {
+  propertyName: string;
+  deactivationLabel: string;
+}
+
 export interface SpeakerNotesKpis {
   pmcName: string;
   reportingMonth: string | null;
@@ -101,6 +109,10 @@ export interface SpeakerNotesKpis {
   // get-pmc-monthly-report.ts). Left undefined for QBR, which shows the peer line
   // unconditionally and has no equivalent gating to explain.
   showingAbovePeerMedian?: boolean;
+  // Churned/deactivated properties this period (Kevin, 2026-09-15) - used ONLY to flag them as
+  // a talk-track bullet on the Adoption Opportunities slide; the table itself moved to the Full
+  // Property Table appendix. Partner-relevant deactivation reasons only (filtered upstream).
+  disabledProperties?: SpeakerNotesDisabledProperty[];
 }
 
 export interface SpeakerNotesBenchmark {
@@ -415,7 +427,7 @@ function notesCustomerExperience(): string[] {
 }
 
 function notesAdoptionOpportunities(k: SpeakerNotesKpis): string[] {
-  return [
+  const notes = [
     `This slide surfaces the properties with the most headroom — below the portfolio median and sized large enough that moving them would meaningfully lift ${k.pmcName}'s overall adoption rate.`,
     "HOW TO USE IT: Don't read the list top-to-bottom. Lead with the largest opportunity. 'If we could move [property] from X% to median, that's roughly Y more residents on Flex every month.'",
     "WHAT DRIVES LAGGARDS: The most common causes are (1) residents don't know Flex is available — marketing isn't turned on, (2) the sign-up flow has friction specific to this PMS integration, or (3) it's a newer property still in its ramp period.",
@@ -423,6 +435,20 @@ function notesAdoptionOpportunities(k: SpeakerNotesKpis): string[] {
     "COACHING PROMPT: 'For the top property on this list — do you know if Flex is visible to residents there? Is it in the portal, in move-in communication?' This usually opens a property manager conversation.",
     "Methodology note if they ask: properties are ranked by estimated adoption gap (units × (median − current NAR)). Only properties with meaningful unit count included.",
   ];
+  // Churned properties no longer get their own table on this slide (Kevin, 2026-09-15 - it
+  // read as confusing mixing "needs action" with "already gone"); flagged here instead so a
+  // rep still knows to mention it live, with the full detail one click away on the Full
+  // Property Table appendix.
+  if (k.disabledProperties && k.disabledProperties.length > 0) {
+    const names = k.disabledProperties.map((d) => d.propertyName);
+    const listed = names.length <= 3
+      ? names.join(", ")
+      : `${names.slice(0, 3).join(", ")}, and ${names.length - 3} more`;
+    notes.push(
+      `WORTH FLAGGING: ${names.length} propert${names.length === 1 ? "y" : "ies"} left the network this period — ${listed}. Not the focus of this slide (they're no longer actionable), but worth a quick mention so it doesn't read as an unexplained gap. Full detail (reason, last active month) is on the Full Property Table appendix.`
+    );
+  }
+  return notes;
 }
 
 function notesPropertiesWorthCelebrating(k: SpeakerNotesKpis): string[] {
