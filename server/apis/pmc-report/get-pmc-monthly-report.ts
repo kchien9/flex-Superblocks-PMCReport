@@ -405,6 +405,19 @@ function applyTerminology(html: string, terminology: string | undefined): string
   return out;
 }
 
+/** Parses QBRTab.tsx's "Partner Since Override" (<input type="month">, "YYYY-MM") into the
+ * same "YYYY-MM-01" string shape every other partnerSince value in this file uses
+ * (earliestRollout, ROLLOUT_MONTH, etc). Returns null for an empty/absent override or a
+ * malformed one (caller logs the latter) - never throws, since one rep's typo in this field
+ * must not take down report generation for that pmc. Exported for testability - the override
+ * itself is applied inline at its one call site (the partnerSince combine, ~L4905). */
+export function parsePartnerSinceOverride(override: string | null | undefined): string | null {
+  if (!override) return null;
+  const [y, m] = override.split("-").map(Number);
+  if (!y || !m || m < 1 || m > 12) return null;
+  return `${String(y).padStart(4, "0")}-${String(m).padStart(2, "0")}-01`;
+}
+
 function rentWindowLabel(opts: { partnerSince: string | null; lookbackMonths: number; coversFullTenure: boolean }): string {
   if (opts.coversFullTenure && opts.partnerSince) {
     return `since ${monthLabel(opts.partnerSince)}`;
@@ -2717,6 +2730,13 @@ export default api({
     // avoid (see sparklines for precedent).
     additional_pmc_names: z.array(z.string()).optional(),
     report_name: z.string().optional().default(""),
+    // QBRTab.tsx's "Partner Since Override" (<input type="month">, "YYYY-MM") - manual one-off
+    // fix for a transferred property whose Flex billing history under this PMC's name predates
+    // its real relationship with it (see the partnerSince comment ~L4905 below for the full
+    // mechanics). Was UI-only until now - the field existed and sent this value, but nothing
+    // server-side ever read it, so overriding it silently did nothing. Mirrors Flask's
+    // app.py:1512/1921 partner_since_override.
+    partner_since_override: z.string().optional(),
     lookback_months: z.number().int().default(12),
     // "platinum" = "The Case for Marketing" (Flask report_type "platinum", 0de2310) - one PMC per
     // deck, fixed 4-slide order, its own early-return branch below.
@@ -2861,7 +2881,7 @@ export default api({
     }).optional(),
   }),
 
-  async run(ctx, { pmc_name, additional_pmc_names, report_name, lookback_months, deck_mode, adoption_target, testimonials, total_portfolio_units, expansion_slides, qbr_slides, presenting_mode, comparison_months, sparklines, period_comparison, terminology, hidden_kpi_tiles, show_adoption_portfolio_avg, show_adoption_peer_median, show_engagement_observed, show_engagement_portfolio_avg, show_engagement_peer_median, imported_slides, hide_d2c, checkin_date, total_units, avg_rent, properties }) {
+  async run(ctx, { pmc_name, additional_pmc_names, report_name, partner_since_override, lookback_months, deck_mode, adoption_target, testimonials, total_portfolio_units, expansion_slides, qbr_slides, presenting_mode, comparison_months, sparklines, period_comparison, terminology, hidden_kpi_tiles, show_adoption_portfolio_avg, show_adoption_peer_median, show_engagement_observed, show_engagement_portfolio_avg, show_engagement_peer_median, imported_slides, hide_d2c, checkin_date, total_units, avg_rent, properties }) {
     // Single resolved list every downstream query/array-builder reads from - pmc_name first
     // (the "primary" entity), then whatever else is being combined in. Replaces the old
     // old `hasSecondPmc ? [pmc_name, secondPmcName] : [pmc_name]` ternary pattern repeated at 4 call sites below.
@@ -4958,6 +4978,24 @@ export default api({
       }
     } catch {
       // Fallback to rollout-date aggregate on Salesforce query failure
+    }
+
+    // Manual one-off override (e.g. a property changed management companies and its Flex
+    // billing history under this PMC's name predates its real relationship with it - see the
+    // partnerSince comment above for why the automatic Salesforce/rollout combine can't always
+    // catch that on its own). Substitutes partnerSince itself so it also feeds the Since
+    // Inception floor and the cover date, not just a display label. Mirrors Flask's
+    // app.py:1921 partner_since_override. Input is "YYYY-MM" (QBRTab.tsx's <input
+    // type="month">); stored as "YYYY-MM-01" to match every other partnerSince-shaped string
+    // in this file (earliestRollout, ROLLOUT_MONTH values, etc).
+    if (partner_since_override) {
+      const overridden = parsePartnerSinceOverride(partner_since_override);
+      if (overridden) {
+        partnerSince = overridden;
+        ctx.log.info("QBR: partner_since manually overridden", { pmc_name, partnerSince });
+      } else {
+        ctx.log.warn("Invalid partner_since_override", { pmc_name, partner_since_override });
+      }
     }
 
     // PROPERTY_PUBLIC_ID, not PROPERTY_NAME. This is the portfolio property count behind the
