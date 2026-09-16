@@ -253,6 +253,14 @@ const RawRowSchema = z.object({
   // genuinely different per-property flag (integration wired up ≠ opted in to direct
   // marketing), which produced a scattered, per-property mismatch against Flask's badges.
   IS_MARKETING_OPT_IN: z.boolean().nullable(),
+  // Internal-only Property Reference tab fields (speaker-notes.ts) - Tier and Approval Rate.
+  // Kevin's catch, 2026-09-15: these were a documented KNOWN GAP (never queried anywhere in
+  // this file); Flask's pull_pmc_data (generator/data.py:196-238) pulls the exact same three
+  // columns off this exact same table, so this is genuinely just adding them here too, not a
+  // new query or join.
+  APPLICATIONS: z.coerce.number().nullable(),
+  APPROVALS: z.coerce.number().nullable(),
+  CURRENT_TIER: z.string().nullable(),
 });
 
 // Partner-relevant deactivation reasons (Flask: PARTNER_DEACTIVATION_REASONS, generator/data.py:3860)
@@ -3110,7 +3118,10 @@ export default api({
           HUBSPOT_DEAL_TOTAL_COMPANY_UNITS,
           STATIC_PARENT_TEAM_NAME_OPPORTUNITY AS SEGMENT_TEAM,
           HAS_MARKETING_INTEGRATION,
-          IS_MARKETING_OPT_IN
+          IS_MARKETING_OPT_IN,
+          APPLICATIONS_COUNT_PROPERTY AS APPLICATIONS,
+          APPROVALS_COUNT_PROPERTY AS APPROVALS,
+          CURRENT_TIER
        FROM PRODUCTION.ANALYTICS.PROPERTY_BP_MONTH_STATS
        WHERE PMC_NAME IN (${pmcNamePlaceholders})
          AND BP_MONTH >= DATEADD('month', -?, CURRENT_DATE())
@@ -4713,6 +4724,12 @@ export default api({
     // Compute cumulative rent & prev-month signups per property for appendix table
     const cumRentMap = new Map<string, number>();
     const prevSignupsMap = new Map<string, number>();
+    // Cumulative applications/approvals per property, same lookback window as cumRentMap -
+    // for the internal-only Property Reference tab's Approval Rate column (Kevin's catch,
+    // 2026-09-15 - a documented KNOWN GAP; mirrors Flask's cum_applications/cum_approvals,
+    // generator/data.py:776-777, same SUM-over-the-whole-pull semantics).
+    const cumApplicationsMap = new Map<string, number>();
+    const cumApprovalsMap = new Map<string, number>();
     const priorMonthStr = monthlyTotals.length >= 2
       ? [...monthlyTotals].sort((a, b) => a.month.localeCompare(b.month)).slice(-2)[0]?.month
       : null;
@@ -4725,6 +4742,8 @@ export default api({
     for (const r of inNetwork) {
       const propKey = `${r.PMC_NAME}||${r.PROPERTY_NAME}`;
       cumRentMap.set(propKey, (cumRentMap.get(propKey) ?? 0) + r.RENT_PAID);
+      cumApplicationsMap.set(propKey, (cumApplicationsMap.get(propKey) ?? 0) + (r.APPLICATIONS ?? 0));
+      cumApprovalsMap.set(propKey, (cumApprovalsMap.get(propKey) ?? 0) + (r.APPROVALS ?? 0));
       if (priorMonthStr && r.BP_MONTH === priorMonthStr) {
         prevSignupsMap.set(propKey, r.NEW_SIGNUPS ?? 0);
       }
@@ -4764,6 +4783,13 @@ export default api({
             : 0,
           hasMarketingIntegration: r.HAS_MARKETING_INTEGRATION ?? false,
           isMarketingOptIn: r.IS_MARKETING_OPT_IN ?? false,
+          // Internal-only Property Reference tab fields - see the RawRowSchema comment above
+          // for why these are safe to add now. currentTier reads off THIS row (the latest
+          // completed month) since tier is a point-in-time attribute, not summed like
+          // applications/approvals.
+          currentTier: r.CURRENT_TIER ?? null,
+          cumApplications: cumApplicationsMap.get(propKey) ?? 0,
+          cumApprovals: cumApprovalsMap.get(propKey) ?? 0,
           peerNar: undefined as number | null | undefined,
           peerNarCriteria: undefined as string | undefined,
           peerNarCount: undefined as number | undefined,
@@ -6363,7 +6389,8 @@ export default api({
         const ckNotesSnapshot = propertySnapshot.map((p) => ({
           propertyName: p.propertyName, units: p.units, billsPaid: p.billsPaid,
           newSignups: p.newSignups, adoptionRate: p.adoptionRate, rentPaid: p.rentPaid,
-          cumRent: p.cumRent,
+          cumRent: p.cumRent, currentTier: p.currentTier,
+          cumApplications: p.cumApplications, cumApprovals: p.cumApprovals,
         }));
         ckNotesHtml = applyTerminology(
           buildCheckinSpeakerNotesHtml(ckRenderedKeys, {
@@ -6503,13 +6530,22 @@ export default api({
           newSignups: m.newSignups, propertyCount: m.propertyCount,
         }));
         const silverCumRent = new Map<string, number>();
-        for (const r of tiers.silver) silverCumRent.set(r.PROPERTY_NAME, (silverCumRent.get(r.PROPERTY_NAME) ?? 0) + r.RENT_PAID);
+        const silverCumApplications = new Map<string, number>();
+        const silverCumApprovals = new Map<string, number>();
+        for (const r of tiers.silver) {
+          silverCumRent.set(r.PROPERTY_NAME, (silverCumRent.get(r.PROPERTY_NAME) ?? 0) + r.RENT_PAID);
+          silverCumApplications.set(r.PROPERTY_NAME, (silverCumApplications.get(r.PROPERTY_NAME) ?? 0) + (r.APPLICATIONS ?? 0));
+          silverCumApprovals.set(r.PROPERTY_NAME, (silverCumApprovals.get(r.PROPERTY_NAME) ?? 0) + (r.APPROVALS ?? 0));
+        }
         const platNotesSnapshot = silverLatestRows
           .map((r) => ({
             propertyName: r.PROPERTY_NAME, units: r.PROPERTY_UNIT_COUNT, billsPaid: r.BILLS_PAID,
             newSignups: r.NEW_SIGNUPS ?? 0,
             adoptionRate: r.PROPERTY_UNIT_COUNT > 0 ? r.BILLS_PAID / r.PROPERTY_UNIT_COUNT : 0,
             rentPaid: r.RENT_PAID, cumRent: silverCumRent.get(r.PROPERTY_NAME) ?? r.RENT_PAID,
+            currentTier: r.CURRENT_TIER ?? null,
+            cumApplications: silverCumApplications.get(r.PROPERTY_NAME) ?? 0,
+            cumApprovals: silverCumApprovals.get(r.PROPERTY_NAME) ?? 0,
           }))
           .sort((a, b) => b.billsPaid - a.billsPaid);
         platNotesHtml = applyTerminology(
@@ -7158,7 +7194,8 @@ export default api({
         const expNotesPropertySnapshot = propertySnapshot.map((p) => ({
           propertyName: p.propertyName, units: p.units, billsPaid: p.billsPaid,
           newSignups: p.newSignups, adoptionRate: p.adoptionRate, rentPaid: p.rentPaid,
-          cumRent: p.cumRent,
+          cumRent: p.cumRent, currentTier: p.currentTier,
+          cumApplications: p.cumApplications, cumApprovals: p.cumApprovals,
         }));
         expNotesHtml = applyTerminology(
           buildExpansionSpeakerNotesHtml(expRenderedKeys, expNotesKpis, expNotesMonthly, expNotesBenchmark, expNotesPropertySnapshot),

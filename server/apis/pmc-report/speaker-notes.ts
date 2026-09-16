@@ -5,14 +5,15 @@
  * "Slide Deck" download pattern (returned as an HTML string, downloaded client-side as a
  * data URI — no server-side file storage needed).
  *
- * Property Reference tab (Kevin's catch, 2026-08-19): ported with 7 of Flask's 9 columns —
- * Property, Units, Paying Residents, New Signups, Adoption, This Month Rent, Total Rent Paid.
- * KNOWN GAP: Tier and Approval Rate are NOT included — those need current_tier/cum_approvals/
- * cum_applications, which this report's property snapshot doesn't pull anywhere today
- * (confirmed via full-repo grep). Adding them is a real, separate follow-up (new query), not a
- * quick wire-up. Still not ported: the cohort standout-segment insight callouts
- * (detectStandoutSegments/pullCohortDealTags — a separate analysis pass Flask runs before
- * notes generation) — a safe, additive follow-up.
+ * Property Reference tab: ported with all 9 of Flask's columns — Property, Units, Tier,
+ * Paying Residents, New Signups, Adoption, Approval Rate, This Month Rent, Total Rent Paid.
+ * Tier/Approval Rate (Kevin's catch, 2026-08-19, closed 2026-09-15) needed current_tier/
+ * cum_approvals/cum_applications, which this report's property snapshot didn't pull anywhere -
+ * get-pmc-monthly-report.ts's main property query now selects APPLICATIONS_COUNT_PROPERTY /
+ * APPROVALS_COUNT_PROPERTY / CURRENT_TIER off the same table every other property field already
+ * reads from (same three columns Flask's pull_pmc_data has always pulled). Still not ported:
+ * the cohort standout-segment insight callouts (detectStandoutSegments/pullCohortDealTags — a
+ * separate analysis pass Flask runs before notes generation) — a safe, additive follow-up.
  */
 
 import { fmtPct, fmtPctNum } from "./format-pct.js";
@@ -583,8 +584,11 @@ export function getNotesForSlide(
 }
 
 // ── Property Reference tab (internal-only, never shown to the partner) ─────────
-// Port of Flask's _build_property_reference_table (generator/speaker_notes.py:793) — 7 of its
-// 9 columns; see the file-level KNOWN GAP note at the top for Tier/Approval Rate.
+// Port of Flask's _build_property_reference_table (generator/speaker_notes.py:793) — now all
+// 9 of its columns; Tier and Approval Rate (Kevin's catch, 2026-09-15) were the KNOWN GAP
+// mentioned at the top of this file until get-pmc-monthly-report.ts started pulling
+// APPLICATIONS_COUNT_PROPERTY / APPROVALS_COUNT_PROPERTY / CURRENT_TIER off the same query
+// every other property field already reads from.
 
 interface PropertyReferenceRow {
   propertyName: string;
@@ -594,6 +598,33 @@ interface PropertyReferenceRow {
   adoptionRate: number;
   rentPaid: number;
   cumRent?: number;
+  currentTier?: string | null;
+  cumApplications?: number;
+  cumApprovals?: number;
+}
+
+/** Flask speaker_notes.py `_tier_cell_html` verbatim - "Bronze" is the un-set default, not a
+ * missing-data placeholder, since every property has SOME tier. */
+function tierCellHtml(currentTier: string | null | undefined): { html: string; sortKey: string } {
+  const tier = (currentTier || "Bronze").trim();
+  const low = tier.toLowerCase();
+  let color: string;
+  let weight: string;
+  if (low.includes("plat")) { color = "#6A3DB8"; weight = "700"; }
+  else if (low === "silver") { color = "#6b7280"; weight = "600"; }
+  else { color = "#a09cb0"; weight = "400"; }
+  return { html: `<span style="color:${color};font-weight:${weight};">${_e(tier)}</span>`, sortKey: tier };
+}
+
+/** Flask speaker_notes.py `_approval_rate_cell` verbatim - never a bare percentage (a property
+ * with 1-2 applications showing "100%" reads as far more meaningful than it is, so the raw
+ * counts stay visible), and "no data" sorts to -1 rather than mixing in at 0%. */
+function approvalRateCell(cumApprovals: number | undefined, cumApplications: number | undefined): { html: string; sortValue: number } {
+  const apps = Math.round(cumApplications ?? 0);
+  const approvals = Math.round(cumApprovals ?? 0);
+  if (apps <= 0) return { html: "—", sortValue: -1 };
+  const rate = (approvals / apps) * 100;
+  return { html: `${approvals}/${apps} (${Math.round(rate)}%)`, sortValue: rate };
 }
 
 function buildPropertyReferenceTable(snapshot: PropertyReferenceRow[] | undefined): string {
@@ -605,23 +636,27 @@ function buildPropertyReferenceTable(snapshot: PropertyReferenceRow[] | undefine
     .sort((a, b) => b.billsPaid - a.billsPaid)
     .map((p) => {
       const narColor = p.adoptionRate >= 0.20 ? "#1a9e6a" : p.adoptionRate >= 0.10 ? "#d97706" : "#dc5050";
+      const tier = tierCellHtml(p.currentTier);
+      const approval = approvalRateCell(p.cumApprovals, p.cumApplications);
       return `
         <tr>
           <td data-sort="${_e(p.propertyName)}" style="padding:7px 10px;font-size:12px;">${_e(p.propertyName)}</td>
           <td data-sort="${p.units}" style="padding:7px 10px;font-size:12px;text-align:right;">${p.units.toLocaleString()}</td>
+          <td data-sort="${_e(tier.sortKey)}" style="padding:7px 10px;font-size:12px;text-align:center;">${tier.html}</td>
           <td data-sort="${p.billsPaid}" style="padding:7px 10px;font-size:12px;text-align:right;">${p.billsPaid.toLocaleString()}</td>
           <td data-sort="${p.newSignups}" style="padding:7px 10px;font-size:12px;text-align:right;">${p.newSignups.toLocaleString()}</td>
           <td data-sort="${p.adoptionRate}" style="padding:7px 10px;font-size:12px;text-align:right;font-weight:700;color:${narColor};">${pctStr(p.adoptionRate)}</td>
+          <td data-sort="${approval.sortValue}" style="padding:7px 10px;font-size:12px;text-align:right;white-space:nowrap;">${approval.html}</td>
           <td data-sort="${p.rentPaid}" style="padding:7px 10px;font-size:12px;text-align:right;">$${kStr(p.rentPaid)}</td>
           <td data-sort="${p.cumRent ?? p.rentPaid}" style="padding:7px 10px;font-size:12px;text-align:right;color:#6A3DB8;">$${kStr(p.cumRent ?? p.rentPaid)}</td>
         </tr>`;
     })
     .join("");
 
-  const cols = ["Property", "Units", "Paying Residents", "New Signups", "Adoption", "This Month Rent", "Total Rent Paid"];
+  const cols = ["Property", "Units", "Tier", "Paying Residents", "New Signups", "Adoption", "Approval Rate", "This Month Rent", "Total Rent Paid"];
   const thHtml = cols.map((c, i) => `
     <th onclick="flexNotesSortTable(${i})" id="pr-th-${i}"
-        style="padding:7px 10px;text-align:${i === 0 ? "left" : "right"};
+        style="padding:7px 10px;text-align:${i === 0 ? "left" : i === 2 ? "center" : "right"};
                font-size:10px;color:#524e5b;text-transform:uppercase;letter-spacing:0.08em;
                cursor:pointer;user-select:none;white-space:nowrap;">
       ${c}<span id="pr-arrow-${i}" style="display:inline-block;width:12px;"></span>
