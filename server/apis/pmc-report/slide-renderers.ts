@@ -838,17 +838,31 @@ export function renderPeerBenchmarks(input: {
     function pct(v: number): number {
       return Math.min(Math.max(Math.round(((v - scaleMin) / Math.max(scaleMax - scaleMin, 0.001)) * 1000) / 10, 0), 100);
     }
-    const p25Pct = pct(m.p25);
-    const p50Pct = pct(m.p50);
-    const p75Pct = pct(m.p75);
-    const dotPct = pct(m.pmcValue);
+    const lowerIsBetter = m.lowerIsBetter === true;
+    // Mirror the track for a lowerIsBetter metric (e.g. Time to First Sign-Up) so the BEST
+    // quartile always renders on the right, same as every higher-is-better card (Kevin's
+    // catch: on the un-mirrored axis, "8 days" correctly read as "Below median" in the color/
+    // label, but visually sat near the LEFT third of the bar with the good/fast PMCs also
+    // clustering left — the one card where scanning "further right = better" across the whole
+    // toggle set gave the wrong impression). This only flips WHERE each value's tick/label
+    // renders, never which real value it shows - P25's tick still prints the real P25 value,
+    // it just lands on the right instead of the left.
+    const mirror = (x: number) => 100 - x;
+    const p25Pct = lowerIsBetter ? mirror(pct(m.p25)) : pct(m.p25);
+    const p50Pct = lowerIsBetter ? mirror(pct(m.p50)) : pct(m.p50);
+    const p75Pct = lowerIsBetter ? mirror(pct(m.p75)) : pct(m.p75);
+    const dotPct = lowerIsBetter ? mirror(pct(m.pmcValue)) : pct(m.pmcValue);
+    // IQR band spans P25-P75 by real value, but mirroring can put P75's tick to the LEFT of
+    // P25's - min/abs keeps the band's left edge and width correct either way, instead of
+    // assuming p25Pct <= p75Pct (true only in the non-mirrored case).
+    const iqrLeftPct = Math.min(p25Pct, p75Pct);
+    const iqrWidthPct = Math.abs(p75Pct - p25Pct);
 
     // --- Quartile color & dot style (5-tier with ±0.5pp "at median" band) ---
     // "At median" checked FIRST, before the quartile branches — a near-exact tie (p50 and p75
     // within 0.5pp of each other) must never fall into "Above median"/"Top quartile" by a
     // rounding hair, matching Flask's exact branch order.
     const AT_MEDIAN_TOL = 0.005; // ±0.5pp
-    const lowerIsBetter = m.lowerIsBetter === true;
     let perfLbl: string;
     let lblColor: string;
     let dotColor: string;
@@ -902,7 +916,7 @@ export function renderPeerBenchmarks(input: {
             <!-- Track background -->
             <div style="position:absolute;top:18px;left:0;right:0;height:4px;background:#f0edff;border-radius:2px;"></div>
             <!-- IQR band -->
-            <div style="position:absolute;top:18px;left:${p25Pct}%;width:${p75Pct - p25Pct}%;height:4px;background:#DDC6F9;border-radius:2px;"></div>
+            <div style="position:absolute;top:18px;left:${iqrLeftPct}%;width:${iqrWidthPct}%;height:4px;background:#DDC6F9;border-radius:2px;"></div>
             <!-- P25 / P75 ticks -->
             <div style="position:absolute;top:15px;left:${p25Pct}%;width:1.5px;height:10px;background:#c4b8e8;border-radius:1px;transform:translateX(-50%);"></div>
             <div style="position:absolute;top:15px;left:${p75Pct}%;width:1.5px;height:10px;background:#c4b8e8;border-radius:1px;transform:translateX(-50%);"></div>
