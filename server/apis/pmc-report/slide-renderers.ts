@@ -3441,6 +3441,27 @@ export function renderHighRentAdoption(input: RentBucketInput): { html: string; 
   }
   if (bucketBreaks.length < 2) bucketBreaks.splice(0, bucketBreaks.length, 1000, 1500, 2000);
 
+  // The open-ended "+" bucket is supposed to catch a genuine small tail past P95 - "so a
+  // stray outlier doesn't blow out the axis" (see the comment above) - not the bulk of the
+  // population. That assumption breaks whenever a PMC's real median sits close to (or above)
+  // the P95-derived top edge: real case, Paths Management Services, median $1,287 landed the
+  // terminal bucket at "$1,250+" and it swallowed 68% of residents, even though every one of
+  // them actually topped out under $1,900 - a real "$1,250-$1,500 / $1,500+" split was
+  // sitting right there, just not cut (Kevin's catch, live screenshot). Extend with more
+  // same-width buckets past the P95 edge, toward the ACTUAL max, until the open bucket's
+  // share drops to something a single "+" catch-all should mean (a small tail) - capped at 3
+  // extra buckets so one truly pathological outlier can't blow this up into dozens of $250
+  // buckets. Aligned to Flask's render_high_rent_adoption, same commit.
+  const maxRent = sorted[sorted.length - 1];
+  for (let extra = 0; extra < 3; extra++) {
+    const openStart = bucketBreaks[bucketBreaks.length - 1];
+    const openShare = rentsForBreaks.filter((r) => r >= openStart).length / rentsForBreaks.length;
+    if (openShare <= 0.25) break;
+    const nextBreak = openStart + bucketWidth;
+    if (nextBreak >= maxRent) break;
+    bucketBreaks.push(nextBreak);
+  }
+
   const bucketOrder = [
     `Under $${bucketBreaks[0].toLocaleString()}`,
     ...bucketBreaks.slice(0, -1).map((b, i) => `$${b.toLocaleString()}–$${bucketBreaks[i + 1].toLocaleString()}`),
@@ -3644,7 +3665,21 @@ function flexRentBreaks(rents) {
   var raw = [];
   for (var b = loSnap; b < hiSnap && raw.length < targetBuckets; b += width) { raw.push(b); }
   var deduped = Array.from(new Set(raw)).sort(function(a, b) { return a - b; });
-  return deduped.length >= 2 ? deduped : [1000, 1500, 2000];
+  if (deduped.length < 2) return [1000, 1500, 2000];
+  // Same extension as the server-side initial render (renderHighRentAdoption above) - this
+  // JS twin recomputes breaks independently on every All-Time/Last Month toggle, so it needs
+  // the identical fix or toggling would silently revert to the old un-extended "+" bucket.
+  var maxRent = sorted[sorted.length - 1];
+  for (var extra = 0; extra < 3; extra++) {
+    var openStart = deduped[deduped.length - 1];
+    var openCount = 0;
+    for (var j = 0; j < rents.length; j++) { if (rents[j] >= openStart) openCount++; }
+    if (openCount / rents.length <= 0.25) break;
+    var nextBreak = openStart + width;
+    if (nextBreak >= maxRent) break;
+    deduped.push(nextBreak);
+  }
+  return deduped;
 }
 function flexRentBucketLabel(r, breaks) {
   for (var i = 0; i < breaks.length; i++) {
