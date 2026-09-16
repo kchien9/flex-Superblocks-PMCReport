@@ -7887,7 +7887,8 @@ export default api({
       const qbrNotesPropertySnapshot = propertySnapshot.map((p) => ({
         propertyName: p.propertyName, units: p.units, billsPaid: p.billsPaid,
         newSignups: p.newSignups, adoptionRate: p.adoptionRate, rentPaid: p.rentPaid,
-        cumRent: p.cumRent,
+        cumRent: p.cumRent, currentTier: p.currentTier,
+        cumApplications: p.cumApplications, cumApprovals: p.cumApprovals,
       }));
       notesHtml = applyTerminology(
         buildSpeakerNotesHtml(qbrSlideIdSequence, notesKpis, notesMonthly, notesBenchmark, undefined, qbrNotesPropertySnapshot),

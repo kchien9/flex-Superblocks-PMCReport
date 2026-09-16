@@ -11,6 +11,7 @@
  * Run: npx tsx server/apis/pmc-report/__tests__/property-reference-tier-approval-rate.test.ts
  */
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 
 import { buildSpeakerNotesHtml } from "../speaker-notes.js";
 import type { SpeakerNotesKpis, SpeakerNotesBenchmark, SpeakerNotesMonthlyRow } from "../speaker-notes.js";
@@ -61,6 +62,55 @@ test("Approval rate shows counts + rounded percent when there are applications, 
   ]);
   assert.match(html, />7\/10 \(70%\)</);
   assert.match(html, /data-sort="-1" style="padding:7px 10px;font-size:12px;text-align:right;white-space:nowrap;">—</);
+});
+
+test("churned properties render as their own trailing rows in the Property Reference tab, not just the talk-track bullet", () => {
+  // Kevin's catch, 2026-09-15: "the two churned props arent in the prop reference tab of the
+  // speaker notes" - they'd only ever been wired into the talk-track bullet, never into this
+  // internal reference table a rep might actually pull up mid-meeting to look someone up.
+  const withChurn: SpeakerNotesKpis = {
+    ...K,
+    disabledProperties: [
+      { propertyName: "Arkadia West Loop", units: 350, deactivationLabel: "Churned", lastSeenMonth: "Oct 2026" },
+      { propertyName: "Arkadia", units: 350, deactivationLabel: "Churned", lastSeenMonth: "Apr 2025" },
+    ],
+  };
+  const html = buildSpeakerNotesHtml([1], withChurn, MONTHLY, BENCH, undefined, [
+    { propertyName: "Alpha Towers", units: 100, billsPaid: 12, newSignups: 2, adoptionRate: 0.12, rentPaid: 16000 },
+  ]);
+  assert.match(html, /Arkadia West Loop/);
+  assert.match(html, /Churned · left Oct 2026/);
+  assert.match(html, /Churned · left Apr 2025/);
+  // The plain "Arkadia" row (not "Arkadia West Loop") is its own distinct row, not dropped.
+  assert.match(html, />Arkadia<\/td>/);
+});
+
+test("the Property Reference tab still renders (with just the churn rows) when every active property was filtered out", () => {
+  const withChurnOnly: SpeakerNotesKpis = {
+    ...K,
+    disabledProperties: [{ propertyName: "Gone Property", units: 50, deactivationLabel: "Churned" }],
+  };
+  const html = buildSpeakerNotesHtml([1], withChurnOnly, MONTHLY, BENCH, undefined, []);
+  assert.match(html, /Gone Property/);
+  assert.doesNotMatch(html, /No property data available/);
+});
+
+// ── Regression guard for the exact bug that shipped: 3 near-identical snapshot-mapping ──────
+// blocks in get-pmc-monthly-report.ts, and the whitespace-sensitive edit that updated 2 of the
+// 3 (Expansion + a Checkin path) but silently missed the QBR one - the one Kevin actually
+// tests. A source-text check catches a future edit doing the same thing again, since the three
+// blocks look identical enough at a glance to miss by eye too.
+const reportSrc = readFileSync(new URL("../get-pmc-monthly-report.ts", import.meta.url), "utf8");
+
+test("every propertySnapshot-derived notes snapshot carries currentTier + cumApplications + cumApprovals", () => {
+  const qbrBlock = reportSrc.slice(reportSrc.indexOf("const qbrNotesPropertySnapshot"), reportSrc.indexOf("const qbrNotesPropertySnapshot") + 400);
+  const expBlock = reportSrc.slice(reportSrc.indexOf("const expNotesPropertySnapshot"), reportSrc.indexOf("const expNotesPropertySnapshot") + 400);
+  const ckBlock = reportSrc.slice(reportSrc.indexOf("const ckNotesSnapshot"), reportSrc.indexOf("const ckNotesSnapshot") + 400);
+  for (const [name, block] of [["qbr", qbrBlock], ["expansion", expBlock], ["checkin", ckBlock]] as const) {
+    assert.match(block, /currentTier: p\.currentTier/, `${name} snapshot missing currentTier`);
+    assert.match(block, /cumApplications: p\.cumApplications/, `${name} snapshot missing cumApplications`);
+    assert.match(block, /cumApprovals: p\.cumApprovals/, `${name} snapshot missing cumApprovals`);
+  }
 });
 
 console.log(`\n${passed} passed`);

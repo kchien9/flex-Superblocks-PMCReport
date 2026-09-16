@@ -82,12 +82,16 @@ export const SLIDE_TITLES: Record<number, string> = {
   57: "Customer Experience", 58: "Properties Worth Celebrating",
 };
 
-// Minimal shape for the churn talk-track bullet below - deliberately not importing
-// DisabledPropertyRow from slide-renderers.ts for this one field; this file has never taken a
-// dependency on that one, and the notes only need the two fields they actually print.
+// Shape for both the churn talk-track bullet AND the Property Reference tab's churned-property
+// rows (Kevin's catch, 2026-09-15: the two churned properties weren't showing up in the
+// internal-only reference table either, only the talk-track bullet) - deliberately not
+// importing DisabledPropertyRow from slide-renderers.ts; this file has never taken a dependency
+// on that one, and these are the only fields either use.
 export interface SpeakerNotesDisabledProperty {
   propertyName: string;
   deactivationLabel: string;
+  units?: number;
+  lastSeenMonth?: string | null;
 }
 
 export interface SpeakerNotesKpis {
@@ -627,12 +631,21 @@ function approvalRateCell(cumApprovals: number | undefined, cumApplications: num
   return { html: `${approvals}/${apps} (${Math.round(rate)}%)`, sortValue: rate };
 }
 
-function buildPropertyReferenceTable(snapshot: PropertyReferenceRow[] | undefined): string {
-  if (!snapshot || snapshot.length === 0) {
+function buildPropertyReferenceTable(
+  snapshot: PropertyReferenceRow[] | undefined,
+  // Churned/deactivated properties (Kevin's catch, 2026-09-15: these need to show up HERE too,
+  // not just as a talk-track bullet - a rep pulling up the internal reference tab mid-meeting
+  // needs to actually find them). Rendered as trailing, visually muted rows - Property + Units
+  // stay real cells (so those two columns' sort still works normally); everything else is one
+  // merged cell with the deactivation reason + last active month, same as the table this was
+  // moved from.
+  disabled?: SpeakerNotesDisabledProperty[],
+): string {
+  if ((!snapshot || snapshot.length === 0) && (!disabled || disabled.length === 0)) {
     return `<div style="color:#a09cb0;font-size:13px;">No property data available.</div>`;
   }
 
-  const rows = [...snapshot]
+  const rows = [...(snapshot ?? [])]
     .sort((a, b) => b.billsPaid - a.billsPaid)
     .map((p) => {
       const narColor = p.adoptionRate >= 0.20 ? "#1a9e6a" : p.adoptionRate >= 0.10 ? "#d97706" : "#dc5050";
@@ -653,6 +666,13 @@ function buildPropertyReferenceTable(snapshot: PropertyReferenceRow[] | undefine
     })
     .join("");
 
+  const disabledRows = (disabled ?? []).map((d) => `
+      <tr style="color:#9ca3af;">
+        <td data-sort="${_e(d.propertyName)}" style="padding:7px 10px;font-size:12px;">${_e(d.propertyName)}</td>
+        <td data-sort="${d.units ?? 0}" style="padding:7px 10px;font-size:12px;text-align:right;">${(d.units ?? 0).toLocaleString()}</td>
+        <td colspan="7" style="padding:7px 10px;font-size:12px;">${_e(d.deactivationLabel)}${d.lastSeenMonth ? ` · left ${_e(d.lastSeenMonth)}` : ""}</td>
+      </tr>`).join("");
+
   const cols = ["Property", "Units", "Tier", "Paying Residents", "New Signups", "Adoption", "Approval Rate", "This Month Rent", "Total Rent Paid"];
   const thHtml = cols.map((c, i) => `
     <th onclick="flexNotesSortTable(${i})" id="pr-th-${i}"
@@ -671,7 +691,7 @@ function buildPropertyReferenceTable(snapshot: PropertyReferenceRow[] | undefine
     <div style="overflow-x:auto;">
       <table style="width:100%;border-collapse:collapse;">
         <thead><tr id="pr-thead" style="border-bottom:2px solid #eceaf2;">${thHtml}</tr></thead>
-        <tbody id="pr-tbody">${rows}</tbody>
+        <tbody id="pr-tbody">${rows}${disabledRows}</tbody>
       </table>
     </div>
     <script>
@@ -839,7 +859,7 @@ export function buildExpansionSpeakerNotesHtml(
   }
 
   const talkTrackHtml = sections.join("\n");
-  const propertyReferenceHtml = buildPropertyReferenceTable(propertySnapshot);
+  const propertyReferenceHtml = buildPropertyReferenceTable(propertySnapshot, k.disabledProperties);
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -1257,7 +1277,7 @@ function buildScriptNotesHtml(
   let slideCounter = 0;
   for (const key of slideKeysInOrder) {
     const title = titles[key] ?? key.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
-    const notes = notesFor(key);
+    const notes: string[] = notesFor(key);
     if (notes.length === 0) continue;
     slideCounter++;
     const bullets = notes.map((n) => `<li style="margin-bottom:10px;line-height:1.55;">${_e(n)}</li>`).join("");
@@ -1277,6 +1297,9 @@ function buildScriptNotesHtml(
   }
 
   const talkTrackHtml = sections.join("\n");
+  // Shared across Checkin/Embed - neither deck type populates disabledProperties today
+  // (it's QBR/Expansion/Platinum-only), and this helper's narrower k type deliberately
+  // doesn't carry it.
   const propertyReferenceHtml = buildPropertyReferenceTable(propertySnapshot);
 
   return `<!DOCTYPE html>
@@ -1362,7 +1385,7 @@ export function buildSpeakerNotesHtml(
     : "";
 
   const talkTrackHtml = `${preMeetingHtml}\n${sections.join("\n")}`;
-  const propertyReferenceHtml = buildPropertyReferenceTable(propertySnapshot);
+  const propertyReferenceHtml = buildPropertyReferenceTable(propertySnapshot, k.disabledProperties);
 
   return `<!DOCTYPE html>
 <html lang="en">
