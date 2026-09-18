@@ -195,6 +195,40 @@ export interface RampRow {
   property_count: number;
 }
 
+/** Same floor as the case-study analysis's own qualification gate. */
+export const MIN_MILESTONE_PROPERTIES = 3;
+
+/** Each row of a ramp-curve pull is a CROSS-SECTIONAL slice - the percentile across
+ * whichever properties happen to have reached that many months since THEIR OWN rollout, not
+ * one cohort tracked over time. Property count shrinks with tenure by construction (a
+ * property at month 24 has necessarily survived that long; one at month 3 hasn't had the
+ * chance to drop out of the panel that way yet), so a small peer match can leave month 24
+ * resting on just one or two properties - not a real regression, a different and much
+ * smaller sample than month 12's. Kevin's catch, live screenshot (Sparrow Management, 5
+ * comparable PMCs): Month 24 printed a LOWER top-quartile adoption rate than Month 12, and
+ * the deck's own "N comparable PMCs/properties" caption is computed from the BEST month's
+ * count, not the one actually backing the number on screen - nothing on the slide would have
+ * told a rep this was a 1-property sample, not a real decline.
+ *
+ * Fix is a data-sufficiency floor, not a methodology change: the cross-sectional percentile
+ * math is statistically sound, it's just unreliable at low N. Truncates to the latest
+ * LABELED milestone (3/6/12/24 - the ones that get a printed dot and number) that still has
+ * enough real properties behind it. If even the 12-month milestone doesn't clear the floor,
+ * there's no real ramp story to tell - returns [] (Kevin's call: a 3- or 6-month-only curve
+ * barely shows adoption taking off at all, worse than not showing the slide) rather than
+ * quietly presenting a shortened one.
+ *
+ * Must run BEFORE the 3-month rolling-average smoothing applied elsewhere - property_count
+ * has to be the real per-month count, not blended across neighbors. Aligned to Flask's
+ * truncate_ramp_to_reliable_window, same commit. */
+export function truncateRampToReliableWindow(rows: RampRow[]): RampRow[] {
+  if (rows.length === 0) return rows;
+  const countAt = (mo: number): number => rows.find(r => r.months_since_rollout === mo)?.property_count ?? 0;
+  if (countAt(12) < MIN_MILESTONE_PROPERTIES) return [];
+  const lastReliableMonth = countAt(24) >= MIN_MILESTONE_PROPERTIES ? 24 : 12;
+  return rows.filter(r => r.months_since_rollout <= lastReliableMonth);
+}
+
 export interface EmbedData {
   pmc_name: string;
   unit_count: number;

@@ -14,6 +14,7 @@ import {
   type TrendRow,
   type CohortRow,
   type RampRow,
+  truncateRampToReliableWindow,
   type EmbedData,
   type RentDistRow,
   type HighRentPropertyRow,
@@ -540,8 +541,12 @@ export default api({
           rampSql, RampSchema, [...peerPmcNames, cutoff, cutoff],
           { label: "Pull ramp curve" },
         );
-        // 3-month rolling average smoothing
-        const rawArr = rawRamp.map(r => ({
+        // Truncate to the last reliable milestone BEFORE smoothing - see
+        // truncateRampToReliableWindow's own docstring for why (a small peer match can leave
+        // a high-tenure milestone resting on one or two properties, not a real regression).
+        // property_count has to be the real per-month count here, not blended by the
+        // rolling average below.
+        const rawArr = truncateRampToReliableWindow(rawRamp.map(r => ({
           months_since_rollout: r.MONTHS_SINCE_ROLLOUT,
           median_nar: r.MEDIAN_NAR,
           avg_nar: r.AVG_NAR,
@@ -549,7 +554,7 @@ export default api({
           p75_nar: r.P75_NAR,
           p90_nar: r.P90_NAR,
           property_count: r.PROPERTY_COUNT,
-        }));
+        })));
         // Apply 3-month centered rolling average
         rampRows = rawArr.map((row, i) => {
           const start = Math.max(0, i - 1);
