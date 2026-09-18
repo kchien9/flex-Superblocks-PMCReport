@@ -14,7 +14,7 @@ import {
   type TrendRow,
   type CohortRow,
   type RampRow,
-  truncateRampToReliableWindow,
+  fillUnreliableRampMilestones,
   type EmbedData,
   type RentDistRow,
   type HighRentPropertyRow,
@@ -541,12 +541,7 @@ export default api({
           rampSql, RampSchema, [...peerPmcNames, cutoff, cutoff],
           { label: "Pull ramp curve" },
         );
-        // Truncate to the last reliable milestone BEFORE smoothing - see
-        // truncateRampToReliableWindow's own docstring for why (a small peer match can leave
-        // a high-tenure milestone resting on one or two properties, not a real regression).
-        // property_count has to be the real per-month count here, not blended by the
-        // rolling average below.
-        const rawArr = truncateRampToReliableWindow(rawRamp.map(r => ({
+        const rawArr = rawRamp.map(r => ({
           months_since_rollout: r.MONTHS_SINCE_ROLLOUT,
           median_nar: r.MEDIAN_NAR,
           avg_nar: r.AVG_NAR,
@@ -554,9 +549,9 @@ export default api({
           p75_nar: r.P75_NAR,
           p90_nar: r.P90_NAR,
           property_count: r.PROPERTY_COUNT,
-        })));
+        }));
         // Apply 3-month centered rolling average
-        rampRows = rawArr.map((row, i) => {
+        const smoothed = rawArr.map((row, i) => {
           const start = Math.max(0, i - 1);
           const end = Math.min(rawArr.length - 1, i + 1);
           const window = rawArr.slice(start, end + 1);
@@ -570,6 +565,13 @@ export default api({
             property_count: row.property_count,
           };
         });
+        // fillUnreliableRampMilestones runs LAST, after smoothing rather than before - it has
+        // to be the final write to a projected milestone's row, or the rolling average above
+        // would immediately blend the clean projected value back together with its still-noisy,
+        // untouched neighboring months. property_count itself is never smoothed either way, so
+        // the reliability check this runs is unaffected by the reordering - see its own
+        // docstring for the full reasoning.
+        rampRows = fillUnreliableRampMilestones(smoothed);
       } catch (e: any) {
         ctx.log.warn("pull_ramp_curve failed", { error: e.message });
       }

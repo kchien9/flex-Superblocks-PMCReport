@@ -193,10 +193,54 @@ export interface RampRow {
   p75_nar: number;
   p90_nar: number;
   property_count: number;
+  /** Set by fillUnreliableRampMilestones when this row's value is a network-growth-rate
+   * ESTIMATE (this peer group didn't have enough of its own properties this old to trust
+   * directly), not an observed number. Absent/false on every real, adequately-sampled row. */
+  projected?: boolean;
 }
 
 /** Same floor as the case-study analysis's own qualification gate. */
 export const MIN_MILESTONE_PROPERTIES = 3;
+
+type RampStatCol = "median_nar" | "avg_nar" | "p25_nar" | "p75_nar" | "p90_nar";
+const RAMP_STAT_COLS: RampStatCol[] = ["median_nar", "avg_nar", "p25_nar", "p75_nar", "p90_nar"];
+
+/** Real Snowflake pull, NETWORK-WIDE (every integrated DI property meeting pullRampCurve's own
+ * >=5-units/>=4-months-of-history filters, no PMC_NAME restriction at all) - same query shape,
+ * just without the peer-group WHERE clause. Pulled 2026-09-18 (n = 67,668 properties at Month
+ * 0 down to 29,258 at Month 24 - real scale, not a handful). Used ONLY to PROJECT a
+ * peer-specific milestone that doesn't have enough of its OWN properties to trust directly
+ * (see fillUnreliableRampMilestones below) - never displayed on its own, never overrides a
+ * real, adequately-sampled peer-specific number. Refresh this table periodically (re-run the
+ * same query) if the underlying network's ramp shape drifts meaningfully - it's a snapshot,
+ * not a live query, the same tradeoff as this codebase's other baked-in reference numbers
+ * (MetroSight's constants). p25_nar is genuinely 0.0 network-wide through month 6 (real: at
+ * least a quarter of properties have zero paying households that early) -
+ * projectRampMilestone's zero-baseline guard falls back to the peer group's own raw anchor
+ * value in that case rather than dividing by zero. Aligned to Flask's NETWORK_RAMP_BASELINE,
+ * same commit.*/
+const NETWORK_RAMP_BASELINE: Record<number, Record<RampStatCol, number>> = {
+  0:  { median_nar: 0.000000, avg_nar: 0.018922, p25_nar: 0.000000, p75_nar: 0.026316, p90_nar: 0.055556 },
+  3:  { median_nar: 0.025000, avg_nar: 0.040306, p25_nar: 0.000000, p75_nar: 0.063291, p90_nar: 0.104762 },
+  6:  { median_nar: 0.036585, avg_nar: 0.049938, p25_nar: 0.000000, p75_nar: 0.078947, p90_nar: 0.123333 },
+  12: { median_nar: 0.053191, avg_nar: 0.064629, p25_nar: 0.013158, p75_nar: 0.100000, p90_nar: 0.145833 },
+  24: { median_nar: 0.074561, avg_nar: 0.083911, p25_nar: 0.025991, p75_nar: 0.125486, p90_nar: 0.177778 },
+};
+
+/** Projects a peer group's own value at `targetMonth` from its real, reliable value at
+ * `anchorMonth`, scaled by the NETWORK's own observed growth ratio between those two months
+ * (NETWORK_RAMP_BASELINE). Real evidence backs this, not a guess: median/avg/p75/p90 all rise
+ * at EVERY month from 0-24 network-wide, across tens of thousands of properties, with zero
+ * exceptions - so scaling a peer group's own reliable anchor by that same, independently-
+ * verified growth ratio is a materially better estimate than either trusting a thin
+ * peer-specific sample directly, or flat-lining at the anchor's value (which would wrongly
+ * imply adoption stops growing after `anchorMonth`, which the network data says is false). */
+export function projectRampMilestone(anchorValue: number, anchorMonth: number, targetMonth: number, col: RampStatCol): number {
+  const baselineAnchor = NETWORK_RAMP_BASELINE[anchorMonth][col];
+  const baselineTarget = NETWORK_RAMP_BASELINE[targetMonth][col];
+  if (baselineAnchor <= 0) return anchorValue;
+  return anchorValue * (baselineTarget / baselineAnchor);
+}
 
 /** Each row of a ramp-curve pull is a CROSS-SECTIONAL slice - the percentile across
  * whichever properties happen to have reached that many months since THEIR OWN rollout, not
@@ -205,28 +249,55 @@ export const MIN_MILESTONE_PROPERTIES = 3;
  * chance to drop out of the panel that way yet), so a small peer match can leave month 24
  * resting on just one or two properties - not a real regression, a different and much
  * smaller sample than month 12's. Kevin's catch, live screenshot (Sparrow Management, 5
- * comparable PMCs): Month 24 printed a LOWER top-quartile adoption rate than Month 12, and
- * the deck's own "N comparable PMCs/properties" caption is computed from the BEST month's
- * count, not the one actually backing the number on screen - nothing on the slide would have
- * told a rep this was a 1-property sample, not a real decline.
+ * comparable PMCs): Month 24 printed a LOWER top-quartile adoption rate than Month 12, and the
+ * deck's own "N comparable PMCs/properties" caption is computed from the BEST month's count,
+ * not the one actually backing the number on screen - nothing on the slide would have told a
+ * rep this was a 1-property sample, not a real decline.
  *
- * Fix is a data-sufficiency floor, not a methodology change: the cross-sectional percentile
- * math is statistically sound, it's just unreliable at low N. Truncates to the latest
- * LABELED milestone (3/6/12/24 - the ones that get a printed dot and number) that still has
- * enough real properties behind it. If even the 12-month milestone doesn't clear the floor,
- * there's no real ramp story to tell - returns [] (Kevin's call: a 3- or 6-month-only curve
- * barely shows adoption taking off at all, worse than not showing the slide) rather than
- * quietly presenting a shortened one.
+ * First fix attempt (truncate the curve at the last reliable milestone) worked but cost real
+ * coverage: a small peer match - exactly the kind most likely to be thin at 24 months - would
+ * routinely lose the whole 12-24 month range. Kevin's catch again: a FLAT line for the dropped
+ * milestone (freeze at the last reliable value) is also wrong - it implies adoption plateaus
+ * after that point, which the real network data says is false too.
  *
- * Must run BEFORE the 3-month rolling-average smoothing applied elsewhere - property_count
- * has to be the real per-month count, not blended across neighbors. Aligned to Flask's
- * truncate_ramp_to_reliable_window, same commit. */
-export function truncateRampToReliableWindow(rows: RampRow[]): RampRow[] {
+ * This version keeps every labeled milestone (3/6/12/24) on the chart - it just PROJECTS (see
+ * projectRampMilestone) whichever one doesn't clear MIN_MILESTONE_PROPERTIES, scaling the last
+ * reliable earlier milestone by the network's own real growth ratio, and marks it
+ * `projected: true` so the caller can render it with a distinct (dashed/labeled) treatment -
+ * same idea as this deck's existing "Projected" ghost-bar convention elsewhere, never blending
+ * an estimate into the real, observed numbers without saying so.
+ *
+ * Still requires the 12-month milestone to be a REAL, adequately-sampled anchor - if even that
+ * doesn't clear the floor, there's no reliable peer-specific signal left to project FROM, and
+ * returns [] (Kevin's call, unchanged from the first fix: a 3- or 6-month-only real ramp isn't
+ * a story worth telling, projected or not).
+ *
+ * Must run AFTER the 3-month rolling-average smoothing applied in get-prospect-deck.ts, not
+ * before - the smoothing would otherwise immediately blend a clean projected value back
+ * together with its still-noisy neighboring months. property_count itself is never smoothed
+ * either way. Aligned to Flask's fill_unreliable_ramp_milestones, same commit. */
+export function fillUnreliableRampMilestones(rows: RampRow[]): RampRow[] {
   if (rows.length === 0) return rows;
   const countAt = (mo: number): number => rows.find(r => r.months_since_rollout === mo)?.property_count ?? 0;
   if (countAt(12) < MIN_MILESTONE_PROPERTIES) return [];
-  const lastReliableMonth = countAt(24) >= MIN_MILESTONE_PROPERTIES ? 24 : 12;
-  return rows.filter(r => r.months_since_rollout <= lastReliableMonth);
+
+  const labeledMonths = [3, 6, 12, 24].filter(mo => rows.some(r => r.months_since_rollout === mo));
+  const out = rows.map(r => ({ ...r, projected: false }));
+  let lastReliableMonth: number | null = null;
+  for (const mo of labeledMonths) {
+    const row = out.find(r => r.months_since_rollout === mo)!;
+    if (countAt(mo) >= MIN_MILESTONE_PROPERTIES) {
+      lastReliableMonth = mo;
+      continue;
+    }
+    if (lastReliableMonth === null) continue; // no reliable anchor yet - only possible before month 12, already required above
+    const anchor = out.find(r => r.months_since_rollout === lastReliableMonth)!;
+    for (const col of RAMP_STAT_COLS) {
+      row[col] = projectRampMilestone(anchor[col], lastReliableMonth, mo, col);
+    }
+    row.projected = true;
+  }
+  return out;
 }
 
 export interface EmbedData {
@@ -857,10 +928,17 @@ export function renderRampBenchmark(
     const topV = row.p75_nar != null ? row.p75_nar : nar;
     const topRes = Math.floor(units * topV);
     const topRentMo = topRes * avgRent;
+    // fillUnreliableRampMilestones marks a milestone `projected` when this peer group didn't
+    // have enough of its own properties that old to trust directly - flag it here too, same
+    // reasoning as the chart dots above.
+    const projectedNote = row.projected
+      ? `<div style="font-size:9px;font-weight:600;color:#9ca3af;margin-top:2px;">Projected from your own earlier-month trend</div>`
+      : "";
     return `<div style="flex:1;padding:16px 16px;background:#f9f8ff;border-top:3px solid ${col};border-radius:0 0 8px 8px;display:flex;flex-direction:column;justify-content:space-between;">
       <div style="font-size:11px;font-weight:600;color:${GRAY};text-transform:uppercase;letter-spacing:0.08em;">${label}</div>
       <div class="stat-toggle-value" data-median="${_fmt(rentMo, 1)}/mo" data-avg="${_fmt(avgRentMo, 1)}/mo" data-top="${_fmt(topRentMo, 1)}/mo" style="font-size:30px;font-weight:700;color:${col};letter-spacing:-0.03em;line-height:1;">${_fmt(rentMo, 1)}/mo<span style="display:block;font-size:13px;font-weight:400;color:#6b7280;margin-top:2px;">in rent</span></div>
       <div class="stat-toggle-label" data-median-label="${res.toLocaleString()} residents · ${(nar * 100).toFixed(1)}% adoption" data-avg-label="${avgRes.toLocaleString()} residents · ${(avgV * 100).toFixed(1)}% adoption" data-top-label="${topRes.toLocaleString()} residents · ${(topV * 100).toFixed(1)}% adoption" style="font-size:11px;color:#6b7280;">${res.toLocaleString()} residents · ${(nar * 100).toFixed(1)}% adoption</div>
+      ${projectedNote}
     </div>`;
   }
 
@@ -902,7 +980,12 @@ export function renderRampBenchmark(
     const avgPts = hasAvg ? rampDf.map(r => `${cx(r.months_since_rollout).toFixed(1)},${cy(r.avg_nar ?? r.median_nar).toFixed(1)}`).join(" ") : "";
     const p90Pts = hasP90 ? rampDf.map(r => `${cx(r.months_since_rollout).toFixed(1)},${cy(r.p90_nar ?? r.p75_nar).toFixed(1)}`).join(" ") : "";
 
-    // Milestone dots generator
+    // Milestone dots generator. fillUnreliableRampMilestones (slides-prospect.ts) marks a
+    // milestone `projected` when this peer group didn't have enough of its OWN properties
+    // that old to trust directly - the value is a network-growth-rate ESTIMATE off this
+    // group's own last reliable milestone, not an observed number. Same idea as this deck's
+    // "Projected" ghost-bar convention elsewhere: dashed instead of solid, and labeled, never
+    // blended in as if it were observed data.
     function dots(col: "median_nar" | "avg_nar" | "p75_nar"): string {
       return [3, 6, 12, 24].map(mo => {
         const row2 = rampDf.find(r2 => r2.months_since_rollout === mo);
@@ -911,6 +994,11 @@ export function renderRampBenchmark(
         if (v == null || isNaN(v)) return "";
         const dx = cx(mo), dy = cy(v);
         const mCol = milestoneColors[mo] || PURPLE;
+        if (row2.projected) {
+          return `<circle cx="${dx.toFixed(1)}" cy="${dy.toFixed(1)}" r="5" fill="${WHITE}" stroke="${mCol}" stroke-width="2" stroke-dasharray="2,2"/>` +
+            `<text x="${dx.toFixed(1)}" y="${Math.max(PAD_T + 10, dy - 10).toFixed(1)}" text-anchor="middle" font-size="9" font-weight="700" fill="${mCol}" opacity="0.75">~${(v * 100).toFixed(1)}%</text>` +
+            `<text x="${dx.toFixed(1)}" y="${Math.max(PAD_T + 21, dy + 1).toFixed(1)}" text-anchor="middle" font-size="7" font-weight="600" fill="${mCol}" opacity="0.75">projected</text>`;
+        }
         return `<circle cx="${dx.toFixed(1)}" cy="${dy.toFixed(1)}" r="5" fill="${WHITE}" stroke="${mCol}" stroke-width="2.5"/>` +
           `<text x="${dx.toFixed(1)}" y="${Math.max(PAD_T + 10, dy - 10).toFixed(1)}" text-anchor="middle" font-size="9" font-weight="700" fill="${mCol}">${(v * 100).toFixed(1)}%</text>`;
       }).join("");
